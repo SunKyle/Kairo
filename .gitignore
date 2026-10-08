@@ -1,0 +1,18 @@
+node_modules
+dist
+.env
+*.log
+.vercel
+.DS_Store
+# 本地调试留下的浏览器 profile / 临时目录
+.tmp-layout-test
+tmp-design
+# npm 缓存在某些机器上不可写(~/.npm 属主不对),改用项目内缓存时的落点
+.npm-cache
+.npm-logs
+# 性能测量的临时 Chrome profile(脚本自己会在 /tmp 下建,这里兜底)
+.perf-profile
+# JetBrains 的工程配置:里面是每台机器各一份的东西
+# (project-jdk-name、窗口布局、本机路径),与本项目无关 ——
+# 它自己生成的那份 .idea/.gitignore 只挡得住 workspace.xml
+.idea

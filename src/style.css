@@ -1,0 +1,480 @@
+/* ============================================================
+   KImage · Design System v1.0
+   克制 · Editorial · Image First
+   ------------------------------------------------------------
+   Apple-like 轻盈无衬线排版 + 暖白纸感 + 中性灰度 + 墨色强调
+   "让 AI 的能力隐藏，让创作过程自然。"
+   ============================================================ */
+
+:root {
+  /* —— 色彩(浅色) Light Theme —— */
+  --bg: #FAFAF8;                  /* 页面背景 */
+  --bg-elev: #F5F5F2;             /* surface-secondary: 输入/悬浮区 */
+  --surface: #FFFFFF;             /* surface: 卡片/面板 */
+  --surface-hover: #EFEFEA;       /* surface-hover */
+  /* 角色气泡的底。比 --bg-elev 再抬一档 —— 气泡与面板是**同色面上的同色块**
+     (输入框那种"白面上的浅灰"不一样),照 --bg-elev 给的话两者只差 1.09:1,
+     一句短回复看起来就是浮在背景里的几行字,读不出"这是一个块" */
+  --bubble-bg: #EFEFEA;
+  --image-bg: #F0EFEC;            /* 图片画布底,内嵌感 */
+  --stage-bg: #F2F2F2;            /* 预览左侧图片区底:衬出图片与 contain 留边 */
+  --line: #E8E6E1;                /* 分隔线 */
+  --line-strong: rgba(0, 0, 0, 0.16);
+  --text: #111111;                /* text-primary */
+  --text-2: #6B6B6B;              /* text-secondary */
+  --text-3: #727272;              /* text-tertiary(浅色面上 ≥4.6:1,小字也能用) */
+  --text-4: #C5C5C5;              /* text-disabled */
+  /* 主题色 = 墨色。与 --cta 同值不是巧合:本站的"强调"就是墨色实心,
+     选中、聚焦、当前项全用它,不再有第二个色相。
+     两者保留各自的变量名 —— 语义不同(一个管按钮底,一个管状态与聚焦环),
+     将来若要重新引入品牌色,只需改这一处 */
+  --accent: #111111;
+  --accent-strong: #000000;       /* 悬停/强调时再压深一档 */
+  --accent-soft: rgba(0, 0, 0, 0.06);   /* 淡底与聚焦晕 */
+  --accent-contrast: #FFFFFF;     /* 强调色实心上的文字 */
+  --danger: #E5484D;
+  /* AI 那几颗键的图标渐变。全站只有这里是彩色:它是画布那一页的重点,
+     而"墨色 + 灰度"是其余一切的基调。
+     粉 → 紫比蓝 → 紫的色相跨度宽一截(七十来度对五十来度),再加上
+     两端还差着一档明度 —— 19px 的细描边图标上,这两样缺一不可,
+     只换色相的话扫过去几乎就是单色 */
+  --ai-from: #EC4899;
+  --ai-to: #6D28D9;
+  /* "AI 正在写"那圈呼吸光晕的金色(见 .halo-breathe)。
+     与上面那套粉紫渐变不是一回事,也刻意不去统一:那套标的是"入口"
+     (画布上那几颗 AI 键长什么样),这个报的是"正在跑" ——
+     一个是身份,一个是状态,各管一头。
+     金只出现在这一处:强调永远是墨色,金只是"机器在动"的信号 */
+  --ai-halo: #D3A32A;
+
+  /* —— 字体 ——
+     正文与标题都用系统无衬线:本站的基调是克制与系统感,而 SF Pro(macOS/iOS)、
+     Segoe UI(Windows)、system-ui(Android/Linux)本来就是各端最合适的界面字体。
+     这里刻意不写 "Inter":之前写了却从未加载,等于让兜底链冒名顶替首选,
+     而开发机若装了 Inter 还会看到与访客不同的字形。 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  /* 衬线那一条**只给沉浸页的台词用**(见 ChatPage 的 .is-immersive)。
+     全站其余部分仍是上面那套系统无衬线 —— 这是这一处唯一的例外,
+     理由是那一页在做的事不同:它要的是"一页剧本",不是"一块界面"。
+     同样不加载任何字体:各端各有自己的衬线(Songti SC / SimSun / Noto Serif) */
+  --font-serif: Georgia, "Times New Roman", "Songti SC", "Noto Serif SC",
+    "Source Han Serif SC", serif;
+
+  /* —— 字号:按角色命名 ——
+     全站字号只在这里定义,调整时不必去 6 个文件里翻散落的 px。
+     刻意保留密集的几档:11/12/13/14/15/16 各自对应明确的角色,
+     合并它们会改变信息层级,那是改设计而不是收敛。
+     字标的 21px / 24px 不在此列 —— 那是品牌锁形的一部分,与正文字阶无关 */
+  --fs-micro: 11px;   /* 图片浮层、极小注解 */
+  --fs-xs: 12px;      /* 小标签、胶囊、提示 */
+  --fs-sm: 13px;      /* 次级正文、按钮、表单控件 */
+  --fs-base: 14px;    /* 正文 */
+  --fs-md: 15px;      /* 预览卡提示词:刻意比正文大一档 */
+  --fs-lg: 16px;      /* 输入框,以及窄屏下防 iOS 聚焦放大的那一档 */
+  --fs-xl: 20px;      /* 区块标题、窄屏页标题 */
+  --fs-2xl: 22px;     /* 面板标题 */
+  --fs-3xl: 28px;     /* 页标题 */
+
+  /* —— 字距 ——
+     低于 0.01em 的差异在 15px 上不足 0.15px,肉眼无法分辨,所以没有中间的碎档;
+     正负两侧各一档,外加全大写微标签专用的一档 */
+  --ls-hero: -0.03em;  /* 首屏超大字 */
+  --ls-tight: -0.02em; /* 标题 */
+  --ls-wide: 0.01em;   /* 副标题的轻微松开 */
+  /* 全大写微标签专用。它必须比 --ls-wide 大一档:
+     0.01em 在 12px 上只有 0.12px,小字全大写会挤成一坨,
+     而字距本身正是这类标签"看起来是刻意设计的"的原因 */
+  --ls-eyebrow: 0.14em;
+
+  /* 字标专用:几何粗体(KImage)+ 手写体(跟在后面的页名),自托管字体(见 main.ts);
+     后面挂系统字体做兜底,网络字体没加载出来也不会退化成衬线 */
+  --font-wordmark: "Poppins", "Avenir Next", "Futura", "Century Gothic", sans-serif;
+  --font-script: "Pacifico", "Snell Roundhand", "Brush Script MT", cursive;
+
+  /* —— 间距:4px 为基准,常用的几档凑成 8px 网格 —— */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  /* —— 圆角 / 阴影 / 过渡 —— */
+  --r-sm: 8px;                    /* Small: Tag / Icon Button */
+  --r: 16px;                      /* Medium: Card / Input */
+  --r-lg: 24px;                   /* Large: Prompt Composer / Modal */
+
+  /* Shadow System */
+  --sh-sm: 0 8px 30px rgba(0, 0, 0, 0.06);      /* Soft Shadow: 普通组件 */
+  --sh-md: 0 20px 60px rgba(0, 0, 0, 0.12);     /* Floating Shadow: 重要组件 */
+  --sh-float: 0 20px 60px rgba(0, 0, 0, 0.12);  /* Prompt Composer 悬浮弥散 */
+
+  --dur: 220ms;
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* —— 首页工作台 —— */
+  --cta: #111111;                 /* Primary Button: 黑药丸 */
+  --cta-hover: #2A2A2A;
+  --cta-text: #FFFFFF;
+
+  color-scheme: light;
+}
+
+/* 深色主题 Dark Theme。
+   带上 html 前缀是有意的:它与上面的 :root 是同一份特异性(都是 0,1,0),
+   谁生效全看书写顺序 —— 加上元素名之后这条稳定胜出,
+   中间插入别的同名规则也不会让它静默失效 */
+html[data-theme="dark"] {
+  --bg: #0F0F11;
+  --bg-elev: #1E1E21;
+  --surface: #171719;
+  --surface-hover: #232326;
+  /* 见浅色那一段的说明:同色面上的气泡块要比"抬起来一档"再明确一点 */
+  --bubble-bg: #232326;
+  --image-bg: #0B0B0D;
+  /* 深色下图片区往「内凹」走,比页面底(--bg)再暗一档 */
+  --stage-bg: #0B0B0D;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --text: #F5F5F5;
+  --text-2: #A1A1A1;
+  --text-3: #8A8A8A;              /* text-tertiary(暗色面上 ≥4.6:1) */
+  --text-4: #45454A;
+  /* 暗色下主题色反相成纸色,与 --cta 同理 —— 墨色在暗底上会消失 */
+  --accent: #F5F5F5;
+  --accent-strong: #FFFFFF;
+  --accent-soft: rgba(255, 255, 255, 0.1);
+  --accent-contrast: #131317;
+  --danger: #FF5C5F;
+  /* 暗底上两端都要亮一档才站得住(浅色那档压到深底上会发闷),
+     走过来的明度落差照旧留着 */
+  --ai-from: #F472B6;
+  --ai-to: #A855F7;
+  /* 金色同理:暗底上不提亮就往褐里走,金色一脏就不再是金了 */
+  --ai-halo: #F1C64B;
+
+  --sh-sm: 0 8px 30px rgba(0, 0, 0, 0.4);
+  --sh-md: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --sh-float: 0 20px 60px rgba(0, 0, 0, 0.5);
+
+  --cta: #F5F5F5;
+  --cta-hover: #FFFFFF;
+  --cta-text: #111111;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* 隐藏页面滚动条,保留滚动能力 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+html::-webkit-scrollbar {
+  display: none;
+}
+
+/* 隐藏滚动条但保留滚动能力,用于抽屉等内容区 */
+.no-bar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-bar::-webkit-scrollbar {
+  display: none;
+}
+
+/* 只给读屏的文本:视觉上不可见,但仍然留在无障碍树里。
+   用 clip 而不是 display:none / visibility:hidden —— 后两者会把它
+   从无障碍树里摘掉,那就白写了。
+   注意 clip 与 clip-path 都需要 position: absolute 才生效。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ============================================================
+   图标按钮的文字提示
+   原生 title 延迟约 1 秒、样式不可控,顶部按钮还会被视口顶边裁掉,
+   所以用 data-tip 自绘。配色借用 --cta(亮色黑底白字 / 暗色白底黑字)。
+   默认出现在按钮上方;给顶部元素加 .tip-below 翻到下方。
+   ============================================================ */
+[data-tip] {
+  position: relative;
+}
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  padding: 5px 9px;
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--cta-text);
+  background: var(--cta);
+  border-radius: 6px;
+  box-shadow: var(--sh-sm);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(3px);
+  transition: opacity 130ms var(--ease), transform 130ms var(--ease);
+  z-index: 20;
+}
+/* 指向按钮的小三角 */
+[data-tip]::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  width: 0;
+  height: 0;
+  border: 5px solid transparent;
+  border-top-color: var(--cta);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+  transition: opacity 130ms var(--ease);
+  z-index: 20;
+}
+[data-tip].tip-below::after {
+  bottom: auto;
+  top: calc(100% + 8px);
+  transform: translateX(-50%) translateY(-3px);
+}
+[data-tip].tip-below::before {
+  bottom: auto;
+  top: calc(100% + 3px);
+  border-top-color: transparent;
+  border-bottom-color: var(--cta);
+}
+/* 放在按钮左侧:抽屉/面板里的图标按钮都靠右,且滚动容器会裁掉上下方向 */
+[data-tip].tip-left::after {
+  bottom: auto;
+  top: 50%;
+  left: auto;
+  right: calc(100% + 8px);
+  transform: translateY(-50%) translateX(4px);
+}
+[data-tip].tip-left::before {
+  bottom: auto;
+  top: 50%;
+  left: auto;
+  right: calc(100% + 3px);
+  border-top-color: transparent;
+  border-left-color: var(--cta);
+  transform: translateY(-50%);
+}
+[data-tip].tip-left:hover::after,
+[data-tip].tip-left:focus-visible::after {
+  transform: translateY(-50%) translateX(0);
+}
+/* 放在按钮右侧:贴着面板左缘的竖向工具条用。
+   往左会顶出容器之外(面板自己有 overflow: hidden),只能往右长 */
+[data-tip].tip-right::after {
+  bottom: auto;
+  top: 50%;
+  left: calc(100% + 8px);
+  transform: translateY(-50%) translateX(-4px);
+}
+[data-tip].tip-right::before {
+  bottom: auto;
+  top: 50%;
+  left: calc(100% + 3px);
+  border-top-color: transparent;
+  border-right-color: var(--cta);
+  transform: translateY(-50%);
+}
+[data-tip].tip-right:hover::after,
+[data-tip].tip-right:focus-visible::after {
+  transform: translateY(-50%) translateX(0);
+}
+/* 悬停或键盘聚焦时出现;加一点延迟,免得鼠标扫过时闪成一片 */
+[data-tip]:hover::after,
+[data-tip]:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  transition-delay: 250ms;
+}
+[data-tip]:hover::before,
+[data-tip]:focus-visible::before {
+  opacity: 1;
+  transition-delay: 250ms;
+}
+
+/* ============================================================
+   等待态的呼吸光晕
+   改写提示词、AI 起稿这类"模型正在往回写字"的等待,原先只有按钮上的字变了,
+   输入框本身一动不动 —— 盯着看也说不清它到底在不在跑。
+   给框沿加一圈会呼吸的柔光就是补这件事。
+
+   用色是金色(--ai-halo),不是墨色也不是画布那套 AI 渐变的粉紫:
+   这套界面里"强调"一直是墨色,再多一个色相会跟它抢着说话;
+   而"机器正在动"本来就不是强调,是另一种信息 —— 交给金色单独去说,
+   扫一眼就知道不是"选中了"或"这里是重点",而是"它在跑"。
+   全站也只有这一处用金。
+
+   画在 ::after 而不是直接动 box-shadow,有两个理由:
+   一是各处沿用自己原有的圆角(inherit),不必把整串阴影抄两遍;
+   二是只动画一个 opacity,和聚焦态那套漫反射光晕叠在一起也互不覆盖。
+   光晕只画在边框以外(盒子自身透明),所以它压在内容上也不挡任何东西。
+   ============================================================ */
+.halo-breathe::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  /* 三层弥散,一层比一层散,没有实线:
+     光晕要的是"往外渗",而贴着边那道 1px 亮线读起来就是给框加了个边 */
+  box-shadow:
+    0 0 14px -2px color-mix(in oklch, var(--ai-halo) 44%, transparent),
+    0 0 30px -8px color-mix(in oklch, var(--ai-halo) 52%, transparent),
+    0 0 60px -18px color-mix(in oklch, var(--ai-halo) 58%, transparent);
+  opacity: 0;
+  /* 一呼一吸 2.4s:比心跳还慢些,读起来是"稳着在做一件事",而不是催进度 */
+  animation: halo-breathe 2.4s ease-in-out infinite;
+}
+@keyframes halo-breathe {
+  0%,
+  100% {
+    opacity: 0.32;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* 动效被关掉之后,呼吸会停在某一帧上 —— 可能正好停在最淡的那帧。
+   这里直接给最亮那一帧,把"它正在忙"这件事原样留下来 */
+@media (prefers-reduced-motion: reduce) {
+  .halo-breathe::after {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+body {
+  /* 背景图:极简山水,平铺全屏,随视口缩放;亮/暗主题各一张。
+     用 WebP:原 PNG 是未优化的编码(1.4MB),转 WebP 后仅 30KB 左右。
+     上层叠加当前主题色半透明遮罩(62%),避免削弱卡片与文字对比度 */
+  background:
+    linear-gradient(color-mix(in srgb, var(--bg) 62%, transparent),
+                    color-mix(in srgb, var(--bg) 62%, transparent)),
+    url('/src/assets/bg-light.webp') center / cover no-repeat fixed;
+  color: var(--text);
+  font-family: var(--font-sans);
+  line-height: 1.6;                    /* Body 1.6 */
+  min-height: 100vh;
+  /* 移动端地址栏收放时 100vh 是不动的那个值,页面会跟着跳一下;dvh 才是"当前可视高度"。
+     写两行:老浏览器认不得 dvh,退回上面那行 */
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+  /* 只过渡颜色,不过渡 background 简写 —— 简写里含 background-image,
+     而两张主题图是两个不同的 URL,本身插值不了:那次过渡只会白跑一遍
+     整页重绘,主题切换看起来还是一下硬切 */
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+/* 移动端 Safari 上 background-attachment: fixed 是出了名的掉帧
+   (滚动时整张底图反复重绘),有时干脆不渲染。窄屏就退回随页面滚动的普通背景 */
+@media (max-width: 720px) {
+  body {
+    background-attachment: scroll;
+  }
+  [data-theme="dark"] body {
+    background-attachment: scroll;
+  }
+}
+
+button {
+  font-family: inherit;
+  /* 浏览器给 button 的默认值是 text-align: center,而 text-align 会被按钮自己的
+     这个值截断,不再从父级继承 —— 于是任何「按钮里放多行文字」的布局都会被静默居中
+     (比如空态里左对齐的入口行)。写进重置里,就不必再逐个按钮补 text-align: left */
+  text-align: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+  color: inherit;
+  outline: none;
+}
+
+::placeholder {
+  color: var(--text-3);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 尊重减少动态偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 聚焦可见性:给全站一个兜底的可聚焦描边。
+   以前这里是 outline: none,指望"元素自身的边框/光晕已足够" ——
+   那是约定而不是保证:任何漏补光晕的按钮或链接,键盘用户都完全看不出焦点在哪。
+   描边的写法与画布页自己那套一致(见 CanvasEditor 的 .canvas-page :focus-visible)。
+   组件里需要更贴合自身形态的,仍在自己那条 :focus-visible 里覆盖 ——
+   类选择器的权重大于这里,覆盖得住。
+
+   表单控件不在此列:输入框与文本域即使鼠标点进去也会命中
+   :focus-visible,而"点进输入框就被画一圈"不是这套设计要的样子。
+   它们本来就各有各的 :focus 边框/光晕(见各页的 .ed-input / .field input / .search …),
+   这里把描边还回 off,保持原样 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+}
+
+/* 深色主题:切换为暗色山水背景图,并同步叠加主题色遮罩(需置于 body 背景声明之后以覆盖) */
+[data-theme="dark"] body {
+  background:
+    linear-gradient(color-mix(in srgb, var(--bg) 62%, transparent),
+                    color-mix(in srgb, var(--bg) 62%, transparent)),
+    url('/src/assets/bg-dark.webp') center / cover no-repeat fixed;
+}

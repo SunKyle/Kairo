@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 移动端浏览器的界面配色跟着主题走(地址栏那一圈) -->
+    <meta name="theme-color" content="#FAFAF8" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0F0F11" media="(prefers-color-scheme: dark)" />
+    <!-- 历史里可能存着远端图(上游返回 URL 且没抓成本地 Blob 的那些):
+         它们会以 <img> 与 CSS url() 直连第三方。不带 Referer 过去,
+         免得把用户正在看的页面地址一起交代了 -->
+    <meta name="referrer" content="no-referrer" />
+    <!-- 首屏主题:内联同步执行,赶在第一帧之前把 data-theme 定下来。
+         main.ts 是 module(延迟执行),只靠它的话深色用户会先看到一帧浅色再跳。
+         口径与 src/lib/theme.ts 一致 —— 存档优先,否则跟随系统;
+         那个模块里的 THEME_KEY 与这里是同一个字符串,改一处要一起改 -->
+    <script>
+      try {
+        var t = localStorage.getItem('kimage.theme')
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        }
+        document.documentElement.setAttribute('data-theme', t)
+      } catch (e) {
+        /* 存取被禁(无痕 / 沙箱)时当没设过,交给 CSS 的默认浅色 */
+      }
+    </script>
+    <!-- SVG 放前面:现代浏览器取第一个能用的,于是拿到可跟随深色主题的矢量版;
+         PNG 留作兜底(老浏览器不认 SVG) -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="128x128" href="/favicon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <title>Kairo · AI Companion</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

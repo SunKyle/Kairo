@@ -5,6 +5,7 @@ import {
   characterAnchor,
   characterGender,
   chatPhotoSize,
+  closeOnBody,
   frameFromScene,
   frameLine,
   isSelfie,
@@ -488,10 +489,21 @@ describe('planChatPhoto · part 只在特写那一档出现', () => {
   const HANDS = 'my hands wrapped around the mug, steam rising'
 
   it('特写:锚点句之后补一句"这一格是那个人的局部",并带上性别', () => {
-    const p = planChatPhoto(HANDS, true, ANCHOR, 'selfie', 'close', 'female')
+    /* 拍脸那一档才有"锚点句"可排 —— 这一段要的正是两者的先后关系 */
+    const p = planChatPhoto('my eyes', true, ANCHOR, 'selfie', 'close', 'female')
     expect(p.prompt).toContain('female')
     /* 排在锚点句之后 —— 两者是同一件事("这个人是谁") */
     expect(p.prompt.indexOf('female')).toBeGreaterThan(p.prompt.indexOf(ANCHOR))
+  })
+
+  it('这一格落在身上时,锚点句让路、由 part 那句接管(2026-10-09)', () => {
+    /* 那一句(oval face, dark bob…)是八到十几个词的**人脸描述**,而画面里
+       没有脸:它一个字都落不到实处,却仍然在拉镜头(见 closeOnBody) */
+    const p = planChatPhoto(HANDS, true, ANCHOR, 'selfie', 'close', 'female')
+    expect(p.layers.map(([slot]) => slot)).not.toContain('anchor')
+    expect(p.prompt).not.toContain('cheekbones')
+    expect(p.layers.map(([slot]) => slot)).toContain('part')
+    expect(p.prompt).toContain('female')
   })
 
   it('**其余各档一个字都不多** —— 性别送进来也不该改它们', () => {
@@ -512,6 +524,113 @@ describe('planChatPhoto · part 只在特写那一档出现', () => {
   it('它在 layers 里单独成层 —— 所以摄影指导拿不到它(见 photoDirector)', () => {
     const p = planChatPhoto(HANDS, true, ANCHOR, 'selfie', 'close', 'female')
     expect(p.layers.map(([slot]) => slot)).toContain('part')
+  })
+})
+
+/* ===== 这一格落在身上,还是落在头上(2026-10-09)=======================
+ *  用户报的:"要求角色拍摄身体部位特写的时候(比如脚),会把上身也放在图中,
+ *  导致姿势非常怪异。"
+ *
+ *  与上面那一组(part/性别)是同一档的**两个方向**:那一组治的是"这一格不像
+ *  那个人",这一组治的是"这一格连头一起画进来了"。 */
+describe('closeOnBody · 这一格落在头上还是身上', () => {
+  it.each([
+    'my bare feet propped up on the desk',
+    'my hands wrapped around the mug, steam rising',
+    'the scar on my collarbone',
+    'a tattoo on my wrist, just cleaned',
+    '手压在笔记上,指甲还留着点上次涂的颜色',
+    '脚搭在沙发扶手上'
+  ])('落在身上:%s', (s) => expect(closeOnBody(s)).toBe(true))
+
+  it.each([
+    'my eyes, looking straight at you',
+    'close-up of my lips',
+    '特写:睫毛上还挂着水珠',
+    'my hair pulled back',
+    'me on the balcony',
+    'rain on the window'
+  ])('落在头上(或认不出):%s', (s) => expect(closeOnBody(s)).toBe(false))
+
+  /* 两张表的宽严方向相反,是因为误判代价不对称:判成"头上"只是**什么都不改**
+     (今天的做法),判成"身上"却会改掉一张本来对的图。所以头那张表取宽、身上
+     那张取窄,而且只要出现一个头上的词就整条否掉 */
+  it('头与身同时出现时按头算 —— 误判的方向必须是"什么都不改"那一边', () => {
+    expect(closeOnBody('my hands up, my face half turned away')).toBe(false)
+    expect(closeOnBody('特写我的手,脸别拍到')).toBe(false)
+  })
+
+  it('空串不算', () => expect(closeOnBody('')).toBe(false))
+})
+
+describe('planChatPhoto · 身体部位的特写', () => {
+  const FEET = 'my bare feet propped up on the desk'
+  const slots = (p: ReturnType<typeof planChatPhoto>) => p.layers.map(([slot]) => slot)
+  const layer = (p: ReturnType<typeof planChatPhoto>, name: string) =>
+    p.layers.find(([slot]) => slot === name)?.[1] || ''
+
+  it('**验收线:拍脚的特写,不许把上身一起塞进来**', () => {
+    const p = planChatPhoto(FEET, true, ANCHOR, 'selfie', 'close', 'female')
+    expect(p.onBody).toBe(true)
+    /* ① 锚点句(八到十几个词的脸)整段让路 —— 它是拉镜头的那一个 */
+    expect(slots(p)).not.toContain('anchor')
+    expect(p.prompt).not.toContain('cheekbones')
+    /* ② "握手机的手入画"必须让路:那只手连着胳膊连着上身,
+          **要把它装进画面就只能把上身一起装进来** */
+    expect(p.prompt).not.toContain('the hand holding the phone just inside the frame')
+    /* ③ "臂展 / 对镜"是给拍脸写的姿势 —— 举着手机拍自己的脚,摆出来就是那个怪姿势 */
+    expect(p.prompt).not.toContain('arm\u2019s length')
+    /* ④ `front camera` 是四个自拍信号里最强的一个,而拍脚用的不是前置镜头 */
+    expect(p.prompt).not.toContain('front camera')
+    /* 手机出画 —— 它连着那只手 */
+    expect(layer(p, 'camera')).toContain('out of frame')
+  })
+
+  it('身份由 part 那句接管 —— 这一格仍然是那个人', () => {
+    const p = planChatPhoto(FEET, true, ANCHOR, 'selfie', 'close', 'female')
+    expect(slots(p)).toContain('part')
+    expect(p.prompt).toContain('female')
+    expect(p.prompt).toContain('not a generic stand-in')
+  })
+
+  it('frame 那一层明说"连头一起出画" —— 少了它,拍脚与拍眼睛长得一样', () => {
+    const p = planChatPhoto(FEET, true, ANCHOR, 'selfie', 'close')
+    expect(layer(p, 'frame')).toMatch(/head and all/i)
+    expect(layer(p, 'frame')).toContain('cropped out')
+  })
+
+  it('**"相机在自己手上"这条事实照旧** —— 换掉的只是那句举例', () => {
+    const p = planChatPhoto(FEET, true, ANCHOR, 'selfie', 'close')
+    expect(layer(p, 'pin')).toMatch(/own hand/i)
+    expect(layer(p, 'pin')).toContain('out over that one part')
+  })
+
+  it('**拍眼睛那一档一个字不变** —— 这正是这条判据不敢误判的原因', () => {
+    const p = planChatPhoto('my eyes, looking straight at you', true, ANCHOR, 'selfie', 'close')
+    expect(p.onBody).toBe(false)
+    expect(slots(p)).toContain('anchor')
+    expect(p.prompt).toContain('cheekbones')
+    expect(p.prompt).toContain('front camera')
+    expect(layer(p, 'frame')).not.toMatch(/head and all/i)
+  })
+
+  it('半身那一档不认 —— 人整只在画面里,"有没有脸"不是个问题', () => {
+    const p = planChatPhoto(FEET, true, ANCHOR, 'selfie', 'medium')
+    expect(p.onBody).toBe(false)
+    expect(p.prompt).toContain('cheekbones')
+  })
+
+  it('那一条带"这一格属于这个人"的 part 层照旧在(两档都在)', () => {
+    expect(slots(planChatPhoto(FEET, true, ANCHOR, 'selfie', 'close'))).toContain('part')
+    expect(slots(planChatPhoto('my eyes', true, ANCHOR, 'selfie', 'close'))).toContain('part')
+  })
+
+  it('他拍那一档只换机位句 —— 别人的手机拍你的脚天经地义,pin 一个字不用动', () => {
+    const p = planChatPhoto(FEET, true, ANCHOR, 'third', 'close')
+    expect(layer(p, 'pin')).toContain('somebody else')
+    expect(layer(p, 'camera')).toMatch(/out of frame/i)
+    /* 他拍没有"前置镜头"可去,那条只为自拍改 */
+    expect(p.prompt).toContain('snapshot taken on a phone by somebody else')
   })
 })
 
@@ -831,6 +950,9 @@ describe('shotViewOrder · 景别也决定参考图', () => {
   })
 
   it('最多一张 2×2 网格(特写档两张),第一张永远是单张人像', () => {
+    /* 这一条管的是**不传 onBody** 的那些图。唯一一头一尾相反的是"这一格落在
+       身上"那一档 —— 拍脚时没有任何一张单张的身体像,内容胜过版式,
+       见下面那一组 */
     const GRIDS = ['detail', 'closeups', 'body']
     const cases = [
       ['selfie', 'medium', 1],
@@ -857,6 +979,40 @@ describe('shotViewOrder · 景别也决定参考图', () => {
     /* 半身不登记 —— 自拍那一档的缺省就是它,所以他拍传半身也照旧 */
     expect(shotViewOrder('selfie', 'medium')).toEqual(shotViewOrder('selfie'))
     expect(shotViewOrder('third', 'medium')).toEqual(shotViewOrder('third'))
+  })
+})
+
+/* ===== 景别 → 参考图(2026-10-09):这一格落在身上时再改一次 ==============
+ *  参考图是这条链上**最强的机位来源**(i2i 默认保住输入的构图),而
+ *  `front` 是一张头肩证件照 —— 拍脚时把它放在第一位,等于一边在提示词里写
+ *  "头出画"、一边在参考图里说"这儿有一张脸"。 */
+describe('shotViewOrder · 身体部位的特写', () => {
+  it('正面像从打头降到最末 —— 它是最想把镜头拽回上身的那一张', () => {
+    const order = shotViewOrder('selfie', 'close', true)
+    expect(order[0]).toBe('body')
+    expect(order[order.length - 1]).toBe('front')
+  })
+
+  it('张数不变、没有全身像 —— 全身像把取景往回拽(与 close 那条同因)', () => {
+    for (const shot of ['selfie', 'third'] as const) {
+      const order = shotViewOrder(shot, 'close', true)
+      expect(order).not.toContain('full')
+      expect(order, shot).toHaveLength(3)
+      expect(new Set(order).size, shot).toBe(3)
+    }
+  })
+
+  it('视图名仍然都是真实存在的枚举 —— 写错只会静静少一张参考图', () => {
+    const real = new Set(CHARACTER_VIEWS.map((v) => v.kind as string))
+    for (const k of shotViewOrder('selfie', 'close', true)) expect(real.has(k)).toBe(true)
+  })
+
+  it('**其余每一档逐字不变** —— 判据只在"特写 + 落在身上"这一格生效', () => {
+    expect(shotViewOrder('selfie', 'close')).toEqual(['front', 'closeups', 'body'])
+    /* 景别不是特写、或压根没传这一位时,onBody 一律不起作用 */
+    expect(shotViewOrder('selfie', 'medium', true)).toEqual(shotViewOrder('selfie', 'medium'))
+    expect(shotViewOrder('third', 'full', true)).toEqual(shotViewOrder('third', 'full'))
+    expect(shotViewOrder('selfie', undefined, true)).toEqual(shotViewOrder('selfie'))
   })
 })
 

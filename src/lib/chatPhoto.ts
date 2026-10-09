@@ -98,6 +98,20 @@ export interface ChatPhotoPlan {
    *  以及参考图的取舍顺序(见 FRAME_REF_ORDER,2026-10-06 补)。
    *  与 shot 一样,摄影指导改不到它(不在 DIRECTOR_SLOTS 里) */
   frame: ChatFrame
+  /** 这一格落在**身上**、而不是头上 —— 也就是"画面里没有脸"的那一档特写
+   *  (2026-10-09 新增,判据见 closeOnBody)。只有"特写 + 画面里有人 +
+   *  场景写的是身体某个部位"才为真。
+   *
+   *  它决定三处,三处都是同一个毛病(上身被一起塞进画面)的来源:
+   *  - 摘掉头部锚点句(那八到十几个词全是脸,画面里没有脸时它们唯一的作用
+   *    就是把镜头往回拽);
+   *  - 机位那句换成"托在那一格上方、手机出画"(自拍原来那句要求
+   *    "握手机的手入画",而那只手连着上身 —— 要同时装下脚和手,姿势只能是拧的);
+   *  - 参考图不再由正面像打头(见 shotViewOrder 的 BODY_DETAIL_REF_ORDER)。
+   *
+   *  与 frame 一样,摄影指导改不到它(不在 DIRECTOR_SLOTS 里),只被告知
+   *  (见 photoDirector 的 shotBrief / frameBrief) */
+  onBody: boolean
   /** 它是不是在画面里。**这是聊天模型唯一回答的那件事**,
    *  存下来是因为摄影指导改视角时要重拼模板,而"画面里有没有人"是那道护栏:
    *  没有人时视角只能是空镜,谁都不许改成自拍(见 planChatPhoto 的 resolved) */
@@ -218,6 +232,145 @@ export function partLine(gender: string): string {
     `\u2014 ${sex ? `${sex}, ` : ''}same age, same skin and same build as the reference, ` +
     'not a generic stand-in'
   )
+}
+
+/* ===== 这一格落在头上,还是落在身上 =====================================
+ *  —— 用户 2026-10-09 报的那个毛病 ——
+ *
+ *  "要求角色拍摄身体部位特写的时候(比如脚),会把上身也放在图中,
+ *   导致姿势非常怪异。"
+ *
+ *  根因不是模型不听话,是**提示词自己在拉**。拍脚的那张里,同时有四样东西
+ *  指着上半身:
+ *  1. `anchor` 那八到十几个词全是脸(oval face / dark bob / straight brows…);
+ *  2. 自拍 `camera` 那句明写 `the hand holding the phone just inside the frame`
+ *     —— 那只手连着胳膊,胳膊连着上身,**要把它装进画面就必须把上身一起装进来**;
+ *  3. 自拍 `pin` 说 `at arm's length or in a mirror` —— 举着手机拍自己的脚,
+ *     这个姿势本身就是拧的(用户看到的"姿势非常怪异"就是它);
+ *  4. 参考图由 `front`(一张头肩证件照)打头,i2i 的默认行为是**保住输入的构图**。
+ *
+ *  这四处各有各的来路(锚点句是给有脸的那些图写的、机位句是给"眼睛特写"写的、
+ *  正面像打头是"头一张不留给 2×2 网格"那条纪律),**单独看都对** ——
+ *  错的只是它们同时出现在一张拍脚的图上。所以这里要做的是第一件事:
+ *  把"这一格落在身上"这件事**认出来**,然后让那四处让路。
+ *
+ *  —— 为什么判据是查表,而且两张表的宽严方向相反 ——
+ *
+ *  这张场景串是聊天模型自由写的,没有别的判据可用(与 isSelfie / frameFromScene
+ *  同一条处境)。而下面两张表的**误判代价不对称**:
+ *  - `HEAD_*` 命中 = **保持今天的做法**(锚点句还在、正面像还打头)。所以它取宽 ——
+ *    多认一个词只是"什么都不改",是安全的一侧(中文那几个单字 眼/鼻/嘴/眉/耳
+ *    因此也收进来,"眼镜 / 口罩"这类误伤方向同样是安全的);
+ *  - `BODY_DETAIL_*` 命中 = **改掉今天的行为**。所以它取窄,而且要求头上那张表
+ *    一个都没命中 —— 宁可漏判(落回今天的做法),也不要把一张拍眼睛的图
+ *    判成拍脚。中文那两张表里刻意没有单字"手"(它撞"手机 / 手艺",
+ *    而"举着手机拍"这种串在自拍场景里到处都是)。
+ *  ==================================================================== */
+const HEAD_RE =
+  /\b(faces?|facial|features|eyes?|gaze|lips?|mouth|teeth|tongue|cheeks?|brows?|eyebrows?|eyelashes|lashes|nose|nostrils?|jaw|chin|forehead|ears?|hair|bob|braid|ponytail|bangs|fringe|beard|stubble|moustache|mustache|moles?|freckles|smile|grin)\b/i
+const HEAD_ZH = [
+  '脸',
+  '脸部',
+  '脸颊',
+  '面颊',
+  '侧脸',
+  '正脸',
+  '五官',
+  '眼',
+  '眼睛',
+  '眼神',
+  '眼角',
+  '眼皮',
+  '睫毛',
+  '嘴',
+  '嘴唇',
+  '嘴角',
+  '嘴巴',
+  '唇',
+  '眉',
+  '眉毛',
+  '鼻',
+  '鼻子',
+  '鼻梁',
+  '下巴',
+  '额头',
+  '耳',
+  '耳朵',
+  '头发',
+  '刘海',
+  '发梢',
+  '发型',
+  '辫子',
+  '胡子',
+  '胡茬',
+  '牙齿',
+  '舌',
+  '笑容',
+  '微笑',
+  '神情',
+  '表情'
+]
+
+/** 身上那些部位。词表取窄的理由见上面那段 —— 判错了会改掉今天的行为 */
+const BODY_DETAIL_RE =
+  /\b(hands?(?!-)|fingers?|fingertips?|nails?|fingernails?|knuckles?|palms?|wrists?|fists?|forearms?|elbows?|shoulders?|collarbones?|thighs?|knees?|shins?|calves?|ankles?|feet|foot|toes?|legs|tattoos?|scars?|chest|stomach|belly|spine|neck(?!\s+of))\b/i
+const BODY_DETAIL_ZH = [
+  '指甲',
+  '手指',
+  '手指甲',
+  '指尖',
+  '手掌',
+  '手心',
+  '手背',
+  '手腕',
+  '拳头',
+  '手臂',
+  '胳膊',
+  '前臂',
+  '手肘',
+  '我的手',
+  '两只手',
+  '肩膀',
+  '肩头',
+  '锁骨',
+  '胸口',
+  '肚子',
+  '腹部',
+  '后背',
+  '背部',
+  '腰部',
+  '腰间',
+  '大腿',
+  '小腿',
+  '腿',
+  '膝盖',
+  '脚踝',
+  '脚背',
+  '脚趾',
+  '脚',
+  '皮肤',
+  '肤色',
+  '纹身',
+  '疤痕',
+  '脖子',
+  '喉咙',
+  '肌肉'
+]
+
+/**
+ * 这一张特写落在**身上**,而不是头上 —— 也就是"画面里没有脸"的那一格。
+ *
+ * 认不出来返回 false(＝今天的做法),这是刻意的:这条判据一旦误判,
+ * 代价是**一张本来对的图被改坏**(摘掉锚点句、换掉机位句、重排参考图),
+ * 而漏判的代价只是"这个毛病还在"。所以它只在证据明确时才为真。
+ *
+ * 人名与代词不算证据:场景里写的是身体哪个部位,只有部位词能回答。
+ */
+export function closeOnBody(scene: string): boolean {
+  const t = String(scene || '')
+  if (!t) return false
+  if (HEAD_RE.test(t) || HEAD_ZH.some((w) => t.includes(w))) return false
+  return BODY_DETAIL_RE.test(t) || BODY_DETAIL_ZH.some((w) => t.includes(w))
 }
 
 /**
@@ -569,23 +722,65 @@ const FRAMING: Record<ChatShot, Partial<Record<ChatFrame, FrameOverride>>> = {
   }
 }
 
+/* ===== 这一格落在身上(不是头上)时,那几句怎么说 ======================
+ *  (2026-10-09,判据见 closeOnBody)
+ *
+ *  上面 FRAMING 里那几句是**以"画面里有脸"写的**:自拍的机位句要求
+ *  `the hand holding the phone just inside the frame`,而拍脚的那张里,
+ *  要把那只手装进画面,**就只能把连着它的上身一起装进来** —— 用户看到的
+ *  "上身也在图里、姿势很怪"就是这个。
+ *
+ *  所以这一档换三样:
+ *  - `medium`(只自拍这一档):**去掉 `front camera`**。它是四个"自拍信号"里
+ *    最强的一个,而拍自己的脚用的不是前置镜头(那是把手机反过来对着脚),
+ *    留着它就等于请模型按一张举着手机的自拍去构图;
+ *  - `pin`(只自拍这一档):"相机在自己手上"这条**事实**照旧不可让渡,但
+ *    那句举例 `at arm's length or in a mirror` 必须在 —— 它是给"拍脸"写的,
+ *    照着它摆出来的就是那个怪姿势;
+ *  - `camera`:手机**出画**,那一格填满画面,头与其余身体一律出画。
+ *
+ *  `third` 那一档只换机位句(别人的手机拍你的脚,天经地义,它的 pin 一个字不用动);
+ *  空镜那一档走不到这里(这一档要求画面里有人)。
+ *  ==================================================================== */
+const BODY_DETAIL: Partial<Record<ChatShot, { medium?: string; pin?: string; camera: string }>> = {
+  selfie: {
+    medium: 'photographic, shot on a phone',
+    pin:
+      'the camera is in the subject\u2019s own hand \u2014 their own phone, held down or out over that one part of them, not a picture somebody else took of them',
+    camera:
+      'close shot on the subject\u2019s own phone, held down or out over that one part with the phone itself out of frame \u2014 one part of the body fills the frame, everything else, the head and the rest of them alike, out of frame, slight wide-angle distortion'
+  },
+  third: {
+    camera:
+      'hand-held phone snapshot taken from close in, one part of the body filling the frame, everything else, the head and the rest of them alike, out of frame \u2014 framing casual rather than composed, slight wide-angle distortion'
+  }
+}
+
 /**
  * 景别那一层不可让渡的话(进 `frame` 槽,摄影指导碰不到)。
  *
  * **它对人与空镜是两套说法**:空镜里没有"整个人"这回事,写"the whole person"
  * 就是给"风景里长出一个人"递刀(与 scene 那条 pin 同一个理由)。
  *
+ * 人在画面里时,身上那一格(见 closeOnBody)还要多一句 ——
+ * "the rest of them is cropped out"只说了"其余出画",而这一档要的是
+ * **连头一起出画**:少了它,"身体某个部位的特写"与"脸上某个部位的特写"
+ * 在提示词里长得一样,模型会按后者补一张带脸、带上身的图。
+ *
  * 这一句与 camera 那句是**一对**:camera 说"怎么拍"(推多近、镜头在哪),
  * frame 说"这一张是哪种景别"。前者摄影指导可以整句换掉,后者不能 ——
  * 所以后者必须自己站得住,不能写成"同上"。
  */
-export function frameLine(self: boolean, frame: ChatFrame): string {
+export function frameLine(self: boolean, frame: ChatFrame, onBody = false): string {
   if (!self) {
     if (frame === 'close') return 'a tight close-up of one detail of the place, that detail filling the frame'
     if (frame === 'full') return 'the whole place taken in at once, in one wide view'
     return 'a mid-distance view of the place: neither pushed in on one detail nor pulled back to take in all of it'
   }
   if (frame === 'close') {
+    if (onBody) {
+      return 'a tight close-up of one part of the body: that one part fills the frame and the rest of them, head and all, is cropped out'
+    }
     return 'a tight close-up: one detail of the subject fills the frame and the rest of them is cropped out'
   }
   if (frame === 'full') {
@@ -690,7 +885,16 @@ export function planChatPhoto(
   /* 没有场景就没有要画的东西。这里先收口,免得拼出 "photographic, oval face, …"
      这种只剩外貌的提示词 —— 那会画出一张没有场景的人像,而调用方本该放弃这一张 */
   if (!text) {
-    return { prompt: '', useRefs: false, shot: 'scene', frame: 'medium', self, scene: '', layers: [] }
+    return {
+      prompt: '',
+      useRefs: false,
+      shot: 'scene',
+      frame: 'medium',
+      onBody: false,
+      self,
+      scene: '',
+      layers: []
+    }
   }
 
   /* 画面里没有人时视角只能是空镜:**由 self 定死,不由任何人推断** ——
@@ -709,6 +913,12 @@ export function planChatPhoto(
             'selfie'
   /* 景别跟着视角走:同一套四级判据,只是它的缺省值取决于视角(见 DEFAULT_FRAME) */
   const framed = resolveFrame(resolved, frame || '', text)
+  /* 这一格落在身上还是头上(2026-10-09,判据见 closeOnBody)。
+     **只在特写那一档才算** —— medium / full 里人整只都在画面里,"有没有脸"
+     是个没有意义的问题;空镜更不用说(画面里一个人都没有)。
+     这也是它不需要成为第三个协议位的原因:它由前两位(有没有人 + 离得多近)
+     加上场景串自己就定得下来,聊天模型一个字都不用多写 */
+  const onBody = self && framed === 'close' && closeOnBody(text)
   const tpl = TEMPLATES[resolved]
   /* 非缺省景别那几档对机位/景深/环境的覆盖。**缺省那一档没有条目** ——
      于是这一位不存在时,下面每一句都还是原来那一句(见 FRAMING) */
@@ -723,12 +933,18 @@ export function planChatPhoto(
      所以摄影指导那一层(见 photoDirector.applyDirector)结构上就改不到它们。
      场景原文进 layers 时带的是 `scene` 槽 —— 它永远原样保留,不改写 */
   const layers: ChatLayer[] = [
-    ['medium', tpl.medium],
+    /* 自拍那一档在"落在身上"时换掉媒介句 —— 要去掉的是 `front camera`
+       (理由见 BODY_DETAIL);其余两档这里一个字不动 */
+    ['medium', (onBody && BODY_DETAIL[resolved]?.medium) || tpl.medium],
     ['scene', text]
   ]
   /* 锚点句排在场景之后:它是"这个人是谁"的约束,不是这一张的内容。
-     只有它在画面里时才拼 —— 这正是把风景画成人的原因(见文件头) */
-  if (self && spec) layers.push(['anchor', spec])
+     只有它在画面里时才拼 —— 这正是把风景画成人的原因(见文件头)。
+     **落在身上那一档不拼**(2026-10-09):那几项全是头部特征,画面里没有脸时
+     它们一个字都落不到实处,却仍然在起作用 —— 模型要满足"这个人有这张脸、
+     这头头发",最省力的解法就是**把脸和上身一起画进来**,镜头于是被往回拉。
+     这一档的身份由下面 `part` 那句接管(说的是同一件事:这个人是谁) */
+  if (self && spec && !onBody) layers.push(['anchor', spec])
   /* 这一刻的心情**写在脸上**,紧跟在"这个人是谁"之后 ——
      锚点句立的是"是谁",这一层给的是"此刻什么样":先是谁,再是什么样子。
      两个护栏,都与上面那几条同源:
@@ -748,12 +964,16 @@ export function planChatPhoto(
   /* 这一档的硬约束垫在机位之前,而且是独立一层(见 ShotTemplate.pin):
      摄影指导换得掉 camera,换不掉这一层 ——
      空镜靠它挡住"风景里长出一个人",自拍靠它挡住"画成别人拿相机",
-     他拍靠它挡住"退回一张不知道谁拿手机的照片" */
-  if (tpl.pin) layers.push(['pin', tpl.pin])
+     他拍靠它挡住"退回一张不知道谁拿手机的照片"。
+     **"落在身上"那档自拍换一句**(2026-10-09):"相机在自己手上"这条事实
+     一个字不改,换掉的只是那句举例 `at arm's length or in a mirror` ——
+     它是给"举着手机拍脸"写的,照着它摆出来的就是那个怪姿势(见 BODY_DETAIL) */
+  const pin = (onBody && BODY_DETAIL[resolved]?.pin) || tpl.pin
+  if (pin) layers.push(['pin', pin])
   /* 景别也单独成层,理由与 pin 一样(见 FRAMING 的说明):摄影指导换机位是
      整句替换,而"这一张是特写"是**意图**,不是它可以优化的工艺 */
-  layers.push(['frame', frameLine(self, framed)])
-  layers.push(['camera', over?.camera ?? tpl.camera])
+  layers.push(['frame', frameLine(self, framed, onBody)])
+  layers.push(['camera', (onBody && BODY_DETAIL[resolved]?.camera) || over?.camera || tpl.camera])
   if (miss.lens) layers.push(['lens', over?.lens ?? tpl.lens])
   if (miss.light) {
     /* 场景没说光时,先看它说没说不好的天气:下雨/下雪是**已经给出的事实**,
@@ -790,6 +1010,7 @@ export function planChatPhoto(
     useRefs: self,
     shot: resolved,
     frame: framed,
+    onBody,
     self,
     scene: text,
     layers
@@ -811,7 +1032,16 @@ export function planChatBackdrop(scene: string, anchor = ''): ChatPhotoPlan {
   const text = inline(scene)
   /* 没有场景就没有"这一场"可画。调用方据此放弃这一张,而不是画一张没有场景的人像 */
   if (!text) {
-    return { prompt: '', useRefs: false, shot: 'scene', frame: 'full', self: true, scene: '', layers: [] }
+    return {
+      prompt: '',
+      useRefs: false,
+      shot: 'scene',
+      frame: 'full',
+      onBody: false,
+      self: true,
+      scene: '',
+      layers: []
+    }
   }
   const spec = inline(anchor)
   const layers: ChatLayer[] = [
@@ -864,6 +1094,8 @@ export function planChatBackdrop(scene: string, anchor = ''): ChatPhotoPlan {
     /* 背景图是"整个地方都在画面里"的那一档。它不走 resolveFrame ——
        它压根不是"角色发的那张照片",景别在这里没有可判的东西(见这个函数的说明) */
     frame: 'full',
+    /* 背景图与"落在身上那一格"无关:它是整个地方都在画面里的那一档 */
+    onBody: false,
     self: true,
     scene: text,
     layers
@@ -1002,10 +1234,36 @@ const FRAME_REF_ORDER: Partial<Record<ChatFrame, string[]>> = {
 }
 
 /**
- * @param frame 这一张离得多近。**只影响两端**(见 FRAME_REF_ORDER)——
- *              不传、或传中间那一档,顺序逐字等于从前
+ * "这一格落在身上"那档特写的参考图(2026-10-09,判据见 closeOnBody)。
+ *
+ * 上面 close 那条里的三条理由(全身像会拽远、身体部位要有依据、头一张不留给
+ * 网格)**在拍眼睛时都对**,可拍脚时全都反过来 —— 因为那三条默认"这一格里有脸":
+ *
+ * - `front` 是一张**头肩证件照**,把它放在第一位,就是让 i2i 最想保住的那张构图
+ *   变成"一张脸"。参考图是这条链上**最强的机位来源**(见上面那段),提示词里
+ *   刚写完"头出画",参考图却在说"这儿有一张脸" —— 模型挑参考图那一边。
+ *   所以它**降到最后**:它仍然贡献"还是这个人"(皮肤、体态),
+ *   但不再决定取景;
+ * - `body`(2×2 的 手 / 前臂 / 腿 / 脚)**提到最前** —— 拍脚时它就是唯一
+ *   说明"这个人的脚长什么样"的那张,也是这一档机身位句"这一格填满画面"的
+ *   内容依据。它是网格,与"头一张不留给 2×2"那条纪律冲突 —— 这一档里
+ *   **内容胜过版式**,代价(网格先验)由 negative 那三条兜着;
+ * - `closeups` 留在中间:皮肤、手那两格还有用。
+ *
+ * **`full` 依然出局**,理由与 close 那条一样(它把取景往回拽)。
+ * 张数仍是 3(与 close 一样),所以 `MAX_CHAR_REFS = 4` 那条上限不动。
  */
-export function shotViewOrder(shot: ChatShot, frame?: ChatFrame): string[] {
+const BODY_DETAIL_REF_ORDER = ['body', 'closeups', 'front']
+
+/**
+ * @param frame  这一张离得多近。**只影响两端**(见 FRAME_REF_ORDER)——
+ *               不传、或传中间那一档,顺序逐字等于从前
+ * @param onBody 这一格是不是落在身上(见 ChatPhotoPlan.onBody)。
+ *               为真时走 BODY_DETAIL_REF_ORDER —— 它只在 frame='close' 时才有意义,
+ *               所以另外那两个条件缺一个就落回原来那条路
+ */
+export function shotViewOrder(shot: ChatShot, frame?: ChatFrame, onBody = false): string[] {
+  if (onBody && frame === 'close') return BODY_DETAIL_REF_ORDER
   const byFrame = frame ? FRAME_REF_ORDER[frame] : undefined
   if (byFrame) return byFrame
   if (shot === 'third') return ['full', 'front', 'closeups']

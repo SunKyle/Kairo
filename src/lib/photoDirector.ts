@@ -186,8 +186,8 @@ export function directorTask(plan: ChatPhotoPlan): string {
     plan.scene,
     '',
     subject,
-    shotBrief(plan.shot),
-    frameBrief(plan.frame, plan.self),
+    shotBrief(plan.shot, plan.onBody),
+    frameBrief(plan.frame, plan.self, plan.onBody),
     directorBrief(plan),
     '',
     'Now write the four lines.'
@@ -199,9 +199,19 @@ export function directorTask(plan: ChatPhotoPlan): string {
  *  之所以还要说清"是谁拿的相机",是因为它要写 `Camera:` 那一行:
  *  同样是"拍一个人",自拍与他拍的机位句完全不是一回事。
  *  但**它不能改这件事** —— 那句 "do not switch" 就是这条不变量在提示词里的写法,
- *  而结构上的保证是 `applyDirector` 里它根本没有入口。 */
-export function shotBrief(shot: ChatShot): string {
+ *  而结构上的保证是 `applyDirector` 里它根本没有入口。
+ *
+ *  —— `onBody` 为什么也归这里管(2026-10-09)——
+ *
+ *  自拍那一句里的"臂展 / 对着镜子"是给"举着手机拍脸"写的。这一格落在身上时
+ *  (脚、手、腿),照着它摆出来的就是那个怪姿势 —— 而它是**告诉它的事实**,
+ *  所以得在事实这一层就换掉:相机仍在它自己手上,只是从"举到脸前"变成
+ *  "托在那一格上方"。它照样改不了这件事,改的只是"这个事实长什么样"。 */
+export function shotBrief(shot: ChatShot, onBody = false): string {
   if (shot === 'selfie') {
+    if (onBody) {
+      return 'The camera is in the character\u2019s own hand \u2014 their own phone, held down or out over that one part of them. Write the camera line so it matches that, and do not switch to a third-person view or pull back to their face.'
+    }
     return 'The camera is in the character\u2019s own hand \u2014 their own phone, at arm\u2019s length or in a mirror. Write the camera line so it matches that, and do not switch to a third-person view.'
   }
   if (shot === 'third') {
@@ -220,8 +230,15 @@ export function shotBrief(shot: ChatShot): string {
  *  结构上的保证与视角一样:景别进的是 `frame` 槽,而它不在 DIRECTOR_SLOTS 里
  *  —— **它一个字都改不了,只被告知**。
  *
- *  人与空镜分开写是有意的:空镜里没有"整个人"这回事(见 chatPhoto 的 frameLine)。 */
-export function frameBrief(frame: ChatFrame, self: boolean): string {
+ *  人与空镜分开写是有意的:空镜里没有"整个人"这回事(见 chatPhoto 的 frameLine)。
+ *
+ *  —— `onBody`:特写里那一格在脸上,还是在身上(2026-10-09)——
+ *
+ *  "a tight close-up: one detail of the subject fills the frame"对**拍眼睛**与
+ *  **拍脚**是同一句话,而模型对这两张的默认解法完全不同 —— 后者的默认是
+ *  "把这个人也画进来"。所以身上那一格要把"头也出画"单独说出来:
+ *  否则它写出来的机位句会与 frame 那一层打架,而它会赢(那是整句替换)。 */
+export function frameBrief(frame: ChatFrame, self: boolean, onBody = false): string {
   if (!self) {
     if (frame === 'close') {
       return 'This picture is a tight close-up of one detail of the place, and nobody is in it. Write the camera line so it stays that close, and do not pull back to show the whole place.'
@@ -232,6 +249,9 @@ export function frameBrief(frame: ChatFrame, self: boolean): string {
     return 'This picture is an ordinary mid-distance view of the place, and nobody is in it. Write the camera line to match that distance.'
   }
   if (frame === 'close') {
+    if (onBody) {
+      return 'This picture is a tight close-up of one part of the character\u2019s body \u2014 a hand, a foot, a shoulder, a patch of skin. That one part fills the frame; the head and the rest of the body are out of frame. Write the camera line so it stays that close, and do not pull back to show their face, their upper body, or the room.'
+    }
     return 'This picture is a tight close-up: one detail of the character fills the frame and the rest of them is cropped out. Write the camera line so it stays that close, and do not pull back to show their face, their body, or the room.'
   }
   if (frame === 'full') {

@@ -380,3 +380,50 @@ describe('applyDirector · "这一格属于这个人"它也改不了', () => {
     expect(after.prompt).toContain('female')
   })
 })
+
+/* ===== 这一格落在身上时要告诉它的第二件事(2026-10-09)=================
+ *  视角那两句话里的"臂展 / 对着镜子 / 脸和身体"都是给**拍脸**写的。
+ *  拍脚时照着写,出来的就是"上身也在画面里、姿势很怪"那张图 ——
+ *  而它写的 `Camera:` 是**整句替换**,所以事实这一层必须换掉。 */
+describe('shotBrief / frameBrief · 这一格落在身上', () => {
+  const FEET = 'my bare feet propped up on the desk'
+
+  it('头也出画要说出来 —— 不说它就会按"拍脸"那一套写机位句', () => {
+    const t = directorTask(planChatPhoto(FEET, true, ANCHOR, 'selfie', 'close'))
+    expect(t).toContain('out of frame')
+    expect(t).toContain('do not pull back to show their face')
+    /* 举着手机拍自己的脚 —— 这两句照着写就是那个怪姿势 */
+    expect(t).not.toContain('arm\u2019s length')
+    expect(t).not.toContain('at arm\u2019s length or in a mirror')
+    /* 而"相机在自己手上"这条事实照旧告诉它 */
+    expect(t).toContain('own hand')
+    expect(t).toContain('out over that one part')
+  })
+
+  it('**拍脸那一档一个字不变** —— 判据只在"特写 + 落在身上"那一格生效', () => {
+    const t = directorTask(planChatPhoto('my eyes', true, ANCHOR, 'selfie', 'close'))
+    expect(t).toContain('at arm\u2019s length or in a mirror')
+    expect(t).not.toContain('out over that one part')
+    expect(t).toContain('do not pull back to show their face, their body, or the room')
+  })
+
+  it('半身/全身那两档也不认(它们本来就不判"有没有脸")', () => {
+    const t = directorTask(planChatPhoto(FEET, true, ANCHOR, 'selfie', 'medium'))
+    expect(t).toContain('half-body')
+    expect(t).not.toContain('out over that one part')
+  })
+
+  it('两个 brief 直接调用时的口径', () => {
+    expect(shotBrief('selfie', true)).toContain('out over that one part')
+    expect(shotBrief('selfie', true)).toContain('do not switch to a third-person view')
+    /* 他拍与空镜不换 —— 别人的手机拍你的脚,天经地义 */
+    expect(shotBrief('third', true)).toBe(shotBrief('third'))
+    expect(shotBrief('scene', true)).toBe(shotBrief('scene'))
+
+    expect(frameBrief('close', true, true)).toContain('head and the rest of the body are out of frame')
+    expect(frameBrief('close', true)).toContain('cropped out')
+    expect(frameBrief('medium', true, true)).toBe(frameBrief('medium', true))
+    /* 空镜那一档与它无关 —— 画面里根本没有"身体"这回事 */
+    expect(frameBrief('close', false, true)).toContain('nobody is in it')
+  })
+})

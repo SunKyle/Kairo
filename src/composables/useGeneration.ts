@@ -285,12 +285,17 @@ export function useGeneration(deps: GenerationDeps) {
       let refList: string[] = []
       if (plan.useRefs) {
         try {
-          /* 顺序由 **shot + frame** 一起给:视角定"哪一类照片"(自拍以正面为主、
-             他拍以全身打头),景别定"离得多近"(特写把全身像摘掉、全身把全身像
-             提到最前,见 lib/chatPhoto 的 FRAME_REF_ORDER)。
-             **少传 frame 那一半就等于上一版** —— 参考图是这条链上最强的机位来源,
+          /* 顺序由 **shot + frame + onBody** 一起给:视角定"哪一类照片"
+             (自拍以正面为主、他拍以全身打头),景别定"离得多近"(特写把全身像
+             摘掉、全身把全身像提到最前),而"这一格落在身上"再改一次
+             (正面像从打头降到最末 —— 它是这张脸唯一的来源,却也是最想把
+             镜头拽回上身的那一张,见 lib/chatPhoto 的 BODY_DETAIL_REF_ORDER)。
+             **少传一项就等于上一版** —— 参考图是这条链上最强的机位来源,
              只改提示词那一侧是不够的(那正是"特写仍拿全身像当参考"的旧毛病) */
-          refList = await deps.charRefSrcsOf(charId, shotViewOrder(plan.shot, plan.frame))
+          refList = await deps.charRefSrcsOf(
+            charId,
+            shotViewOrder(plan.shot, plan.frame, plan.onBody)
+          )
         } catch {
           /* 参考图读不出来仍然照画(纯文生图),但要说明"这张可能不像它" */
           refList = []

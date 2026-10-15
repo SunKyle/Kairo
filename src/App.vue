@@ -1071,8 +1071,9 @@ async function exportChar(id: string) {
     notice.value = parts.length
       ? `Exported “${c.name}” with ${parts.join(' and ')}.`
       : `Exported “${c.name}” — it has no images or conversation yet, so the zip is settings only.`
-  } catch (e: any) {
-    notice.value = e?.message || 'Could not export this character'
+  } catch (e) {
+    notice.value =
+      e instanceof Error && e.message ? e.message : 'Could not export this character'
   }
 }
 
@@ -1096,8 +1097,8 @@ async function importCharFile(file: File) {
   let list: ImportedCharacter[]
   try {
     list = await readCharacterZip(file)
-  } catch (e: any) {
-    notice.value = e?.message || 'Could not read that file'
+  } catch (e) {
+    notice.value = e instanceof Error && e.message ? e.message : 'Could not read that file'
     return
   }
   if (!list.length) {
@@ -1294,11 +1295,13 @@ async function genCharView(charId: string, kind: CharacterViewKind): Promise<boo
         'Other views were built from the previous front view — regenerate them if the face changed.'
     }
     ok = true
-  } catch (e: any) {
+  } catch (e) {
     /* 用户主动停的不算失败 —— 按报错抛出来会让人以为出了故障 */
     notice.value = ctl.signal.aborted
       ? 'Generation stopped.'
-      : e?.message || 'Could not generate this view'
+      : e instanceof Error && e.message
+        ? e.message
+        : 'Could not generate this view'
   } finally {
     // 只有还是自己那一个才摘掉:同一张连跑时后一次已经换了新的手柄
     const key = charViewKey(charId, kind)

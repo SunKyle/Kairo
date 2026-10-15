@@ -47,6 +47,7 @@ UPSTREAM_PROXY=http://127.0.0.1:7890
 | `npm test` | 全量单测（vitest） |
 | `npm run test:watch` | 单测 watch 模式 |
 | `npm run check:server` | 服务端「用到的名字有没有出处」——`tsconfig` 只覆盖 `src/**`，`server/**` 平时不过任何类型检查 |
+| `npm run lint` | ESLint（只覆盖 `src/` 与 `server/`，理由见 `eslint.config.js`） |
 | `npm run smoke:api` | 每个端点打一遍，并断言**进程仍然活着** |
 | `npm run probe:chat-photo` | 对话出图端到端探针（假上游，不花钱、不联网） |
 | `npm run build` | `typecheck` + `vite build` |
@@ -109,16 +110,16 @@ UPSTREAM_PROXY=http://127.0.0.1:7890
 
 CI 在 `.github/workflows/ci.yml`，分两个 job，因为「对不对」和「有没有变慢变胖」红的意义完全不同：
 
-**`check`** —— `typecheck` → `check:server` → `test` → `build` → `probe:chat-photo` → 起后端 → `smoke:api`
+**`check`** —— `typecheck` → `check:server` → `lint` → `test` → `build` → `probe:chat-photo` → 起后端 → `smoke:api`
 
-其中 `check:server` 与 `smoke:api` 专门盯一类问题：模块化之后**一个漏掉的 import 不是「坏一条路」，而是整个 Node 进程退出**——那时所有端点都只回 `ECONNREFUSED`，从单个请求的返回码上根本看不出是这个原因。
+其中 `check:server` 与 `smoke:api` 专门盯一类问题：模块化之后**一个漏掉的 import 不是「坏一条路」，而是整个 Node 进程退出**——那时所有端点都只回 `ECONNREFUSED`，从单个请求的返回码上根本看不出是这个原因。`lint` 管的是这两步都看不到的另一类：声明了却没用的变量、永远走不到的赋值。
 
 **`perf`** —— 构建 → `vite preview` → `scripts/measure-history.mjs`，钉 DOM 节点数与铺完耗时，外加跨标签页 / 配置 / 画布 / 历史 / 角色 / 对话 / 参数面板的探针。
 
 本地跑等价检查：
 
 ```bash
-npm run typecheck && npm run check:server && npm test && npm run probe:chat-photo && npm run build
+npm run typecheck && npm run check:server && npm run lint && npm test && npm run probe:chat-photo && npm run build
 ```
 
 ## 目录结构

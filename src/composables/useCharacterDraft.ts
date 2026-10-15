@@ -243,9 +243,10 @@ async function draftWithAI() {
       return
     }
     applyDraft(d)
-  } catch (e: any) {
+  } catch (e) {
     if (seq !== draftSeq) return
-    draftError.value = e?.message || 'Could not draft the character'
+    draftError.value =
+      e instanceof Error && e.message ? e.message : 'Could not draft the character'
   } finally {
     // 只有还是自己那一次才复位:新一轮已经在跑时,别把它的 loading 关掉
     if (seq === draftSeq) drafting.value = false
@@ -304,9 +305,10 @@ async function draftFromImage() {
     }
     applyDraft(d)
     visionRead.value = true
-  } catch (e: any) {
+  } catch (e) {
     if (seq !== visionSeq) return
-    visionError.value = e?.message || 'Could not read this image'
+    visionError.value =
+      e instanceof Error && e.message ? e.message : 'Could not read this image'
   } finally {
     // 只有还是自己那一次才复位:重新挑过图时别把新一轮的 loading 关掉
     if (seq === visionSeq) visionBusy.value = false

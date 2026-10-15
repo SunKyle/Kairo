@@ -257,7 +257,7 @@ PRD 描述的是**面向日常使用的陪伴产品形态**：首页、继续对
 | T14 | README | **✅ 2026-10-15 完成**（新增 `README.md`）。CI **已存在且远强于「最小」**——`.github/workflows/ci.yml` 已有两个 job 七步：typecheck / `check:server`（服务端未定义名）/ 单测 / build / 对话出图端到端探针 / 全端点 smoke / 独立 perf job（DOM 节点数 + 跨标签页探针）。**CI 自首个提交 `9851215` 起就在**，本文原写「无 CI」是错的 | 无 |
 | T15 | 文档版本号对齐 | **✅ 2026-10-15 完成，但做法与原描述相反。** 原描述写「把文档里的 v13 改成 v14（5 处）」——**这个做法是错的**：`架构设计文档.md` 与 `Kairo项目梳理（现状）.md` 都**明确标注了快照日期**，它们写的 v13 对那天是对的，改成 v14 等于伪造快照（读者会以为快照那天就有 `memories` 表）。正确做法是在两份文档头部各加一条**「此后已漂移」补记**，说明 DB 13→14、测试 624/19→706/25、页面 4→5，并指出以代码为准 | 无 |
 | T16 | ~~`covers` 死表清理~~ | **✅ 已关闭（不执行）。** 死码已删（`api.ts` / `idb.ts` 只剩解释性注释）；表本身按「`DB_VERSION` 只加不减」**刻意保留**，`idb.ts` 顶部已写明理由。要真删得写 `deleteObjectStore` 迁移——为一张空表冒升级事务抛异常的风险（历史上真发生过）不划算 | — |
-| T17 | Lint 摸底 | 全仓**无 eslint 配置、无 eslint 依赖**，是从零引入而非「摸底」。要先定：`eslint` + `typescript-eslint` + `eslint-plugin-vue` 三件套，以及规则集用哪一档（默认 / 严格）。**这一步会一次性产生大量告警**，需要留出分批修的时间窗，不要和大改动同期做 | T14 之后 |
+| T17 | Lint 引入与摸底 | **✅ 2026-10-15 完成，且一步到位做成了硬门禁**（而非「先出报告」）。装了 `eslint` 10 + `typescript-eslint` 8 + `eslint-plugin-vue` 10 + `@eslint/js` + `globals`，加 `npm run lint`（只覆盖 `src/` + `server/`），并接进 CI 的 `check` job。**首轮 1915 个问题 → 修完剩 0**，明细见 §7.6 | — |
 
 **P2 核验记录（2026-10-15 实读）**
 
@@ -458,9 +458,45 @@ Wave 4 收尾           首页数据联通（若 Wave 0 已做壳）· PRD §7 �
 
 死码已删、表按只加不减刻意保留，理由写在 `idb.ts` 顶部。为一张空表写 `deleteObjectStore` 迁移、冒升级事务抛异常的风险，不划算。
 
-**T17 未动 —— 需要你先决策**
+**T17 见 §7.6 —— 本轮随后完成**
 
-全仓无 eslint 配置、无依赖，是从零引入而非「摸底」。要定两件事：① 规则集档位（默认 / 严格）；② 时间窗（首次引入会一次性产生大量告警，不宜与大改动同期）。
+原本判断它「需要先决策」，但实际不需要：T17 的描述本身就是「出报告再分批修」，而**产出报告就是任务**。做完发现 23 个问题全部可修，于是顺手修完、直接做成硬门禁。
+
+### 7.6 T17 Lint 引入（2026-10-15）
+
+首轮 **1915 个问题**看着吓人，拆开只有 **23 个是真问题**：
+
+| 类别 | 数量 | 处置 |
+| --- | --- | --- |
+| 纯排版（`html-indent` 870 / `max-attributes-per-line` 587 / `singleline-html-element-content-newline` 172 / `html-self-closing` 69 / `attributes-order` 24 / 其余 6） | 1728 | **不修** —— 改用 `flat/essential`，理由见下 |
+| `no-undef`（全是 `window` / `document` / `HTMLElement` / `ResizeObserver` 这类浏览器全局） | 160 | **配置漏洞，不是代码问题** —— 修配置 |
+| 真问题 | 23 | 全部修掉 |
+
+**决定一：Vue 用 `flat/essential` 而不是 `flat/recommended`。**
+1728 条排版意见会把 23 个真问题淹掉，而且没人会去修那 1728 条 —— 它们不是「欠账」，是「这个项目的模板本来就长这样」。essential 只管正确性（会抓 `v-if` 配 `v-for`、computed 里写副作用这类真错）。将来若要统一排版，正确做法是引入 prettier（它管排版、lint 管正确性），而不是把 lint 调成 recommended —— 那是让一个工具干两件事。
+
+**决定二：`no-undef` 对 `**/*.ts` 与 `**/*.vue` 关掉，对 `server/**/*.js` 保留。**
+前者的名字有没有出处由 tsc 判，ESLint 在没有类型信息时判不准（实测 160 条全是浏览器全局）。后者不过 tsc，那里它是真有用的 —— 与 `check:server` 是同一类信号，只是那条查 import 漏写、这条还查手滑拼错。
+
+**决定三：开 `varsIgnorePattern: '^_'`。**
+项目里真实存在两处「故意不用」的写法：`({ ref: _ref, sourceRef: _source, ...rest }) => rest`（摘掉 Blob 字段再序列化，见 `api.ts` 的 `saveCharacters`）与回调占位 `(_req, res)`。不开这条会把它们误判成未使用。
+
+**修掉的 23 个**
+
+| 规则 | 数 | 内容 |
+| --- | --- | --- |
+| `no-unused-vars` | 10 | `server/routes/` 三处共 8 个死 import（`htmlTitle` / `looksLikeHtml` / `dispatchAttempts` / `PROD_LIKE` / `UPSTREAM_TIMEOUT_MS`）；`api.ts` 两处是 `^_` 写法，改配置解决 |
+| `no-explicit-any` | 6 | 5 处 `catch (e: any) { e?.message \|\| … }` 改成项目既有的 `e instanceof Error && e.message ? … : …`（`App.vue` ×3、`useCharacterDraft.ts` ×2）；`env.d.ts` 那处是 Vue 官方 `.vue` 垫片，原样保留 + 就地禁用并写明理由 |
+| `no-useless-assignment` | 3 | `server/core.js` 的 `let addrs = []`、`api.ts` 的 `let list: Character[] = []`（两处初值都读不到 —— try 要么赋值要么抛/return）；`ApiSettingsPanel.vue` 的 `ok = false` 在 catch 里重复赋值 |
+| `no-empty-object-type` | 2 | 同 `env.d.ts` 垫片 |
+| `no-misleading-character-class` | 1 | `tts.js` 的 `tidyForSpeech`：把变体选择符 `U+FE0E/FE0F` 从字符类里挪到外面的分支 |
+| `prefer-const` | 1 | `api.ts` 的 `photo` 从未被重新赋值 |
+
+**顺带确认的一件事**：`tts.js` 那条正则告警既不是误报也不是真 bug —— 原写法**能工作**（`u` 标志下 `[]` 逐个匹配码点，emoji 与变体选择符都会被各自剥掉），但它把「剥 emoji」与「剥变体选择符」两件事压成了一个字符类，读的人不容易看出后者是刻意列的。挪出来后意图显式，匹配集合完全一致。
+
+**结果**：`npm run lint` 0 问题，已接进 CI 的 `check` job。因为它**从第一天就是 0**，将来红了的含义是「这次改动引入了新问题」，而不是「历史欠账又多了」。
+
+验证：`vue-tsc --noEmit` 零报错 · `check:server` 14 文件 0 处未定义名 · `npm run lint` 0 问题 · `vitest` 706 / 25 全过 · `vite build` 通过。
 
 ---
 
@@ -469,3 +505,4 @@ Wave 4 收尾           首页数据联通（若 Wave 0 已做壳）· PRD §7 �
 *§7.4 于 2026-10-14 追加（T4 收尾 + T13）；同日回源 Notion 核对 §8 记忆共享决策，改正了 T4 的原始措辞。*
 *§4 P2 表于 2026-10-15 实读校正（T14/T15/T16/T17 四行；其中 T16 关闭）。*
 *§7.5 于 2026-10-15 追加（T14 README / T15 快照漂移补记 / T16 关闭）；同日新增根目录 `README.md`。*
+*§7.6 于 2026-10-15 追加（T17 Lint 引入；1915 → 0，接进 CI 门禁）。P2 四项至此全部收口。*

@@ -80,7 +80,9 @@ export async function assertSafeTarget(target) {
     if (isBlockedAddress(host)) throw new Error(`Blocked: ${host} is a private or reserved address`)
     return url
   }
-  let addrs = []
+  /* 不给初值:下面 try 要么赋值要么抛,`= []` 那个初值一行都读不到。
+     写成初值会让人以为"解析失败时 addrs 是空数组、继续往下走" —— 而实际是抛 */
+  let addrs
   try {
     addrs = await dnsLookup(host, { all: true })
   } catch {

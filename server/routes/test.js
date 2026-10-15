@@ -1,15 +1,11 @@
 import {
   assertSafeTarget,
   CONNECT_HINTS,
-  dispatchAttempts,
   dispatcherFor,
-  htmlTitle,
   looksLikeHtml,
-  PROD_LIKE,
   rateLimit,
   safeFetch,
-  shortDetail,
-  UPSTREAM_TIMEOUT_MS
+  shortDetail
 } from '../core.js'
 
 export function registerTestRoutes(app) {

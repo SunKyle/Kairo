@@ -4,8 +4,6 @@ import {
   UPSTREAM_TIMEOUT_MS,
   assertSafeTarget,
   dispatchAttempts,
-  htmlTitle,
-  looksLikeHtml,
   rateLimit,
   safeFetch
 } from '../core.js'

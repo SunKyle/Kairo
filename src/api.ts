@@ -2029,7 +2029,8 @@ export function parseCharacterDraft(text: string): CharacterDraft {
 
 /** 读出角色列表,并把参考图从 IndexedDB 贴回条目上 */
 export async function loadCharacters(): Promise<Character[]> {
-  let list: Character[] = []
+  /* 不给初值:下面的 try 要么赋值要么 return,`= []` 那个初值一行都读不到 */
+  let list: Character[]
   try {
     const raw = localStorage.getItem(CHAR_KEY)
     if (!raw) return []
@@ -2343,7 +2344,7 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
      正文里的标签已经被它剪掉了,这里是唯一的来源 */
   let mood = ''
   /* 这一轮它想给你看的画面(服务端从正文末尾剪下来的场景描述) */
-  let photo = ''
+  const photo = ''
   /* 这张里有没有它本人。与 photo 同路一起送来 */
   let photoSelf = false
   /* 这一张谁拿的相机(见 ChatStreamResult.photoShot)。与 photo 同路 */

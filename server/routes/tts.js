@@ -3,8 +3,6 @@ import {
   assertSafeTarget,
   CONNECT_HINTS,
   dispatchAttempts,
-  htmlTitle,
-  looksLikeHtml,
   PROD_LIKE,
   rateLimit,
   safeFetch,
@@ -219,7 +217,11 @@ async function pipeTtsAudio(upstream, res, armIdle) {
 const CJK_NEIGHBOR = '\\u3400-\\u9fff\\u3040-\\u30ff'
 function tidyForSpeech(text) {
   return text
-    .replace(/[\u{1F000}-\u{1FAFF}\u{2190}-\u{2BFF}\u{FE0F}]/gu, '') // emoji 与各类符号
+    /* 变体选择符(U+FE0E / U+FE0F)放在字符类**外面**:
+       它是修饰前一个字的组合字符,塞进 [] 里会被判成"组合字符放进字符类,
+       可能不符合预期"(no-misleading-character-class)。
+       挪成外面的分支,匹配的集合一模一样,意图也更直白 */
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2190}-\u{2BFF}]|\u{FE0E}|\u{FE0F}/gu, '') // emoji 与各类符号
     .replace(/[*_~`|<>]+/g, '') // 强调、代码类装饰
     .replace(/\s*\n+\s*/g, ' ') // 换行按空格收 —— 不让它去决定停顿
     .replace(new RegExp(`([${CJK_NEIGHBOR}])\\s*,\\s*`, 'g'), '$1，')

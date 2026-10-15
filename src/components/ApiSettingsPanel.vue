@@ -260,7 +260,8 @@ function submit() {
     const u = new URL(url)
     ok = (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname
   } catch {
-    ok = false
+    /* 解析失败就是"不是 URL",ok 保持 false —— 初值在这一支才有意义。
+       原来在 catch 里又写一遍 `ok = false`,那次赋值没有任何地方读到 */
   }
   if (!ok) {
     urlError.value = 'This is not a valid http(s) URL — it must start with http:// or https://'

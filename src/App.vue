@@ -306,6 +306,10 @@ const page = ref<Page>(initialRoute.page)
 if (initialRoute.id && initialRoute.page === 'chat') {
   chatCharId.value = initialRoute.id
 }
+/* 历史页的「只看这个角色」(T12)。与 chatCharId 同一层:它是**地址栏里的一份状态**,
+   而不是历史页自己的 ref —— 那样才谈得上刷新不丢、能把链接发给人。
+   历史页收到它只当个普通 prop(它不认识路由) */
+const historyChar = ref(initialRoute.page === 'history' ? initialRoute.byChar || '' : '')
 
 /* 设置页内部的分区(PRD §11.12)。**不进地址栏** ——
    地址栏里放的是"哪一页、在看哪个对象"(见上面那段);设置页的分区是
@@ -330,22 +334,34 @@ function openChatConfig() {
    两处各自有现成的入口,这里只负责把 id 递过去:
    - 角色页 → 它暴露的 openDetail(与详情页那枚 Details、角色页卡片走同一条);
    - 历史页 → openPreview,先在已读到的历史里按 id 找那一条。
-   找不到就当没这回事(老书签 / 那条已被删),界面退回列表 —— 不弹错。 */
+   找不到就当没这回事(老书签 / 那条已被删),界面退回列表 —— 不弹错。
+
+   T12 又多了 `#/history/by/:charId`:那是"只看这个角色",不是"打开某一条",
+   所以走的是 historyChar 而不是 openPreview。**两者的值长得一样**(都是 uid()),
+   分得开全靠路由那一层把它们落在不同的字段上(见 lib/router) */
 const pendingHistoryId = ref('')
-function applyRouteId(p: Page, id: string | undefined) {
-  if (!id) return
-  if (p === 'chars') {
-    /* 等这一帧渲染完再叫:角色页那时才挂得上(与 openCharacterDetail 同一处理) */
-    nextTick(() => charPageRef.value?.openDetail(id))
-  } else if (p === 'history') {
+function applyRouteId(p: Page, id: string | undefined, byChar: string | undefined) {
+  if (p === 'history') {
+    /* 按角色筛这一支要先处理:它和 id 是互斥的,而地址栏里手改成 `#/history`
+       (两段都没有)时也要把筛子放掉 —— 否则界面停在筛过的样子,
+       而地址栏已经不代表它了(与 chatCharId 那条同一条理由) */
+    const next = byChar || ''
+    if (historyChar.value !== next) historyChar.value = next
+    if (!id) return
     const entry = history.value.find((h) => h.id === id)
     /* 刷新直接进深链时历史还没读完(它在启动后才 load)—— 记下来,读完再开 */
     if (entry) openPreview(entry)
     else pendingHistoryId.value = id
+    return
+  }
+  if (!id) return
+  if (p === 'chars') {
+    /* 等这一帧渲染完再叫:角色页那时才挂得上(与 openCharacterDetail 同一处理) */
+    nextTick(() => charPageRef.value?.openDetail(id))
   }
 }
 /* 首帧那一次:等挂载之后再用 id(角色页/历史页这时才在) */
-onMounted(() => applyRouteId(initialRoute.page, initialRoute.id))
+onMounted(() => applyRouteId(initialRoute.page, initialRoute.id, initialRoute.byChar))
 /* 深链等的是"历史读完了"这一件事:读到那一条就开,读完整份还没有就放弃 */
 watch(history, (list) => {
   const id = pendingHistoryId.value
@@ -359,10 +375,13 @@ watch(history, (list) => {
 /* 状态变了就写回地址栏。用 replaceState 而不是 pushState:这些变化
    (切页、换对话对象)每一步都进历史栈的话,用户按一次后退只退回上一个 tab,
    而返回上一页这个动作本身就被埋掉了 */
-watch([page, chatCharId], ([p, cid]) => {
+watch([page, chatCharId, historyChar], ([p, cid, hc]) => {
   if (typeof window === 'undefined') return
   const id = p === 'chat' && cid ? cid : undefined
-  const targetHash = formatHash(p, id)
+  /* 「只看某角色」只在历史页上有意义。不在那一页时**不写进地址栏** ——
+     留在里面会让别的页也顶着一个 `#/history/by/…` 式的尾巴,而它在那儿不指向任何东西 */
+  const byChar = p === 'history' && hc ? hc : undefined
+  const targetHash = formatHash(p, id, byChar)
   if (window.location.hash !== targetHash) {
     window.history.replaceState(null, '', targetHash)
   }
@@ -370,7 +389,7 @@ watch([page, chatCharId], ([p, cid]) => {
 
 /* 反方向:用户手改地址、或按了前进后退。**只认 hash**,不碰别处状态 */
 function onHashChange() {
-  const { page: p, id } = parseHash(window.location.hash)
+  const { page: p, id, byChar } = parseHash(window.location.hash)
   if (page.value !== p) page.value = p
   if (p === 'chat') {
     if (id) {
@@ -383,7 +402,7 @@ function onHashChange() {
     return
   }
   // 非对话页:把 id 交给对应的页(见 applyRouteId),不再丢掉
-  applyRouteId(p, id)
+  applyRouteId(p, id, byChar)
 }
 
 /* —— 沉浸式对话页 ——
@@ -610,7 +629,14 @@ const navView = computed({
     /* 认过再写:主区是几个 v-if 铺出来的,page 落到清单外的值上,整页就是空白
        (没有任何兜底分支)。控件那边给的都是清单里的值,但这是唯一的入口,
        在这里收一次窄,比给每个分支补 v-else 划算 */
-    if (NAV_ITEMS.some((i) => i.value === v)) page.value = v as Page
+    if (!NAV_ITEMS.some((i) => i.value === v)) return
+    /* 从导航点进历史页 = 要看**全部**历史 —— 上一轮那个「只看某角色」的筛子
+       不该跟着进来。它只是地址栏里的一份状态,而"点导航那一格"这个动作
+       说的就是"去那一页",不是"接着筛"。
+       放在这里而不是 watch(page) 里:用户在历史页上再点一次导航也该清掉,
+       而那一次 page 没有变,watch 根本不会响 */
+    if (v === 'history') historyChar.value = ''
+    page.value = v as Page
   }
 })
 /* 字标里跟在 Kairo 后面那一截:当前在哪一页。
@@ -1407,6 +1433,14 @@ async function dismissStaleViews(charId: string) {
   await saveCharacters(characters.value)
 }
 
+/** 角色详情页那行「N more in History」:去历史页,并只看这个角色(T12)。
+ *  跳页与筛选**一次做完** —— 分成两步(先跳页、下一帧再筛)的话,
+ *  中间那一帧会先把全部历史铺出来闪一下 */
+function openCharWorks(charId: string) {
+  historyChar.value = charId
+  page.value = 'history'
+}
+
 // 在创作区选中某个角色时顺手取一次;角色页那边由 @open 触发
 watch(activeCharId, (id) => loadCharViews(id))
 
@@ -1561,6 +1595,7 @@ function createAssignCollection(title: string) {
         @stop-view="stopCharView"
         @regenerate-stale="regenerateStaleViews"
         @dismiss-stale="dismissStaleViews"
+        @more-works="openCharWorks"
         @preview="openPreview"
         @chat="openChat"
       />
@@ -1624,11 +1659,13 @@ function createAssignCollection(title: string) {
         :items="history"
         :collections="collections"
         :char-names="charNames"
+        :char-filter="historyChar"
         @open="openPreview"
         @remove="removeHistoryEntry"
         @mark="toggleMark"
         @create-collection="createCollection"
         @delete-collection="deleteCollection"
+        @clear-char-filter="historyChar = ''"
       />
 
       <!-- 设置(PRD §5.6 / §11.12)。SettingsPage 只是骨架(左栏分区导航 + 插槽),

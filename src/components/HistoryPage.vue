@@ -10,6 +10,7 @@ import {
   PhMagnifyingGlass,
   PhStack,
   PhPlus,
+  PhUser,
   PhX
 } from '@phosphor-icons/vue'
 import { exportImages, imageSrc, thumbSrc, downloadImageUrl } from '../api'
@@ -38,6 +39,10 @@ const props = defineProps<{
   /* 角色 id → 名字。历史记录里存的是 id,而搜索要按"跟谁那张"找 ——
      反查表由主界面给(它手上才有角色目录),这一页不碰那份数据 */
   charNames: Record<string, string>
+  /* 「只看这个角色」(T12)。值来自地址栏的 `#/history/by/<charId>`,
+     由主界面递进来 —— 这一页不认识路由,与 items / collections 同一条分工。
+     空串 = 不筛 */
+  charFilter?: string
 }>()
 
 const emit = defineEmits<{
@@ -48,6 +53,9 @@ const emit = defineEmits<{
   (e: 'mark', entry: HistoryEntry, index: number): void
   (e: 'create-collection', title: string): void
   (e: 'delete-collection', id: string): void
+  /* 撤掉「只看这个角色」。**筛子存在主界面**(它才写地址栏),所以这里只发意图 ——
+     与 generate 那一类同一套分工,不在本页自己改 props */
+  (e: 'clear-char-filter'): void
 }>()
 
 // 摊平:一条记录三张图就是三块,每块都能点开预览,标记也各标各的
@@ -88,13 +96,23 @@ const shownTiles = computed(() =>
     (t) =>
       matchesHistoryQuery(t.entry, query.value, searchNames.value) &&
       (!onlyMarked.value || t.item.marked) &&
-      (!activeColl.value || t.entry.collectionId === activeColl.value)
+      (!activeColl.value || t.entry.collectionId === activeColl.value) &&
+      /* 按角色筛的是**记录的 characterId**,不是名字 —— 名字相同或提示词里
+         碰巧提到同一个名字的图都不该混进来(搜索那条路才会那样松) */
+      (!props.charFilter || t.entry.characterId === props.charFilter)
   )
 )
 // 命中多少条记录(与命中多少张图分开报:用户找的是"那张图",但记录是它的来处)
 const shownRecords = computed(() => new Set(shownTiles.value.map((t) => t.entry.id)).size)
 // 有没有一个筛子在起作用,决定空态文案与「查看全部」的去向
-const filterActive = computed(() => onlyMarked.value || !!activeColl.value || searching.value)
+const filterActive = computed(
+  () => onlyMarked.value || !!activeColl.value || searching.value || !!props.charFilter
+)
+/* 正在筛的那个角色叫什么。**查不到名字也照样筛** —— 角色可能刚被删掉,
+   而"筛着一个已经不存在的角色"不该表现成"筛子凭空消失了" */
+const charFilterName = computed(() =>
+  props.charFilter ? props.charNames[props.charFilter] || 'this character' : ''
+)
 
 /* —— 图片条 ——
    搜索结果里"命中的图"单独排一块。它**不是图墙的缩略复制**,两边答的不是
@@ -130,8 +148,9 @@ function showMore() {
   wallShown.value += WALL_PAGE
 }
 /* 换了筛子或关键词要把窗口收回去:否则从「Marked」切回「全部」时,
-   窗口还停在上一批的位置,看起来像"全部都在这儿了" */
-watch([onlyMarked, activeColl, query], () => {
+   窗口还停在上一批的位置,看起来像"全部都在这儿了"。
+   按角色筛也一样 —— 它换的是整份结果集 */
+watch([onlyMarked, activeColl, query, () => props.charFilter], () => {
   wallShown.value = WALL_PAGE
 })
 
@@ -170,14 +189,50 @@ function activeCollTitle() {
 }
 function clearFilter() {
   /* 空态那枚按钮按"最可能挡住结果的那一个"来:正在搜就先把关键词清掉
-     (搜窄了是更常见的原因),没搜才去动筛子 */
+     (搜窄了是更常见的原因),没搜才去动筛子。
+     角色筛排在作品集之前:它是从角色页点进来的,是这一屏里最显眼的那一个约束 */
   if (searching.value) {
     clearSearch()
+    return
+  }
+  if (props.charFilter) {
+    emit('clear-char-filter')
     return
   }
   onlyMarked.value = false
   activeColl.value = ''
 }
+
+/* —— 空态那两句话 ——
+   原来是模板里套了四层的三元表达式;加上「只看某角色」这一档之后就到五层了,
+   再往里塞一句没人敢改。改成两个 computed,与上面 filterActive 同一个口径 */
+const emptyTitle = computed(() => {
+  if (searching.value) return `Nothing matches “${query.value.trim()}”`
+  if (props.charFilter) return `No images for ${charFilterName.value} yet`
+  if (activeColl.value) {
+    return onlyMarked.value ? 'No marked images in this collection yet' : 'No images in this collection yet'
+  }
+  return onlyMarked.value ? 'No marked images yet' : 'No generations yet'
+})
+const emptySub = computed(() => {
+  if (searching.value) {
+    return 'Search looks at the prompt, the character and the collection name — not at what is inside the picture.'
+  }
+  if (props.charFilter) {
+    return 'Images this character made in chat, or that you made with it, land here automatically. Drop the filter to see everything.'
+  }
+  if (activeColl.value) {
+    return onlyMarked.value
+      ? 'Open a collection image in the preview and mark it — or drop the mark filter to see the whole collection.'
+      : 'Open any result in the preview and add it to this collection there.'
+  }
+  return onlyMarked.value
+    ? 'Hover an image and click the heart to mark it. Marks are per image, so images in a record stay independent.'
+    : 'Images your characters send in chat are saved here automatically, ready to revisit and download.'
+})
+/* 空态那枚按钮的去向。角色筛与作品集都归到「View all」——
+   清掉之后回到的是同一份全量,不必为它们各写一句 */
+const emptyAction = computed(() => (searching.value ? 'Clear search' : 'View all'))
 // 正在筛的那个集被删掉了,就回落回全量 —— 不然筛着一个不存在的集,页面卡在空态
 /* 两个来源分开列:写成 () => [a, b] 也能跑,但每次求值都返回一个新数组,
    读起来像在依赖"这个数组",而它其实什么都不是 */
@@ -428,6 +483,23 @@ function fmt(ts: number) {
             Marked <span class="chip-n">{{ markedCount }}</span>
           </button>
         </div>
+        <!-- 「只看这个角色」:从角色详情页那行「N more in History」点进来的。
+             **必须看得见、也必须能撤** —— 不然用户看到的是"历史少了一大半",
+             却找不到原因(这一枚就是那个原因)。它排在作品集之前:那是从别处
+             带进来的约束,比页内的浏览筛子更该先被注意到 -->
+        <div v-if="charFilter" class="char-filter" role="group" aria-label="Character">
+          <PhUser class="coll-ico" aria-hidden="true" />
+          <span class="coll-chip">
+            <span class="chip on">{{ charFilterName }}</span>
+            <button
+              class="chip-x"
+              aria-label="Show every character"
+              @click="emit('clear-char-filter')"
+            >
+              <PhX aria-hidden="true" />
+            </button>
+          </span>
+        </div>
         <!-- 作品集筛选:按集看整组作品。没建过集时不占位,免得空页面多一行噪声 -->
         <div v-if="collections.length || adding" class="coll-filter" role="group" aria-label="Collections">
           <PhStack class="coll-ico" aria-hidden="true" />
@@ -649,38 +721,15 @@ function fmt(ts: number) {
     <div v-else class="lib-none">
       <div class="none-ico" aria-hidden="true">
         <PhMagnifyingGlass v-if="searching" aria-hidden="true" />
+        <PhUser v-else-if="charFilter" aria-hidden="true" />
         <PhStack v-else-if="activeColl" aria-hidden="true" />
         <PhHeart v-else-if="onlyMarked" aria-hidden="true" />
         <PhClockCounterClockwise v-else aria-hidden="true" />
       </div>
-      <h2 class="none-title">
-        {{
-          searching
-            ? `Nothing matches “${query.trim()}”`
-            : activeColl
-              ? onlyMarked
-                ? 'No marked images in this collection yet'
-                : 'No images in this collection yet'
-              : onlyMarked
-                ? 'No marked images yet'
-                : 'No generations yet'
-        }}
-      </h2>
-      <p class="none-sub">
-        {{
-          searching
-            ? 'Search looks at the prompt, the character and the collection name — not at what is inside the picture.'
-            : activeColl
-              ? onlyMarked
-                ? 'Open a collection image in the preview and mark it — or drop the mark filter to see the whole collection.'
-                : 'Open any result in the preview and add it to this collection there.'
-              : onlyMarked
-                ? 'Hover an image and click the heart to mark it. Marks are per image, so images in a record stay independent.'
-                : 'Images your characters send in chat are saved here automatically, ready to revisit and download.'
-        }}
-      </p>
+      <h2 class="none-title">{{ emptyTitle }}</h2>
+      <p class="none-sub">{{ emptySub }}</p>
       <button v-if="filterActive" class="none-action" @click="clearFilter">
-        {{ searching ? 'Clear search' : 'View all' }}
+        {{ emptyAction }}
       </button>
     </div>
   </section>
@@ -994,8 +1043,11 @@ function fmt(ts: number) {
   gap: 6px;
 }
 /* 作品集筛选组:图标打头,中间每个集一颗可点胶囊 + 一颗删除小圆点;
-   空集也照样显示,好让用户回头删掉或往里面加图 */
-.coll-filter {
+   空集也照样显示,好让用户回头删掉或往里面加图。
+   「只看这个角色」那一组与它同形(图标 + 胶囊 + 小叉),所以共用这一条 ——
+   两组的差别只在语义,不在长相 */
+.coll-filter,
+.char-filter {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1076,6 +1128,16 @@ function fmt(ts: number) {
   background: var(--accent-soft);
   border-color: color-mix(in oklch, var(--accent) 45%, transparent);
   color: var(--accent-strong);
+}
+/* 「只看这个角色」那枚胶囊是**只读的**:它显示"现在筛着谁",撤销走旁边那颗小叉。
+   所以去掉手型光标与悬停反馈 —— 一个看起来能点、点下去什么也不发生的胶囊
+   比不写它更糟(作品集那几颗是能点的:点一下切换筛选) */
+.char-filter .chip {
+  cursor: default;
+}
+.char-filter .chip:hover {
+  color: var(--accent-strong);
+  border-color: color-mix(in oklch, var(--accent) 45%, transparent);
 }
 .chip-n {
   font-variant-numeric: tabular-nums;

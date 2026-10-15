@@ -187,6 +187,24 @@ export function useCharacterDetail(deps: CharacterDetailDeps) {
    *  没有它时那四格是"上锁"而不是"可点但会报错"(见 App 的 genCharView 守卫) */
   const hasFront = computed(() => !!viewOf(detailId.value, 'front'))
 
+  /** 设定图面板那句说明。**前半句是固定的用途,后半句随状态变** ——
+   *  PRD §5.3 明确要求这一区"明确这些图片用于定义角色形象",而原来那句只讲了
+   *  视图之间的推导关系(谁照谁生),从头到尾没说它们是干什么用的:
+   *  新用户看到一格格图,读到的只有"其余几张是照正脸生的"。
+   *
+   *  用途那句放在最前:它才是这一区的定义,推导关系是补充。
+   *  (与「作品区」的区分也在这里 —— 那边是"用它做出来的东西",
+   *   这边是"它长什么样",两者不能混成一个图库,见 PRD §11.6) */
+  const SHEET_PURPOSE = 'These images define how the character looks.'
+  const sheetNote = computed(() => {
+    if (!hasFront.value) {
+      return `${SHEET_PURPOSE} Start with the front view — the other four unlock once it exists.`
+    }
+    return detailChar.value?.sourceRef
+      ? `${SHEET_PURPOSE} Every other view is built from the front view and your reference image.`
+      : `${SHEET_PURPOSE} Every other view is built from the front view.`
+  })
+
   /** 这一格现在能不能点。除正脸外的空格子,要先有正脸 ——
    *  与其让它点下去弹一句"先生成正脸",不如直接锁住,把顺序摆在明面上 */
   function isLocked(kind: CharacterViewKind) {
@@ -323,6 +341,7 @@ export function useCharacterDetail(deps: CharacterDetailDeps) {
     worksRest,
     workSrc,
     hasFront,
+    sheetNote,
     isLocked,
     isMainView,
     busyKinds,

@@ -126,6 +126,9 @@ const emit = defineEmits<{
      (重跑要发请求、撤标记要落盘),这一页只发意图 —— 与 generate 同一套分工 */
   (e: 'regenerateStale', charId: string): void
   (e: 'dismissStale', charId: string): void
+  /* 「N more in History」:去历史页、并只看这个角色(T12)。
+     跳页要动地址栏,那是主界面的事 —— 这一页只报"看谁" */
+  (e: 'moreWorks', charId: string): void
 }>()
 
 // 导入用的隐藏 file input:页头那个按钮点它(见模板里的注释)
@@ -238,6 +241,7 @@ const {
   worksRest,
   workSrc,
   hasFront,
+  sheetNote,
   isLocked,
   isMainView,
   isBusy,
@@ -1421,15 +1425,7 @@ function originBadge(key: SpecFieldKey): string {
             :label="`Generating ${busyLabel}`"
             :font-size="12"
           />
-          <span v-else class="panel-note">
-            {{
-              hasFront
-                ? detailChar.sourceRef
-                  ? 'Every other view is built from the front view and your reference image.'
-                  : 'Every other view is built from the front view.'
-                : 'Start with the front view — the other four unlock once it exists.'
-            }}
-          </span>
+          <span v-else class="panel-note">{{ sheetNote }}</span>
         </div>
 
         <!-- 一致性提醒:正脸被重跑过、或设定被改过之后,下面这几张图还是照旧的
@@ -1539,9 +1535,17 @@ function originBadge(key: SpecFieldKey): string {
             </span>
           </button>
         </div>
-        <!-- 只摆最近这一批,其余的指个去处。不做"展开全部":
-             这一页是看角色的,翻作品该去历史页 -->
-        <p v-if="worksRest" class="works-more">{{ worksRest }} more in History.</p>
+        <!-- 只摆最近这一批,其余的**指个去处**。不做"展开全部":
+             这一页是看角色的,翻作品该去历史页。
+             (T12 前它是一句点不动的死文案 —— 指着一个去不了的地方。) -->
+        <button
+          v-if="worksRest"
+          class="works-more"
+          @click="emit('moreWorks', detailChar.id)"
+        >
+          {{ worksRest }} more in History
+          <PhArrowRight aria-hidden="true" />
+        </button>
       </section>
 
       <!-- 相处偏好(PRD §3.2-D)。排在资料表之前:它是"你要怎么跟它相处",
@@ -3438,10 +3442,32 @@ textarea.wz-idea {
 .work:hover img {
   transform: scale(1.06);
 }
+/* 「还有 N 张,去历史页看」。写成按钮而不是一句文案 —— T12 之前它是个 <p>,
+   指着一个去不了的地方。样式取"轻链接"那一档:它不是这一页的主动作
+   (主动作是 hero 里那颗),所以不上实心,只在悬停时给出可点感 */
 .works-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-top: var(--sp-3);
+  padding: 0;
+  border: 0;
+  background: none;
   font-size: var(--fs-xs);
   color: var(--text-3);
+  cursor: pointer;
+  transition: color var(--dur) var(--ease);
+}
+.works-more:hover {
+  color: var(--text);
+}
+.works-more svg {
+  width: 13px;
+  height: 13px;
+  transition: transform var(--dur) var(--ease);
+}
+.works-more:hover svg {
+  transform: translateX(2px);
 }
 
 /* —— 规格表 —— */

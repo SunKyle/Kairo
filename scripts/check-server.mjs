@@ -24,12 +24,25 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const TSC = path.join(root, 'node_modules', 'typescript', 'bin', 'tsc')
 
-/* 只挑真正参与运行的模块:index 是入口,core 是共享层,routes/* 是各业务域 */
-const routes = readdirSync(path.join(root, 'server', 'routes'))
+/* 挑**所有参与运行的**模块:index 是入口,routes/* 是各业务域,
+   server/*.js 其余的是共享层(core / chatTags / chatTime / chatMood /
+   chatGuidance / chatMemory / enhancePrompts)。
+
+   为什么连顶层那批一起收:它们从前被漏在外面,而它们**恰恰是最容易漏 import
+   的一类** —— 拆一个纯函数模块出来时,新模块自己的 import 写没写全,没有任何
+   一条路看得见(tsconfig 不管 server/**,node --check 只查语法),
+   于是漏掉的那个名字只在**请求打到那一行**时让整个 Node 进程退出。
+   2026-10-15 加 chatGuidance / chatMemory 时发现的:两个新模块当时都在检查之外。 */
+const serverRoot = path.join(root, 'server')
+const topLevel = readdirSync(serverRoot)
+  .filter((f) => f.endsWith('.js'))
+  .sort()
+  .map((f) => path.join('server', f))
+const routes = readdirSync(path.join(serverRoot, 'routes'))
   .filter((f) => f.endsWith('.js'))
   .sort()
   .map((f) => path.join('server', 'routes', f))
-const files = ['server/index.js', 'server/core.js', ...routes]
+const files = [...topLevel, ...routes]
 
 const res = spawnSync(
   process.execPath,

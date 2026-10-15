@@ -265,6 +265,37 @@ export interface CharacterPersona {
   samples: string
 }
 
+/* 设定里某一项是谁定的。PRD §3.2-A / §11.3 要「尽可能区分用户明确提供的信息、
+   AI 补全的信息和仍待确认的信息」,而 §4.2 的反目标里那条
+   「角色将 AI 推测当成用户明确说过的事实」就是这件事的另一面。
+
+   与 MemoryOrigin 是**同一条理由的两次落地**,但取值多一个:记忆那边只有
+   user / ai 两态(一条记忆要么是用户说的、要么是推断的),设定这边多一个
+   pending —— 因为"这一栏该写什么"常常是模型为了把必填项填满而编的,
+   那种值既不是用户说的,也谈不上"补得有依据",它需要用户自己看一眼。
+
+   - user    用户给的:描述里说过的,或参考图里直接看得见的
+   - ai      模型从用户给的东西里补出来的
+   - pending 模型填了值但没有任何依据 —— 界面上标出来让用户核对
+
+   标记由起稿/识图的模型写在值里(见 server/charSpec.js 的 ORIGIN_TAGS),
+   解析时摘掉并落到下面那张表上(src/api.ts 的 parseCharacterDraft) */
+export type FieldOrigin = 'user' | 'ai' | 'pending'
+
+/* 这张表的键是长相与人格两套字段的并集。两套的键不重合(有单测兜住),
+   所以合成一张表不会打架 —— 而界面上那枚来源徽标本来就该把两套一起算:
+   人格那六栏同样是起稿填的,只标长相等于把最容易被编的那一半漏掉 */
+export type SpecFieldKey = keyof CharacterFields | keyof CharacterPersona
+
+/** 键 → 来源。**只记有值的那些项** —— 空着的一栏没有来源可言
+ *  (没写就是没写,不是"谁写的"),所以它是 Partial 的。
+ *
+ *  读法只有一个:没有这一项 = 这份设定是用户自己写下的(手填的,或者他
+ *  校对之后保存下来的)。这与加它之前那套 aiFilled 标记一直以来的口径一致 ——
+ *  **只标模型写的,不标用户写的**。所以老角色(整份表都没有)读出来全是 user,
+ *  不必为它们补一次数据迁移。 */
+export type FieldOriginMap = Partial<Record<SpecFieldKey, FieldOrigin>>
+
 /* 一条对话消息。存在 IndexedDB,按 charId 索引 ——
    一期一个角色一条连续对话,所以没有 sessionId;将来要开多段会话时再加这个字段 */
 export interface ChatMessage {
@@ -399,6 +430,8 @@ export interface CharacterDraft {
   name: string
   fields: CharacterFields
   persona: CharacterPersona
+  /* 每一项是谁定的(见 FieldOriginMap)。空着的栏不进这张表 */
+  origin: FieldOriginMap
 }
 
 /* 设定图里的一张视图。kind 是索引里的键(存进 IndexedDB 时按它定位),
@@ -479,6 +512,11 @@ export interface Character {
      可选是为了兼容加它之前存下来的角色,读入时补空串(coerceCharPersona),
      所以读的地方可以当它一定存在 */
   persona?: CharacterPersona
+  /* 设定里每一项是谁定的(见 FieldOriginMap)。它管的是 fields 与 persona
+     **两张表**上的键 —— 那两处都是"这份设定是什么",来源自然也是同一件事。
+     可选是为了兼容加它之前存下来的角色:整份表都没有,读出来一律当
+     "用户自己写的"(与 aiFilled 一直以来的口径一致,见 FieldOriginMap) */
+  origin?: FieldOriginMap
   /* 朗读用的嗓音(见 CharacterVoice)。可选是为了兼容加它之前存下来的角色 ——
      没有就是"按系统音色挑一个"(browser 档的缺省行为) */
   voice?: CharacterVoice
@@ -558,6 +596,9 @@ export interface ImportedCharacter {
   fields?: CharacterFields
   desc?: string
   persona?: CharacterPersona
+  /* 设定里每一项是谁定的。**跟着包走** —— 包里的设定是**对方**那次起稿填的,
+     不带上它的话,接收方看到的每一栏都会被当成"你自己写的",而那正是不该做的事 */
+  origin?: FieldOriginMap
   ref?: Blob
   sourceRef?: Blob
   refKind?: CharacterViewKind

@@ -36,14 +36,12 @@ import ViewCell from './ViewCell.vue'
 import type {
   ApiConfig,
   Character,
-  CharacterFields,
-  CharacterPersona,
   CharacterStat,
   CharacterView,
   CharacterViewKind,
-  CharacterVoice,
   CharacterWork,
-  HistoryEntry
+  HistoryEntry,
+  SpecFieldKey
 } from '../types'
 import { vGrow } from '../lib/grow'
 /* 作品墙上那枚"这是对话里来的"角标要说的话(见 lib/chatWork)。
@@ -54,11 +52,13 @@ import { layerOnEscape, trapTab } from '../lib/ui'
 import { speakingId, stopSpeaking } from '../lib/speech'
 import { VOICE_SOURCES, useCharacterVoice } from '../composables/useCharacterVoice'
 import { emptyCharacterDraft, useCharacterDraft } from '../composables/useCharacterDraft'
+import type { CharacterSavePayload } from '../composables/useCharacterDraft'
 import { useCharacterDetail } from '../composables/useCharacterDetail'
 import { STEPS, useCharacterWizard } from '../composables/useCharacterWizard'
 import { useCharacterList } from '../composables/useCharacterList'
 import {
   FORM_GROUPS,
+  ORIGIN_BADGES,
   PERSONA_FIELDS,
   STYLE_FIELD,
   genderOptionsFor,
@@ -98,16 +98,11 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  /* 带 id 是改这一条,不带是新建 —— 落盘由主界面按这个分支走 */
-  (e: 'save', payload: {
-    id?: string
-    name: string
-    fields: CharacterFields
-    persona: CharacterPersona
-    voice: CharacterVoice
-    desc: string
-    refData: string
-  }): void
+  /* 带 id 是改这一条,不带是新建 —— 落盘由主界面按这个分支走。
+     载荷的形状取自 useCharacterDraft 那一份(它就是**产出**这份载荷的地方),
+     不在这里再抄一遍:抄一份的下场是加一栏时漏掉某一份,而漏掉的那一份
+     不会报错 —— 只是那一栏静静地存不下去(origin 就是这么被发现的) */
+  (e: 'save', payload: CharacterSavePayload): void
   (e: 'remove', id: string): void
   // 复制:目录与图都由主界面拷一份(这一页不碰字节)
   (e: 'duplicate', id: string): void
@@ -181,8 +176,8 @@ const {
   drafting,
   draftError,
   cancelDraft,
-  aiFilled,
-  hasAiFilled,
+  origin,
+  hasOriginMarks,
   hasSpec,
   markEdited,
   resetDraft,
@@ -439,6 +434,15 @@ function pickStyle(v: string) {
   markEdited('style')
 }
 
+/* 这一栏该挂哪枚来源徽标(见 lib/characterSpec 的 ORIGIN_BADGES)。
+ *
+ *  **返回空串 = 不挂牌**,而那是有含义的一态:"这一栏来自你"。
+ *  三态里只有两态挂牌,所以这里不能把"查不到"当成出错 ——
+ *  它正是最常见的那一种(用户手填的每一栏)。 */
+function originBadge(key: SpecFieldKey): string {
+  return ORIGIN_BADGES[origin.value[key] || 'user'] || ''
+}
+
 
 </script>
 
@@ -596,11 +600,15 @@ function pickStyle(v: string) {
                 <div class="wz-draft-foot">
                   <p v-if="draftError" class="wz-err" role="alert">{{ draftError }}</p>
                   <p v-else-if="drafting" class="wz-draft-hint">Filling in the spec…</p>
-                  <!-- 有标出来的栏时换成图例。图例放在这里而不是各组的说明里:
-                       标记是这一块产生的,而且两组里都可能有 —— 挂在哪一组都是偏的 -->
-                  <p v-else-if="hasAiFilled" class="wz-draft-hint">
-                    <span class="wz-ai" aria-hidden="true">AI</span>
-                    written by the model — the mark clears once you edit that line
+                  <!-- 有徽标的栏时换成图例。图例放在这里而不是各组的说明里:
+                       徽标是这一块产生的,而且两组里都可能有 —— 挂在哪一组都是偏的。
+                       **三态都要说出来**,包括"没有牌"那一种:不说的话,
+                       用户会以为来源标记是漏挂的,而不是"这一栏来自我" -->
+                  <p v-else-if="hasOriginMarks" class="wz-draft-hint">
+                    <span class="src-badge" aria-hidden="true">{{ ORIGIN_BADGES.ai }}</span>
+                    the model wrote this line ·
+                    <span class="src-badge" aria-hidden="true">{{ ORIGIN_BADGES.pending }}</span>
+                    it had no basis for it · no badge means it came from you
                   </p>
                   <button
                     class="ed-btn primary"
@@ -670,9 +678,9 @@ function pickStyle(v: string) {
                     <span class="wz-label">
                       Gender
                       <span class="wz-mark" aria-hidden="true">*</span>
-                      <template v-if="aiFilled.gender">
-                        <span class="wz-ai" aria-hidden="true">AI</span>
-                        <span class="sr-only">drafted by the model</span>
+                      <template v-if="originBadge('gender')">
+                        <span class="src-badge" aria-hidden="true">{{ originBadge('gender') }}</span>
+                        <span class="sr-only">this line came from the model</span>
                       </template>
                     </span>
                     <span class="wz-select" :class="{ 'is-empty': !draft.fields.gender.trim() }">
@@ -693,9 +701,9 @@ function pickStyle(v: string) {
                   <label class="wz-field">
                     <span class="wz-label">
                       {{ STYLE_FIELD.label }}
-                      <template v-if="aiFilled.style">
-                        <span class="wz-ai" aria-hidden="true">AI</span>
-                        <span class="sr-only">drafted by the model</span>
+                      <template v-if="originBadge('style')">
+                        <span class="src-badge" aria-hidden="true">{{ originBadge('style') }}</span>
+                        <span class="sr-only">this line came from the model</span>
                       </template>
                     </span>
                     <span class="wz-select">
@@ -732,9 +740,9 @@ function pickStyle(v: string) {
                          所以"可选"不必再写一遍(见 .wz-mark 那条注释) -->
                     <span class="wz-label">
                       {{ f.label }}
-                      <template v-if="aiFilled[f.key]">
-                        <span class="wz-ai" aria-hidden="true">AI</span>
-                        <span class="sr-only">drafted by the model</span>
+                      <template v-if="originBadge(f.key)">
+                        <span class="src-badge" aria-hidden="true">{{ originBadge(f.key) }}</span>
+                        <span class="sr-only">this line came from the model</span>
                       </template>
                     </span>
                     <textarea
@@ -782,10 +790,10 @@ function pickStyle(v: string) {
                   <label v-for="f in PERSONA_FIELDS" :key="f.key" class="wz-field">
                     <span class="wz-label">
                       {{ f.label }}
-                      <!-- 起稿也会填这四栏,所以这里的标记规矩与前两组一致 -->
-                      <template v-if="aiFilled[f.key]">
-                        <span class="wz-ai" aria-hidden="true">AI</span>
-                        <span class="sr-only">drafted by the model</span>
+                      <!-- 起稿也会填这六栏,所以这里的徽标规矩与前两组一致 -->
+                      <template v-if="originBadge(f.key)">
+                        <span class="src-badge" aria-hidden="true">{{ originBadge(f.key) }}</span>
+                        <span class="sr-only">this line came from the model</span>
                       </template>
                     </span>
                     <textarea
@@ -1486,7 +1494,15 @@ function pickStyle(v: string) {
         </div>
         <dl class="spec">
           <template v-for="r in specRows(detailChar)" :key="r.label">
-            <dt class="spec-k">{{ r.label }}</dt>
+            <dt class="spec-k">
+              {{ r.label }}
+              <!-- 来源徽标与向导那边同一套(见 .src-badge)。
+                   没有牌 = 这一栏来自用户 —— 详情页上那是最常见的一态,
+                   所以牌只在"模型写的"那两态出现 -->
+              <span v-if="ORIGIN_BADGES[r.origin]" class="src-badge" aria-hidden="true">{{
+                ORIGIN_BADGES[r.origin]
+              }}</span>
+            </dt>
             <dd class="spec-v" :class="{ dim: !r.value }">{{ r.value || '—' }}</dd>
           </template>
         </dl>
@@ -1503,7 +1519,12 @@ function pickStyle(v: string) {
         </div>
         <dl class="spec">
           <template v-for="r in personaRows(detailChar)" :key="r.label">
-            <dt class="spec-k">{{ r.label }}</dt>
+            <dt class="spec-k">
+              {{ r.label }}
+              <span v-if="ORIGIN_BADGES[r.origin]" class="src-badge" aria-hidden="true">{{
+                ORIGIN_BADGES[r.origin]
+              }}</span>
+            </dt>
             <dd class="spec-v" :class="{ dim: !r.value }">{{ r.value || '—' }}</dd>
           </template>
         </dl>
@@ -2627,7 +2648,7 @@ textarea.wz-idea {
    标签再重一点,一行里就会变成两段同样有分量的字,谁也不让谁。
 
    这一行里还会跟两枚小东西:必填的星号(.wz-mark)、
-   "模型填过"的小牌(.wz-ai)—— 都是字段名的一部分,跟它同一行 */
+   "模型填过"的小牌(.src-badge)—— 都是字段名的一部分,跟它同一行 */
 .wz-label {
   flex: none;
   width: 88px;
@@ -2645,13 +2666,22 @@ textarea.wz-idea {
   color: var(--text-2);
   transition: color var(--dur) var(--ease);
 }
-/* 起稿填过、还没动过的标记。原来是一枚 5px 的小黑点 ——
-   它没有说自己是什么,得靠起稿块里那行图例去解释("the dot clears once you
-   edit that line"),而图例在卡片最上面,读到第十行时早忘掉了。
-   换成两三个字母的小牌:同名同姓的记号在别处也这么写,不必先读一遍说明书。
-   压得很轻(10px / text-2 / 淡墨底)是因为它标的是**还没校对过**这件事,
-   不是"这一栏很重要";用户改一下那一栏它就消失(见 markEdited) */
-.wz-ai {
+/* 来源徽标(PRD §3.2-A「你提供的 / AI 补全 / 待确认」)。
+ *
+ *  原来是一枚 5px 的小黑点 —— 它没有说自己是什么,得靠起稿块里那行图例去解释
+ *  ("the dot clears once you edit that line"),而图例在卡片最上面,
+ *  读到第十行时早忘掉了。换成两三个字母的小牌:同名同姓的记号在别处也这么写,
+ *  不必先读一遍说明书。
+ *
+ *  **向导与详情页共用这一个类**(所以名字里没有 wz- 前缀):
+ *  同一件事在"校对的那一刻"和"回看这个角色"两处都该长得一样 ——
+ *  两套样式的话,同一个意思会在两处读出两种分量。
+ *
+ *  压得很轻(10px / text-2 / 淡墨底)是因为它标的是**还没落定的东西**,
+ *  不是"这一栏很重要"。三态里只有 ai / pending 挂牌,没有牌 = 这一栏来自用户
+ *  (见 lib/characterSpec 的 ORIGIN_BADGES);用户改一下那一栏牌就没了
+ *  (见 markEdited)。 */
+.src-badge {
   flex: none;
   padding: 1px 4px;
   border-radius: 4px;

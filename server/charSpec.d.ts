@@ -15,19 +15,28 @@ export interface CharSpecLine {
   desc: string | { character: string; vision: string }
   /** 必须有个值(进 "… must always have a value" 那句枚举) */
   always?: boolean
+  /** 只对识图那一档解除必填(目前只有 Identity:一张照片里没有职业) */
+  visionOptional?: boolean
   /** 只喂设定图、不进普通创作提示词 */
   sheetOnly?: boolean
   /** 模型只能从这几个词里挑一个。没有 = 自由文本 */
   enumValues?: string[]
 }
 
+/** 值的来源标记。三态与 PRD「你提供的 / AI 补全 / 待确认」一一对应 */
+export declare const ORIGIN_TAGS: string[]
+/** 行清单里那个占位槽 `[user|ai|pending]`。解析侧也要认它(模型会原样抄回来) */
+export declare const ORIGIN_SLOT: string
+
 export declare const CHAR_SPEC_LINES: CharSpecLine[]
 export declare const CHAR_SPEC_LINE_COUNT: number
 /** 某一组按顺序的键 */
 export declare function charSpecKeys(group: CharSpecGroup): string[]
-/** 提示词里那一整块行清单,按档位取 desc */
+/** 提示词里那一整块行清单,按档位取 desc。每行前面带那个来源标记槽 */
 export declare function charSpecLinesText(mode: 'character' | 'vision'): string
-/** "Name, Style, … and Outfit" —— always 那几行拼出来的枚举 */
-export declare function charSpecAlwaysSentence(): string
+/** "Name, Style, … and Outfit" —— always 那几行拼出来的枚举。**分档**:识图档少 Identity */
+export declare function charSpecAlwaysSentence(mode: 'character' | 'vision'): string
+/** 交代那三个来源标记的那条规则。两档的判据不同,所以分档 */
+export declare function charSpecOriginRule(mode: 'character' | 'vision'): string
 /** 某个键的枚举候选。空数组 = 自由文本 */
 export declare function charSpecEnumOf(key: string): string[]

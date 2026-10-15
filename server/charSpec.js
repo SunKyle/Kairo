@@ -19,6 +19,30 @@
  *  所以**只能是纯数据与纯函数**:不碰 fs、不碰 process、不碰任何 Node API。
  *  -------------------------------------------------------------------- */
 
+/* ===== 来源标记 ======================================================
+ *  PRD §3.2-A / §11.3 要求「尽可能区分用户明确提供的信息、AI 补全的信息和
+ *  仍待确认的信息」—— 原话还跟着一句"避免把推断伪装成事实"。
+ *
+ *  **这三态客户端推不出来**。只有模型自己知道某一行是用户说过的、还是它
+ *  为了把必填项填满而编的;事后再去猜(比如"这个词在描述里出现过没有")
+ *  只会猜错,而猜错的代价正是那条反目标 —— 把推断说成事实。
+ *  所以标记由**模型写在值里**,解析侧摘掉(见 src/api.ts 的 parseCharacterDraft)。
+ *
+ *  标记写在**值**里而不是标签里:标签是解析器的查表键(去掉非字母后比对),
+ *  往里插一个标记会让整行认不出来 —— 而"认不出来"的表现是那个字段静静地空着。
+ *
+ *  三个词与 PRD 那三个标签一一对应(前端枚举见 src/types.ts 的 FieldOrigin):
+ *    user    用户明确提供的(描述里说过的 / 参考图里直接看得见的)
+ *    ai      模型从用户给的东西里补出来的
+ *    pending 模型填了值,但没有任何依据 —— 这一行要用户自己核对
+ */
+export const ORIGIN_TAGS = ['user', 'ai', 'pending']
+
+/* 行清单里那个占位槽。模型看到的是 `Identity: [user|ai|pending] <...>` ——
+   把"这里要写一个标记"放进它照抄的那一块,比另写一条规则更容易被照做。
+   解析侧也要认这个字面量:模型偶尔会把它原样抄回来(见 src/api.ts) */
+export const ORIGIN_SLOT = `[${ORIGIN_TAGS.join('|')}]`
+
 /**
  * 一行的定义。
  *
@@ -28,6 +52,7 @@
  *             **改它等于改协议** —— 前端是按去掉非字母后的标签查表的。
  * - `desc`    `<...>` 里那句"这一栏该写什么"。两种起稿各要一句话时给对象
  * - `always`  必须有个值（进 "… must always have a value" 那句枚举）
+ * - `visionOptional` 只对识图那一档解除必填（见 identity 那一行的说明）
  * - `sheetOnly` 只喂设定图、不进普通创作提示词（见 src/api.ts 的 characterFaceDesc）
  * - `enumValues` 模型只能从这几个词里挑一个（与 gender 同一条理由：别让它自己编）
  */
@@ -71,7 +96,23 @@ export const CHAR_SPEC_LINES = [
     key: 'identity',
     label: 'Identity',
     always: true,
-    desc: 'who this character is — role, trade and setting; never restate the gender or the style here'
+    /* **识图这一档解除必填**(2026-10-15)。PRD §3.2-A 原话:
+       "参考图片主要用于分析可见的外观特征,不应仅凭图片擅自推断角色的身份、
+       职业、人格或人生经历;这些信息应由用户提供,或保持未确定"。
+
+       而在这之前它恰恰是被**逼着**编的:vision 那句 "must always have a value"
+       把 Identity 也算进必答,于是"照片里看不出职业"的唯一出路就是按穿着猜一个。
+       一张照片里没有职业,只有"穿着像干什么的" —— 那正是这条规则不许走的那一步。
+       所以它在识图档里不再是必答,提示词明说留空;而"always 那句枚举"分档算
+       (见下面的 charSpecAlwaysSentence),不然提示词会一边要它留空、
+       一边说它必须有值 —— 模型会挑一句听,挑中哪句是随机的 */
+    visionOptional: true,
+    desc: {
+      character:
+        'who this character is — role, trade and setting; never restate the gender or the style here',
+      vision:
+        'who this character is — leave this empty: a photograph cannot tell you a role, a trade or a life story, and reading one off the clothes invents a person the user never described. Fill it only when the image itself states it, such as lettering on a uniform or a name badge'
+    }
   },
   {
     group: 'field',
@@ -257,9 +298,13 @@ function descFor(line, mode) {
   return typeof d === 'string' ? d : d[mode]
 }
 
-/** 提示词里那一整块行清单（`Name: <...>` 换行到底）。两种起稿共用,只有 desc 分档 */
+/** 提示词里那一整块行清单（`Name: <...>` 换行到底）。两种起稿共用,只有 desc 分档。
+ *
+ *  每行前面那个 `[user|ai|pending]` 槽是要紧的:它把"这一行还得写一个来源标记"
+ *  放进模型**照抄**的那一块里,比另写一条规则更容易被照做。槽的字面量解析侧也认
+ *  (模型偶尔会原样抄回来),所以它不是一个纯装饰的占位符 */
 export function charSpecLinesText(mode) {
-  return CHAR_SPEC_LINES.map((l) => `${l.label}: <${descFor(l, mode)}>`).join('\n')
+  return CHAR_SPEC_LINES.map((l) => `${l.label}: ${ORIGIN_SLOT} <${descFor(l, mode)}>`).join('\n')
 }
 
 /* "A, B, C and D" —— 英文枚举的写法（不带牛津逗号,与这句提示词原来的语气一致）。
@@ -269,9 +314,40 @@ function joinAnd(items) {
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
 }
 
-/** "Name, Style, … and Outfit" —— 必须始终有值的那几行,按数组顺序算出来 */
-export function charSpecAlwaysSentence() {
-  return joinAnd(CHAR_SPEC_LINES.filter((l) => l.always).map((l) => l.label))
+/** "Name, Style, … and Outfit" —— 必须始终有值的那几行,按数组顺序算出来。
+ *
+ *  **必须按档算**(2026-10-15):识图那一档里 Identity 允许留空
+ *  (见那一行的 visionOptional)。两档共用一句枚举的话,vision 提示词会
+ *  一边要它留空、一边说它必须有值 —— 模型会挑一句听,而挑中哪句是随机的,
+ *  表现就是同一个功能时灵时不灵 */
+export function charSpecAlwaysSentence(mode) {
+  return joinAnd(
+    CHAR_SPEC_LINES.filter((l) => l.always && !(mode === 'vision' && l.visionOptional)).map(
+      (l) => l.label
+    )
+  )
+}
+
+/** 提示词里交代那三个来源标记的那一条规则。**两档的判据不同**,所以分档给:
+ *  文字起稿问的是"描述里说没说过",识图问的是"图里看不看得见" ——
+ *  写成一句共用的话,两档里必有一档的判据是错的 */
+export function charSpecOriginRule(mode) {
+  const when = {
+    character: {
+      user: 'the idea itself says it',
+      ai: 'you worked it out from what the idea says',
+      pending: 'you invented it because the line needed a value and the idea gave you nothing'
+    },
+    vision: {
+      user: 'the image plainly shows it',
+      ai: 'you read it off the image',
+      pending: 'the image gives no basis for it and you filled the line in anyway'
+    }
+  }[mode]
+  return [
+    `- Begin every value with its source tag: [user] when ${when.user}, [ai] when ${when.ai}, [pending] when ${when.pending}.`,
+    '- Write the tag first, then a space, then the value — e.g. "Face: [user] round face, warm tan skin". The tag is not part of the value, and it never appears anywhere else in the answer.'
+  ].join('\n')
 }
 
 /** 某个键该从哪几个词里挑。空数组 = 自由文本 */

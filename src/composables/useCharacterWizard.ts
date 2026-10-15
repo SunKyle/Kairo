@@ -1,16 +1,9 @@
 import { computed, nextTick, ref, watch, type Component } from 'vue'
 import { PhSpeakerHigh, PhSquaresFour, PhTextAa } from '@phosphor-icons/vue'
 import { CHARACTER_VIEWS } from '../api'
-import type { CharacterDraftForm } from './useCharacterDraft'
+import type { CharacterDraftForm, CharacterSavePayload } from './useCharacterDraft'
 import { stopSpeaking } from '../lib/speech'
-import type {
-  Character,
-  CharacterFields,
-  CharacterPersona,
-  CharacterView,
-  CharacterViewKind,
-  CharacterVoice
-} from '../types'
+import type { Character, CharacterView, CharacterViewKind } from '../types'
 
 /* ===== 新建 / 编辑向导 ================================================
  *  三步向导的**编排**:步数、进行中的角色 id、开关与焦点、右栏摘要、
@@ -42,16 +35,9 @@ export interface CharacterWizardDeps {
   markSampleCommitted: (sampleId: string | undefined) => void
   /** 取消向导时,把这一轮建出来却没人认领的那段录音丢掉 */
   dropOrphanVoiceSample: () => Promise<void>
-  /** 存表单(内容怎么落库归主界面) */
-  save: (payload: {
-    id: string
-    name: string
-    fields: CharacterFields
-    persona: CharacterPersona
-    voice: CharacterVoice
-    desc: string
-    refData: string
-  }) => void
+  /** 存表单(内容怎么落库归主界面)。载荷形状取自 useCharacterDraft 那一份 ——
+   *  它就是**产出**这份载荷的地方,在这里再抄一遍等于多一处会漂的清单 */
+  save: (payload: CharacterSavePayload) => void
   /** 进向导第 3 步要读这个角色的设定图 */
   emitOpen: (charId: string) => void
   /** 存完回详情页 */
@@ -309,7 +295,11 @@ export function useCharacterWizard(deps: CharacterWizardDeps) {
       persona: { ...d.persona },
       voice: { ...d.voice },
       desc: d.desc,
-      refData: d.ref
+      refData: d.ref,
+      /* 来源表也整份交出去 —— 与上面那条"交一份残缺的表单反而要父组件去猜"
+         同一条理由:这一屏改的其实只有声音,但漏掉 origin 会让详情页的
+         来源徽标在这一步之后凭空消失 */
+      origin: { ...d.origin }
     })
     deps.markSampleCommitted(d.voice.sampleId)
   }

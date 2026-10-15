@@ -22,6 +22,9 @@ import {
   characterViewPrompt,
   loadCharacters,
   saveCharacters,
+  /* 来源表空不空(见 types 的 FieldOriginMap):空表不写进记录,
+     老角色与手填出来的角色保持同一种形状 */
+  hasOrigin,
   exportCharacter,
   readCharacterZip,
   getProvider,
@@ -52,6 +55,9 @@ import { useChat } from './composables/useChat'
 import { useMemories } from './composables/useMemories'
 import { useChatFlow } from './composables/useChatFlow'
 import { useGeneration } from './composables/useGeneration'
+/* 角色页交过来的那份载荷形状 —— 它是**产出**它的那一处(见 useCharacterDraft),
+   主界面这里只按它落库,不再自己抄一份 */
+import type { CharacterSavePayload } from './composables/useCharacterDraft'
 // 另一个标签页改了 localStorage 里的目录时,本页要跟着重载(见 lib/crossTab.ts)
 import {
   openSyncChannel,
@@ -78,7 +84,7 @@ import {
   putChatBackdrop,
   type ChatBackdrop
 } from './lib/idb'
-import type { HistoryEntry, Character, CharacterFields, CharacterPersona, CharacterViewKind, CharacterVoice, ChatMessage, ImportedCharacter } from './types'
+import type { HistoryEntry, Character, CharacterViewKind, ChatMessage, ImportedCharacter } from './types'
 
 // —— 状态 ——
 /* 反馈三通道(错误 / 中性提示 / 删除撤销)收在 composables/useFeedback.ts ——
@@ -820,21 +826,12 @@ function compressImage(
 let savingChar = false
 
 /** 存下角色页交过来的草稿:带 id 是改这一条,不带就是新建。
- *  名字必填 —— 没名字的卡没法认 */
-async function saveCharFromPage(d: {
-  /* 带 id = 改这一条,不带 = 新建。角色页那边按"向导里有没有正在编辑的对象"给 */
-  id?: string
-  name: string
-  fields: CharacterFields
-  desc: string
-  /* 人格设定。与 fields 分开进(见 types.ts 的 CharacterPersona)——
-     它只服务对话,不该混进任何出图的提示词 */
-  persona: CharacterPersona
-  /* 嗓音。与 persona 同一条理由:只服务对话。它比 persona 多一层 ——
-     clone 档会在库里留下一段样本音频(按 sampleId 认领) */
-  voice: CharacterVoice
-  refData: string
-}) {
+ *  名字必填 —— 没名字的卡没法认。
+ *
+ *  载荷的形状取自 useCharacterDraft 那一份 —— 它是**产出**这份载荷的地方。
+ *  在这里再抄一遍的话,加一栏要同时改四处,而漏掉任何一处都不报错:
+ *  那一栏只是静静地存不下去(origin 这一栏就是这么被发现的) */
+async function saveCharFromPage(d: CharacterSavePayload) {
   const name = d.name.trim()
   if (!name || savingChar) return
   savingChar = true
@@ -857,6 +854,11 @@ async function saveCharFromPage(d: {
       c.fields = { ...d.fields }
       c.desc = d.desc.trim()
       c.persona = { ...d.persona }
+      /* 来源表跟着设定一起更新 —— 它就是"这份设定里哪几栏是模型填的"。
+         空表**删掉这一项**而不是写一个 {}:老角色与"从没起过稿"的角色
+         保持同一种形状(与 pinned 同一条理由) */
+      if (hasOrigin(d.origin)) c.origin = { ...d.origin }
+      else delete c.origin
       /* 换音色时旧的那段克隆样本要跟着清掉 —— 留着就是一段没人认领的录音。
          只在"换了另一个样本"时清:同一个 sampleId 再存一次当然不动它 */
       const prevSample = c.voice?.sampleId
@@ -886,6 +888,9 @@ async function saveCharFromPage(d: {
       desc: d.desc.trim(),
       persona: { ...d.persona },
       voice: { ...d.voice },
+      /* 设定里每一项是谁定的(见 types 的 FieldOriginMap)。空表不写 ——
+         手填出来的角色没有"哪一栏是模型填的"这回事 */
+      ...(hasOrigin(d.origin) ? { origin: { ...d.origin } } : {}),
       /* 这一张同时是封面的底图(正脸出来之前先用它顶着)和"第一步的参考图"。
          两者指向同一个 Blob,但语义不同,所以两个字段都写 ——
          正脸生成后封面会被换成正脸,而参考图那份还得留着给其余四张用 */
@@ -1121,6 +1126,10 @@ async function importCharFile(file: File) {
       ...(imp.fields ? { fields: { ...imp.fields } } : {}),
       ...(imp.desc ? { desc: imp.desc } : {}),
       ...(imp.persona ? { persona: { ...imp.persona } } : {}),
+      /* 来源表跟着包走(见 types 的 ImportedCharacter.origin)——
+         包里的设定是**对方**那次起稿填的,丢掉它会让接收方看到每一栏
+         都像是"他自己写的" */
+      ...(hasOrigin(imp.origin) ? { origin: { ...imp.origin } } : {}),
       ...(imp.ref ? { ref: imp.ref } : {}),
       ...(imp.sourceRef ? { sourceRef: imp.sourceRef } : {}),
       ...(imp.refKind ? { refKind: imp.refKind } : {})

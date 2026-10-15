@@ -1,6 +1,6 @@
 import { emptyCharFields, emptyCharPersona } from '../api'
 import { charSpecEnumOf, charSpecKeys } from '../../server/charSpec.js'
-import type { Character, CharacterFields, CharacterPersona } from '../types'
+import type { Character, CharacterFields, CharacterPersona, FieldOrigin, SpecFieldKey } from '../types'
 
 /* 角色的字段规格:**键、标签、占位示例**集中在这一处。
  *
@@ -186,15 +186,49 @@ export const PERSONA_FIELDS: PersonaSpec[] = [
   }
 ]
 
+/* —— 来源徽标(PRD §3.2-A / §11.3「你提供的 / AI 补全 / 待确认」)——
+ *
+ *  三态里**只有两态挂徽标**。这不是漏了"你提供的"那一个:
+ *  没有徽标就是"这一栏来自你" —— 用户手填的,或者他校对之后保存下来的。
+ *
+ *  理由与那枚徽标本来的分寸一致(见 CharacterPage 里 .wz-ai 的注释):
+ *  它标的是**还没落定的东西**,不是"这一栏很重要"。给每一栏都挂一枚 "You"
+ *  的后果,是手填出来的角色整张表全是徽标 —— 徽标一多就不再是信息了。
+ *
+ *  这么定还让老角色读出来是干净的:它们的来源表整份都没有(见 types.ts 的
+ *  FieldOriginMap),于是每一栏都没有徽标,与"这份设定是我自己写下的"同一个样子。 */
+export const ORIGIN_BADGES: Partial<Record<FieldOrigin, string>> = {
+  /* 模型从用户给的东西里补出来的 */
+  ai: 'AI',
+  /* 模型填了值但没有任何依据 —— 这一栏要用户自己看一眼 */
+  pending: 'Check'
+}
+
+/** 某一栏的来源。**没有这一项 = 用户自己写的**(手填的,或他校对后保存下来的)——
+ *  与 FieldOriginMap 的读法一致。
+ *
+ *  所以这里的 'user' 是一个确定的答案,不是"未知":界面上据此决定不挂徽标。
+ *  老角色整份表都没有,读出来同样是 'user' —— 那是对的:那份设定是用户
+ *  自己确认并保存下来的(PRD §3.2-A:"用户确认后再保存") */
+export function originOf(c: Character, key: SpecFieldKey): FieldOrigin {
+  return c.origin?.[key] || 'user'
+}
+
 /* 详情页的规格表:固定的那几项按顺序排,再做一条可选的补充描述 */
 const SPEC_LABELS: Array<[keyof CharacterFields, string]> = ALL_FIELDS.map((f) => [f.key, f.label])
 
 export function specRows(c: Character) {
   const f = c.fields || emptyCharFields()
-  const rows = SPEC_LABELS.map(([k, label]) => ({ label, value: (f[k] || '').trim(), wide: false }))
+  const rows = SPEC_LABELS.map(([k, label]) => ({
+    label,
+    value: (f[k] || '').trim(),
+    wide: false,
+    origin: originOf(c, k)
+  }))
   const notes = (c.desc || '').trim()
-  // 补充描述是自由文本,回看时占满整行
-  if (notes) rows.push({ label: 'Extra details', value: notes, wide: true })
+  /* 补充描述是自由文本,回看时占满整行。
+     它**永远是 user**:起稿那条路不填它(模型只回那几行),能写在里面的只有用户 */
+  if (notes) rows.push({ label: 'Extra details', value: notes, wide: true, origin: 'user' as FieldOrigin })
   return rows
 }
 
@@ -202,5 +236,9 @@ export function specRows(c: Character) {
  *  它回答的是"这个人怎么说话",不是"这个人长什么样" */
 export function personaRows(c: Character) {
   const p = { ...emptyCharPersona(), ...(c.persona || {}) }
-  return PERSONA_FIELDS.map((f) => ({ label: f.label, value: (p[f.key] || '').trim() }))
+  return PERSONA_FIELDS.map((f) => ({
+    label: f.label,
+    value: (p[f.key] || '').trim(),
+    origin: originOf(c, f.key)
+  }))
 }

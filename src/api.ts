@@ -1,4 +1,4 @@
-import type { ApiConfig, GenParams, HistoryEntry, ResultItem, ReuseParams, Collection, Character, CharacterDraft, CharacterFields, CharacterPersona, CharacterView, CharacterViewKind, CharacterVoice, ChatMessage, ImportedCharacter, ImportedChat, ImportedChatMessage } from './types'
+import type { ApiConfig, GenParams, HistoryEntry, ResultItem, ReuseParams, Collection, Character, CharacterDraft, CharacterFields, CharacterPersona, CharacterView, CharacterViewKind, CharacterVoice, ChatMessage, FieldOrigin, FieldOriginMap, ImportedCharacter, ImportedChat, ImportedChatMessage, SpecFieldKey } from './types'
 import type { PruneResult, CharRefRecord } from './lib/idb'
 import { titleFromPrompt } from './lib/text'
 /* 角色设定那一份权威定义(键 / 顺序 / 标签 / 必填 / 枚举)住在服务端 ——
@@ -6,6 +6,7 @@ import { titleFromPrompt } from './lib/text'
    于是"提示词里那几行"与"解析回填的那张表"不可能各走各的 */
 import {
   CHAR_SPEC_LINES,
+  ORIGIN_TAGS,
   charSpecKeys
 } from '../server/charSpec.js'
 /* "现在几点"也是服务端那套提示词的一部分,而它要的**本地时刻**只有前端给得出
@@ -1120,6 +1121,11 @@ type CharacterManifest = {
        导出的角色在对方那里会变成一个没有性格的角色,
        而人格恰恰是这个功能里最难重写的一份数据 */
     persona?: CharacterPersona
+    /* 设定里每一项是谁定的(见 types.ts 的 FieldOriginMap)。跟着包走 ——
+       包里的设定是**导出方**那次起稿填的,不带上它,接收方看到的每一栏
+       都会被当成"他自己写的",而那正是不该做的事。
+       缺省(老包)一律当"用户自己写的",与库里的读法一致 */
+    origin?: FieldOriginMap
     refKind?: CharacterViewKind
     /* 置顶。纯 JSON 的一个布尔,跟着包走 —— 置顶是"我常找这个人",
        与人格、嗓音同属"这个角色是谁"的一部分,分享时该一起过去。
@@ -1216,6 +1222,8 @@ export async function exportCharacter(
     ...(c.desc ? { desc: c.desc } : {}),
     // 没写过的角色不往包里塞一份空壳:四项全空时这两边长得一样,少一项更干净
     ...(hasPersona(c.persona) ? { persona: c.persona } : {}),
+    // 来源表同样:空表不写,老包与"从没起过稿"的角色在读回来时是同一件事
+    ...(hasOrigin(c.origin) ? { origin: c.origin } : {}),
     // 没置顶就不写这一项:老包与"从没置顶过"在读回来时是同一件事
     ...(c.pinned ? { pinned: true } : {}),
     ...(c.refKind ? { refKind: c.refKind } : {})
@@ -1436,6 +1444,9 @@ export async function readCharacterZip(file: File): Promise<ImportedCharacter[]>
     }
 
     const refBytes = typeof c.ref === 'string' ? fileAt(c.ref) : undefined
+    /* 来源表:包里的设定是**对方**那次起稿填的,所以这一项跟着包走 ——
+       不带上它的话,接收方看到的每一栏都会被当成"他自己写的" */
+    const impOrigin = coerceCharOrigin(c.origin)
     // 老包(底图还是单独一项之前导的)没有 source,读到的就是空 —— 退化成单图参考
     const sourceBytes = typeof c.source === 'string' ? fileAt(c.source) : undefined
     /* 对话读不出来只丢对话:角色本身照常导入,与"某一张图丢了"同一处理。
@@ -1479,6 +1490,8 @@ export async function readCharacterZip(file: File): Promise<ImportedCharacter[]>
       ...(hasPersona(coerceCharPersona(c.persona))
         ? { persona: coerceCharPersona(c.persona) }
         : {}),
+      // 来源表同样逐项收口:包是外部文件,脏数据照样要防(见 coerceCharOrigin)
+      ...(hasOrigin(impOrigin) ? { origin: impOrigin } : {}),
       /* 置顶只认 true:文件里写 "false" / 1 / 别的什么都当没置顶 ——
          它是一个开关,不是一个能放任意值进去的槽 */
       ...(c.pinned === true ? { pinned: true } : {}),
@@ -1685,6 +1698,34 @@ function coerceCharPersona(raw: Partial<CharacterPersona> | undefined): Characte
     out[k] = typeof v === 'string' ? v : ''
   }
   return out
+}
+
+/* —— 来源表(见 types.ts 的 FieldOriginMap)——
+   与 coerceCharFields 同一条理由、同一个收口:它来自 localStorage 与外部 zip,
+   都可能被写坏(手改、同步工具截断、一份人手拼的 character.json)。
+   界面上读它的地方当"值一定是那三个词之一"来写,一个数字或对象就够让角色页崩掉。
+
+   **多出来的键与认不出的取值一律丢掉**:多一个界面上没有的键没有意义,
+   而一个拼错的取值会让徽标渲染成空白 —— 空白比没有徽标更难理解 */
+const CHAR_SPEC_KEYS = new Set<string>([...CHAR_FIELD_ORDER, ...CHAR_PERSONA_KEYS])
+const ORIGIN_VALUES: FieldOrigin[] = ['user', 'ai', 'pending']
+function coerceCharOrigin(raw: unknown): FieldOriginMap {
+  const out: FieldOriginMap = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!CHAR_SPEC_KEYS.has(k)) continue
+    if (typeof v === 'string' && (ORIGIN_VALUES as string[]).includes(v)) {
+      out[k as SpecFieldKey] = v as FieldOrigin
+    }
+  }
+  return out
+}
+
+/** 这张表有没有内容。空表不写进记录、不写进导出包 ——
+ *  老角色与"从没起过稿"的角色保持同一种形状,读法也就只有一条
+ *  (与 pinned 同一条理由:能省掉一个键就省掉) */
+export function hasOrigin(m: FieldOriginMap | undefined): boolean {
+  return !!m && Object.keys(m).length > 0
 }
 
 /* 字段值里的换行与连续空白收敛成单个空格。
@@ -1965,6 +2006,42 @@ const STYLE_AUTO_ISH =
 const LANGUAGE_FOLLOW_ISH =
   /^(auto|automatic|default|unspecified|same as (the )?user|the user'?s language|user'?s language|follows? (the )?user|matches? (the )?user)$/i
 
+/* —— 值里的来源标记(见 server/charSpec.js 的 ORIGIN_TAGS)——
+   模型按那份协议把来源写在值的最前面。**它必须被摘掉**:留着会被拼进出图提示词
+   (见 characterDesc),而模型多半会把 "[pending]" 当成画面内容的一部分去画。
+
+   三种写法都要认:
+   - 开头 —— 协议要求的写法;
+   - 结尾 —— 有的模型习惯把修饰放在后面,摘不干净同样会进提示词;
+   - 行清单里那个槽的字面量(`[user|ai|pending]`)—— 模型偶尔连占位符一起抄回来。
+     它不是任何合法标记,单独认它,否则那一整段会留在值里。
+
+   正则由 ORIGIN_TAGS 拼出来而不是手写:标记词改了而这里没跟上的话,
+   表现是"标记留在值里" —— 一个不会报错、只会悄悄污染提示词的失配 */
+const TAG_ALT = ORIGIN_TAGS.join('|')
+const ORIGIN_HEAD_RE = new RegExp(`^\\s*\\[\\s*(${TAG_ALT})\\s*\\]\\s*`, 'i')
+const ORIGIN_TAIL_RE = new RegExp(`\\s*\\[\\s*(${TAG_ALT})\\s*\\]\\s*$`, 'i')
+const ORIGIN_SLOT_RE = new RegExp(`^\\s*\\[\\s*${ORIGIN_TAGS.join('\\s*\\|\\s*')}\\s*\\]\\s*`, 'i')
+
+/* 把值拆成「值本身」与「它是谁给的」。
+ *
+ *  **摘不到标记时落在 'ai' 那一档**,不是随手挑的:摘不到时我们能确定的
+ *  只有"这是模型写的",而"它没有依据"是一个我们并不知道的、更强的断言。
+ *  替模型断言它没依据,和替用户断言他说过,是同一种错(把不知道的事说成知道)——
+ *  所以缺标记一律落在中间那档,不进 pending。
+ *
+ *  这也是这套协议的降级路径:模型完全没照做时,每栏都标成「AI 补全」——
+ *  与加这套标记之前的行为一样,不会因为新协议没被遵守就冒出一屏假的"待确认" */
+function splitOrigin(raw: string): { value: string; origin: FieldOrigin } {
+  // 先把那个槽的字面量摘掉(模型偶尔连占位符一起抄回来),再认真正的标记
+  const s = raw.replace(ORIGIN_SLOT_RE, '')
+  const head = ORIGIN_HEAD_RE.exec(s)
+  if (head) return { value: s.slice(head[0].length), origin: head[1].toLowerCase() as FieldOrigin }
+  const tail = ORIGIN_TAIL_RE.exec(s)
+  if (tail) return { value: s.slice(0, tail.index), origin: tail[1].toLowerCase() as FieldOrigin }
+  return { value: s, origin: 'ai' }
+}
+
 /* 表格只建一次:它由那份行定义生成,内容与请求无关 */
 const DRAFT_FIELD_KEYS: Record<string, keyof CharacterFields> = {}
 const DRAFT_PERSONA_KEYS: Record<string, keyof CharacterPersona> = {}
@@ -1978,14 +2055,20 @@ for (const l of CHAR_SPEC_LINES) {
 }
 
 /**
- * 把模型回的那几行拆成「名字 + 结构化设定 + 人格」。
+ * 把模型回的那几行拆成「名字 + 结构化设定 + 人格 + 每一项的来源」。
  * 它偶尔会加粗、加项目符号、包代码围栏或写中文冒号,所以先剥掉这些装饰再按前缀认;
  * 认不出来的行直接丢掉,不报错 —— 少一两个字段不该让整次起稿失败。
  * 名字那行不一定有(老版本提示词没有它),缺了就是空串,由调用方决定怎么办。
+ *
+ * 来源标记(见 splitOrigin)在**任何值判断之前**摘掉:它是协议的一部分,
+ * 不是值的一部分。顺序反了的话,"[pending]" 会让一个本该留空的栏被判成"有值",
+ * 而那个标记还会跟着值一起进提示词与角色名。
  */
 export function parseCharacterDraft(text: string): CharacterDraft {
   const fields = emptyCharFields()
   const persona = emptyCharPersona()
+  /* 只记有值的那些项 —— 空着的一栏没有来源可言(见 types.ts 的 FieldOriginMap) */
+  const origin: FieldOriginMap = {}
   let name = ''
   /* 两张表的键不重合,所以可以各查各的 ——
      查不到长相那张就再查这张,不必合成一张大表 */
@@ -2001,8 +2084,10 @@ export function parseCharacterDraft(text: string): CharacterDraft {
     const m = /^([A-Za-z][A-Za-z &]*?)\s*[:：]\s*(.+)$/.exec(line)
     if (!m) continue
     const label = m[1].toLowerCase().replace(/[^a-z]/g, '')
-    const value = m[2].trim()
+    const tagged = splitOrigin(m[2].trim())
+    const value = tagged.value.trim()
     if (label === 'name') {
+      // 名字不进来源表:它是这张卡的标题,不是设定的一栏
       name = NONE_ISH.test(value) ? '' : value
       continue
     }
@@ -2012,6 +2097,7 @@ export function parseCharacterDraft(text: string): CharacterDraft {
       if (NONE_ISH.test(value)) persona[pkey] = ''
       else if (pkey === 'language' && LANGUAGE_FOLLOW_ISH.test(value)) persona[pkey] = ''
       else persona[pkey] = value
+      if (persona[pkey]) origin[pkey] = tagged.origin
       continue
     }
     const key = keys[label]
@@ -2023,8 +2109,9 @@ export function parseCharacterDraft(text: string): CharacterDraft {
     } else {
       fields[key] = value
     }
+    if (fields[key]) origin[key] = tagged.origin
   }
-  return { name, fields, persona }
+  return { name, fields, persona, origin }
 }
 
 /** 读出角色列表,并把参考图从 IndexedDB 贴回条目上 */
@@ -2055,6 +2142,11 @@ export async function loadCharacters(): Promise<Character[]> {
     /* 人格一律补齐(不加 if) —— 与 fields 不同,这里读它的地方(角色页表单与对话页)
        全都当它一定存在来写,补在入口最省事;四项空串也就几十字节 */
     c.persona = coerceCharPersona(c.persona)
+    /* 来源表逐项收口(见 coerceCharOrigin)。**空表不写回**:老角色与
+       "从没起过稿"的角色保持同一种形状,读法也就只有一条 */
+    const origin = coerceCharOrigin(c.origin)
+    if (hasOrigin(origin)) c.origin = origin
+    else delete c.origin
     const ref = refs.get(c.id)
     if (ref) c.ref = ref
     // 底图另有 key,不是设定图之一(见 idb.ts 的 charSourceKey)

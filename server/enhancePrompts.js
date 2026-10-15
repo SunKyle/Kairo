@@ -9,7 +9,8 @@
 import {
   CHAR_SPEC_LINE_COUNT,
   charSpecAlwaysSentence,
-  charSpecLinesText
+  charSpecLinesText,
+  charSpecOriginRule
 } from './charSpec.js'
 
 /* 提示词改写的系统提示,三档:
@@ -44,18 +45,24 @@ Rules:
 
      分两档是要紧的:有些字段编出来只是把描述写具体(好事,模糊才是漂移的源头),
      有些编出来等于改了这个角色是谁 —— 默认给每个人脸上添一道疤、或者按默认
-     模板塞一身义体,是错的。所以后者只在原句真的提到时才写。 */
+     模板塞一身义体,是错的。所以后者只在原句真的提到时才写。
+
+     **2026-10-15 起每行还要带一个来源标记**(见 charSpec 的 ORIGIN_TAGS):
+     PRD §3.2-A 要"区分用户明确提供的信息、AI 补全的信息和仍待确认的信息",
+     而这三态只有模型自己知道 —— 事后去猜只会把编的说成用户说的。
+     所以标记由它写在值里,解析侧摘掉(src/api.ts 的 parseCharacterDraft)。 */
   character: `You turn a one-line idea into a reusable character spec for an image-generation model.
 
 Rules:
 - Output exactly ${CHAR_SPEC_LINE_COUNT} lines, in this order, and nothing else:
 ${charSpecLinesText('character')}
+${charSpecOriginRule('character')}
 - The name must read as a name, not a description. Invent one that fits when the idea does not give a name.
-- ${charSpecAlwaysSentence()} must always have a value. If the idea says nothing about one of them, invent something specific that fits the rest.
+- ${charSpecAlwaysSentence('character')} must always have a value. If the idea says nothing about one of them, invent something specific that fits the rest — and tag that line [pending].
 - Gender must be exactly the single word "female" or "male" — nothing else. Pick whichever fits the idea; when it says nothing, pick the one the rest of the description leans toward. It is the one field the image model cannot recover from the others.
 - Style must be exactly one of the words listed for it — nothing else. Pick the medium the idea implies; use auto only when nothing in the idea points at one.
 - Facial hair must always be stated explicitly, including when the answer is none. Leaving it blank makes the model guess differently in every image.
-- Write "Face marks:" or "Marks:" with nothing after the colon when the idea gives no reason for them. Do not invent scars, tattoos or implants.
+- Write "Face marks:" or "Marks:" with nothing after the colon — and no tag — when the idea gives no reason for them. Do not invent scars, tattoos or implants.
 - Leave Language empty unless the idea actually says what language this character speaks. Never infer a language from a name, a nationality or how someone looks.
 - Every appearance value (Style through Marks) is a short comma-separated phrase in English, under 12 words — except Style, which is a single word from its own list. The last six lines are not appearance — see below.
 - Describe only the character itself. Never mention background, lighting, camera, lens or composition — the user supplies the scene separately.
@@ -68,9 +75,18 @@ ${charSpecLinesText('character')}
      解析侧(前端 parseCharacterDraft)因此完全不用改。
      与 character 的关键差别是"只写看得见的":文字起稿允许把没提到的东西编具体,
      而看图时凭空给一张脸上添疤、加义体,等于把用户上传的人改成另一个人。
-     人格那几行(最后五行)是唯一的例外:图片里读不出一个人怎么说话,
+     人格那几行(最后六行)是唯一的例外:图片里读不出一个人怎么说话,
      只能从穿着、站姿、神情去推 —— 所以那一段在提示里明确标成"推断",
      并要求写得平实,而不是替这个人编一段身世。
+
+     **2026-10-15 起那一段的"推断"由 `[pending]` 标记承担**(见 charSpec 的
+     ORIGIN_TAGS),不再只是一句嘱咐:嘱咐是给模型看的,标记是给用户看的 ——
+     PRD §3.2-A 要的是"避免把推断伪装成事实",而伪装的受害者是用户,不是模型。
+
+     **Identity 这一档还多一条禁则**:PRD 原话是"不应仅凭图片擅自推断角色的
+     身份、职业、人格或人生经历;这些信息应由用户提供,或保持未确定"。
+     所以它在识图档里解除必填(见 charSpec 那一行的 visionOptional),
+     提示词明说留空 —— 在这之前它是被"must always have a value"逼着编的。
 
      **语言是例外里的例外**,所以它单独占一条规则:从长相推语言是这个功能里
      最容易滑向刻板印象的一步,而图里唯一站得住的证据是**真的出现了字**
@@ -80,18 +96,20 @@ ${charSpecLinesText('character')}
 Rules:
 - Output exactly ${CHAR_SPEC_LINE_COUNT} lines, in this order, and nothing else:
 ${charSpecLinesText('vision')}
+${charSpecOriginRule('vision')}
 - Read the image. Describe only what is actually visible in it: never invent scars, tattoos, implants, accessories or clothing that are not there.
-- ${charSpecAlwaysSentence()} must always have a value. When the image is ambiguous about one of them, describe what is most likely rather than leaving it blank.
+- ${charSpecAlwaysSentence('vision')} must always have a value. When the image is ambiguous about one of them, describe what is most likely rather than leaving it blank — and tag that line [pending].
+- Identity is the one line that is not required here, and the reason matters: a photograph shows how someone looks, not who they are. Leave Identity empty unless the image itself states it — lettering on a uniform, a name badge, a title on a door. Never read a trade, a role or a life story off someone's clothes, their posture or their belongings.
 - Gender must be exactly the single word "female" or "male" — nothing else. Judge from how the person appears in the image.
 - Style must be exactly one of the words listed for it — nothing else. Write the medium the image is actually drawn in; use auto only when the medium is genuinely unclear.
 - Facial hair must always be stated explicitly, including when the answer is none.
 - The name must read as a name, not a description. Invent one that fits the person when the image carries no name.
 - Every appearance value (Style through Marks) is a short comma-separated phrase in English, under 12 words — except Style, which is a single word from its own list.
 - Describe only the character itself. Never mention the background, the lighting, the camera, the lens or the composition of the reference image.
-- The last six lines are the one place you go beyond what is visible: this is a still image, so how this person talks has to be inferred from how they look, dress, stand and hold themselves. Keep that inference plain and plausible — a voice that fits the picture, not a backstory you invented.
+- The last six lines describe how this person behaves in conversation, and a still image cannot show that. Anything you write there is a guess read off how they look, dress and stand — so tag every one of those six [pending]. Keep the guess to manner alone: how they would talk, how they would address the user, what they would never do. Never invent a past, a relationship, a job or an event — that is a life story, and the picture does not contain one.
 - Language is the exception even there: a still image rarely carries it. Write it only when the image itself shows it — a sign, a badge, a uniform or lettering — and leave it empty rather than guess from how someone looks.
 - Never let behaviour leak into an appearance line, or appearance into a behaviour line.
-- The last of them is not a description but two or three literal example exchanges, written on that one line in the format its outline gives — invented to match the voice you just inferred.
+- The last of them is not a description but two or three literal example exchanges, written on that one line in the format its outline gives — invented to match the voice you just inferred, and tagged [pending] like the rest of that group.
 - Unlike the appearance lines, the last six may quote words in the character's own language.
 - No preamble, no explanation, no markdown, no quotes.`,
   /* 长期记忆的压缩:把一批滑出窗口的消息并进一段越来越短的简报。

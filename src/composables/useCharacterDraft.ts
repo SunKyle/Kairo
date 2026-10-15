@@ -15,7 +15,9 @@ import type {
   CharacterDraft,
   CharacterFields,
   CharacterPersona,
-  CharacterVoice
+  CharacterVoice,
+  FieldOriginMap,
+  SpecFieldKey
 } from '../types'
 
 /* ===== 角色草稿(表单)==================================================
@@ -44,6 +46,10 @@ export interface CharacterDraftForm {
   voice: CharacterVoice
   desc: string
   ref: string
+  /* 设定里每一项是谁定的(见 types 的 FieldOriginMap)。**它是表单的一部分,
+     不是另存一份状态** —— 一份数据两处存的下场是迟早对不上,而这一份
+     恰恰要在"起稿覆盖"与"用户逐栏改动"之间保持同步 */
+  origin: FieldOriginMap
 }
 
 /** 一份空表单。新建、以及"这一轮没带角色"时用它 */
@@ -54,7 +60,8 @@ export function emptyCharacterDraft(): CharacterDraftForm {
     persona: emptyCharPersona(),
     voice: emptyCharVoice(),
     desc: '',
-    ref: ''
+    ref: '',
+    origin: {}
   }
 }
 
@@ -68,6 +75,9 @@ export interface CharacterSavePayload {
   voice: CharacterVoice
   desc: string
   refData: string
+  /* 来源表跟着一起交出去 —— 缺了它,存下来的角色在详情页上就没有来源徽标,
+     而"哪几栏是模型编的"正是这次保存最该留住的东西(PRD §3.2-A) */
+  origin: FieldOriginMap
 }
 
 export interface CharacterDraftDeps {
@@ -132,24 +142,28 @@ function cancelDraft() {
              不该牵动已经存下的那份 */
           voice: { ...emptyCharVoice(), ...(c.voice || {}) },
           desc: c.desc || '',
+          /* 来源表跟着角色一起进来:它就是"这份设定里哪几栏是模型填的",
+             与 fields / persona 是同一份数据的两面,分开走迟早对不上 */
+          origin: { ...(c.origin || {}) },
           // 预填页面上那张图由 editRefSrc 负责,这里只表示"还没换"
           ref: ''
         }
       : emptyCharacterDraft()
-    aiFilled.value = {}
   }
 
-/* 起稿填过、而用户还没动过的字段。
+/* 起稿填过、而用户还没动过的那些栏。
    校对要有个落点 —— 提示写着 "check what it got wrong",但看不出哪几项是
    模型编的:模型给的值和人手写的值在界面上长得一模一样。
    改一下那一项就抹掉标记(见 markEdited),扫一眼就知道还剩哪几处没看过。
 
-   键是长相与人格两套字段的并集。两套的键不重合,所以标在同一份里不会打架 ——
-   而图例说的是"这枚点是模型写的",本来就该把两套一起算 */
-type DraftFieldKey = keyof CharacterFields | keyof CharacterPersona
-const aiFilled = ref<Partial<Record<DraftFieldKey, boolean>>>({})
-// 有标记 ⇒ 组说明换成那条图例,不然用户不知道这枚点是什么意思
-const hasAiFilled = computed(() => Object.values(aiFilled.value).some(Boolean))
+   **它就是 draft.origin**(见 CharacterDraftForm),不是另存的一份状态 ——
+   从前这里是单独一个 aiFilled 表,于是"哪几栏是模型填的"在向导里和在库里
+   是两份数据,而库里那份根本不存在(存完就没了)。现在只有一份,并且会落库。 */
+const origin = computed(() => draft.value.origin)
+// 有徽标可标 ⇒ 组说明换成那条图例,不然用户不知道这两枚小牌是什么意思
+const hasOriginMarks = computed(() =>
+  Object.values(origin.value).some((v) => v && v !== 'user')
+)
 /* 已经填过内容 ⇒ 起稿键变成 "Draft again"。
    人格也算:它同样是起稿会覆盖的东西 */
 const hasSpec = computed(
@@ -158,8 +172,14 @@ const hasSpec = computed(
     hasPersona(draft.value.persona)
 )
 
-function markEdited(key: DraftFieldKey) {
-  if (aiFilled.value[key]) aiFilled.value[key] = false
+/* 用户动过这一栏 ⇒ 它从此是**用户写的**。
+ *
+ *  做法是**把那一项删掉**,而不是写上 'user':这张表的读法本来就是
+ *  "没有这一项 = 用户写的"(见 types.ts 的 FieldOriginMap),而它只记
+ *  不是用户写的那些项。写一个 'user' 进去,等于让"模型说这是他写的"与
+ *  "用户自己敲的"在数据里留下两种形状 —— 而它们要表达的是同一件事 */
+function markEdited(key: SpecFieldKey) {
+  delete draft.value.origin[key]
 }
 
 /* —— 识图:把上传的参考图读成设定 ——
@@ -196,16 +216,12 @@ function applyDraft(d: CharacterDraft) {
      那十几行长相是必答项,而人格那几行是后加的:一次回不来时
      把用户自己写好的人格抹成空,比"这次没更新"糟得多 */
   if (hasPersona(d.persona)) draft.value.persona = { ...d.persona }
-  /* 记下这一趟哪些栏是模型填的。空着的那些不标 —— 标了反而像在说
-     "这里有什么要看",而它们本来就该留空(见 server 那条提示) */
-  const marks: Partial<Record<DraftFieldKey, boolean>> = {}
-  for (const k of Object.keys(d.fields) as Array<keyof CharacterFields>) {
-    if (d.fields[k].trim()) marks[k] = true
-  }
-  for (const k of Object.keys(d.persona) as Array<keyof CharacterPersona>) {
-    if (d.persona[k].trim()) marks[k] = true
-  }
-  aiFilled.value = marks
+  /* 来源表整份换掉 —— 与 fields 同一步。这一趟的字段是整份覆盖的,
+     来源当然也整份覆盖;留着上一轮的徽标会指向已经不存在的那些值。
+
+     **空着的栏不在表里**(解析侧只记有值的那些),所以"模型这次没写"
+     在界面上仍然是一枚徽标都不挂 —— 那是对的:它没编东西给人看 */
+  draft.value.origin = { ...d.origin }
 }
 
 /* 回车起稿,Shift+回车换行。
@@ -383,7 +399,10 @@ function submit() {
     // 嗓音浅拷一份就够:它底下的值全是字符串与数字,没有嵌套
     voice: { ...d.voice },
     desc: d.desc,
-    refData: d.ref
+    refData: d.ref,
+    /* 来源表浅拷一份(值是三个字符串,没有嵌套)。**它必须跟着一起交出去** ——
+       存完这一栏就没人记得"哪几栏是模型编的"了,而详情页正要显示这个 */
+    origin: { ...d.origin }
   })
   /* 这一次交出去的嗓音里如果带着一段克隆样本,它就是**有主**的了 ——
      下面那次取消不该把它删掉(见 dropOrphanVoiceSample)。
@@ -401,8 +420,8 @@ function submit() {
     drafting,
     draftError,
     cancelDraft,
-    aiFilled,
-    hasAiFilled,
+    origin,
+    hasOriginMarks,
     hasSpec,
     markEdited,
     applyDraft,

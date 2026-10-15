@@ -7,7 +7,7 @@ import type { Page } from './nav'
    - '#/' 或空 -> chat(Kairo 的主页就是对话)
    - '#/chat' / '#/chat/:id'
    - '#/chars' / '#/chars/:id'
-   - '#/history' / '#/settings'
+   - '#/memory' / '#/history' / '#/settings'
    -------------------------------------------------------------------- */
 
 export interface RouteState {
@@ -18,6 +18,7 @@ export interface RouteState {
 export const VALID_PAGES: readonly Page[] = [
   'chat',
   'chars',
+  'memory',
   'history',
   'settings'
 ] as const

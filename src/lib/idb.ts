@@ -1,15 +1,22 @@
-import type { ChatImage, ChatMessage, ChatSummary, CharacterMood, HistoryEntry } from '../types'
+import type {
+  ChatImage,
+  ChatMessage,
+  ChatSummary,
+  CharacterMood,
+  HistoryEntry,
+  MemoryCategory,
+  MemoryItem,
+  MemoryOrigin
+} from '../types'
 
 // 极简 IndexedDB 封装:用来持久化历史记录与提示词封面(比 localStorage 容量大得多)
 const DB_NAME = 'kimage.db'
 const STORE = 'history'
-/* 提示词封面单独一个 store。它们原来是 base64 塞在 localStorage 条目里的,
-   而 localStorage 一共只有约 5MB —— 五六十张封面就顶到天花板,写不下时
-   只能把所有封面整批丢掉(见 git 历史的 savePrompts)。挪到这里之后,
-   封面与历史图共用浏览器级配额,那个"整批丢封面"的降级路径也就不需要了 */
-const COVER_STORE = 'covers'
-/* 角色的参考图单独一个 store,不和提示词封面挤在一起 ——
-   putCovers 会按"目录里现存的封面"反向裁剪,角色图混进去会被当成孤儿删掉 */
+/* (2026-10-12)原提示词封面的 store 'covers' 已随提示词库页面移除而废弃:
+   老库里可能还留着一个空的同名 store —— 代码这边不再读、不再写,
+   也不在升级事务里新建它。不动它是为了不改迁移路径 */
+/* 角色的参考图单独一个 store —— 它有自己的生命周期(角色没了跟着走),
+   不与任何"按目录反向裁剪"的表混用 */
 const CHAR_STORE = 'chars'
 /* 角色的设定图与主参考图共用一个 store:
    主图 key 是裸的角色 id(启动时要读它),视图 key 是 `${角色id}:${视图}`(按需取) */
@@ -48,6 +55,17 @@ const BACKDROP_STORE = 'chat_backdrops'
    混在一张记录里,"忘掉记忆该不该连心情一起清""导出包带不带它"这两件事
    会立刻变成说不清的边界(前者的答案是不该,后者是不带 —— 见设计文档 §3.2) */
 const MOOD_STORE = 'char_moods'
+/* 记忆条目(PRD §3.2-E):一条离散的事实 —— 用户手写的,或 AI 从对话里抽出来的。
+   **与 chat_summaries 是两张表,不能合并**:
+   那张是"这一整段对话的压缩纪要"(带压缩游标、会被反复重写、随对话一起清),
+   这张是"一条条独立的事实"(各有各的编辑/删除/标记/授权,不随重压而变)。
+   合并之后"忘掉这一条"与"重压这一段"会变成同一个动作 ——
+   而 PRD 把它们分开点名:「当前对话记忆」不必全部转成长期记忆。
+
+   一个角色可以有很多条,所以按 id 存、另建 charId 索引(按角色取、按角色删)。
+   **共享画像的 charId 是 null** —— IDB 不索引非法的键,所以那几条天然不在
+   charId 索引里:删某个角色时它们不会被误删,这正是我们要的 */
+const MEMORY_STORE = 'memories'
 /* ===== 历史容量 =====================================================
    不按固定条数淘汰,而是看浏览器给的配额:只有占用接近上限时才清理最旧的一批。
    固定条数会在空间还很宽裕时就静默删记录,而每条记录的体积差很多,
@@ -80,7 +98,7 @@ export interface PruneResult {
    在用户眼里就是"我的图、我的历史全没了",而数据其实一条都没少。
    所以哪怕这一次没有任何结构要改,号该加也得加。
    ------------------------------------------------------------------ */
-const DB_VERSION = 13
+const DB_VERSION = 14
 
 /* 连接只开一次。
    indexedDB.open 是一次异步握手,而原实现每次读写都重开一遍 ——
@@ -147,10 +165,10 @@ function openDB(): Promise<IDBDatabase> {
         : db.createObjectStore(STORE, { keyPath: 'id' })
       // createdAt 索引让"淘汰最旧"只需读主键,不必把整表记录读出来
       if (!store.indexNames.contains('createdAt')) store.createIndex('createdAt', 'createdAt')
-      // v3 新增:提示词封面
-      if (!db.objectStoreNames.contains(COVER_STORE)) {
-        db.createObjectStore(COVER_STORE, { keyPath: 'id' })
-      }
+      /* v3 曾经在这里建过「提示词封面」store —— 已随提示词库页面一起移除,
+         见文件顶上 COVER_STORE 那段说明。这里**不再新建它**:
+         一个未定义的常量会让升级事务直接抛错,而升级事务一抛,
+         整个库就卡在当前版本打不开(用户看到的是"数据全没了") */
       // v4 新增:角色的参考图
       if (!db.objectStoreNames.contains(CHAR_STORE)) {
         db.createObjectStore(CHAR_STORE, { keyPath: 'id' })
@@ -219,6 +237,15 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(MOOD_STORE)) {
         db.createObjectStore(MOOD_STORE, { keyPath: 'charId' })
       }
+      /* v14 新增:记忆条目(见 MEMORY_STORE)。
+         建表 + 建索引都是同步的结构操作,没有"整表读进内存再重建"那种
+         中途失败的风险(与 v12 / v13 同一条理由) */
+      if (!db.objectStoreNames.contains(MEMORY_STORE)) {
+        const memories = db.createObjectStore(MEMORY_STORE, { keyPath: 'id' })
+        /* 按角色取、按角色删都靠它。共享画像的 charId 是 null,
+           而 IDB 不索引非法的键 —— 那几条天然不在索引里,删角色时不会被误删 */
+        memories.createIndex('charId', 'charId')
+      }
     }
     req.onsuccess = () => {
       const db = req.result
@@ -267,70 +294,6 @@ export async function ensurePersisted(): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-/* ===== 提示词封面 =====
-   存的是原图(仅长边超 1600 时缩一次),不是缩略图。用 Blob 不用 data URL:
-   base64 会膨胀 33%,而且整段字符串要进 JS 堆;Blob 由浏览器放在堆外。
-   封面按 id 存,与提示词目录(localStorage)分开 —— 目录每条只有几百字节 */
-export interface CoverRecord {
-  id: string
-  data: Blob
-}
-
-/** 读出全部封面。库不大,一次读完最简单,调用方按 id 贴回条目 */
-export async function getAllCovers(): Promise<Map<string, Blob>> {
-  // 库里存着的形状不一定等于 CoverRecord:封面刚挪进 IDB 那版存的是 data URL 字符串
-  type CoverRow = { id: string; data: Blob | string }
-  try {
-    const db = await openDB()
-    const rows = await new Promise<CoverRow[]>((resolve, reject) => {
-      const req = db.transaction(COVER_STORE, 'readonly').objectStore(COVER_STORE).getAll()
-      req.onsuccess = () => resolve(req.result as CoverRow[])
-      req.onerror = () => reject(req.error)
-    })
-    const out = new Map<string, Blob>()
-    for (const row of rows) {
-      if (row.data instanceof Blob) {
-        out.set(row.id, row.data)
-      } else if (typeof row.data === 'string' && row.data.startsWith('data:image/')) {
-        // 封面刚一挪进 IDB 那版存的是 data URL 字符串,这里统一转成 Blob,
-        // 让上层只需要认一种形状;转不出来的坏数据跳过
-        try {
-          out.set(row.id, await urlToBlob(row.data))
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-    return out
-  } catch {
-    // 拿不到就当没有封面:库还能用,不该因为封面读不出来而整页打不开
-    return new Map()
-  }
-}
-
-/**
- * 写回封面:只补库里还没有的那几张,并删掉已经不在库里的那些
- * (删掉一条提示词,它的封面不该留下)。
- * 不做全量重写是有意的 —— 封面是原图,而每次保存提示词(取用一次也算)都会
- * 走到这里,全量重写就是几十上百 MB 的写入。封面只会新增,不会改。
- */
-export async function putCovers(covers: CoverRecord[]): Promise<void> {
-  const db = await openDB()
-  const keep = new Set(covers.map((c) => c.id))
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(COVER_STORE, 'readwrite')
-    const store = tx.objectStore(COVER_STORE)
-    const keysReq = store.getAllKeys()
-    keysReq.onsuccess = () => {
-      const existing = new Set(keysReq.result.map(String))
-      for (const k of keysReq.result) if (!keep.has(String(k))) store.delete(k)
-      for (const c of covers) if (!existing.has(c.id)) store.put(c)
-    }
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
-  })
 }
 
 /* ===== 角色的参考图 =====
@@ -633,6 +596,17 @@ export async function deleteChatOf(charId: string): Promise<void> {
     if (db.objectStoreNames.contains(BACKDROP_STORE)) {
       tx.objectStore(BACKDROP_STORE).delete(charId)
     }
+    /* 记忆条目也一起收(PRD §3.2-E)。**理由与 chat_summaries 那条一字不差**:
+       消息没了而记忆还留着,下一句开口就会提起一段用户刚刚清掉的旧事,
+       那比失忆更糟。共享画像(charId 为 null)不在 charId 索引里,
+       所以它们不会被这一刀带走 —— 那些是"关于用户"的,不属于这段对话 */
+    if (db.objectStoreNames.contains(MEMORY_STORE)) {
+      const mem = tx.objectStore(MEMORY_STORE)
+      const memKeys = mem.index('charId').getAllKeys(charId)
+      memKeys.onsuccess = () => {
+        for (const k of memKeys.result) mem.delete(k)
+      }
+    }
     tx.oncomplete = () => resolve()
     tx.onerror = () => reject(tx.error)
   })
@@ -686,6 +660,44 @@ export async function putChatSummary(rec: ChatSummary): Promise<void> {
     tx.oncomplete = () => resolve()
     tx.onerror = () => reject(tx.error)
   })
+}
+
+/** 读出**全部**角色的简报。只有存量迁移那一步用得上(见 lib/memoryMigrate):
+ *  它要把"升级前每个人攒下的那一段"搬成记忆条目,所以得把整张表扫一遍。
+ *  日常路径不读它 —— 对话只按 charId 取自己那一条(见 getChatSummary)。
+ *
+ *  逐项收口与 getChatSummary 同一套,理由也一样:这是从盘上读回来的东西。
+ *  另外兼容那个主键是 sessionId 的中间版本 —— 那种形状下记录里没有 charId,
+ *  但 sessionId 就是它的 charId(见 putChatSummary)。 */
+export async function getAllChatSummaries(): Promise<ChatSummary[]> {
+  try {
+    const db = await openDB()
+    const rows = await new Promise<unknown[]>((resolve, reject) => {
+      const req = db.transaction(SUMMARY_STORE, 'readonly').objectStore(SUMMARY_STORE).getAll()
+      req.onsuccess = () => resolve(req.result as unknown[])
+      req.onerror = () => reject(req.error)
+    })
+    const out: ChatSummary[] = []
+    for (const raw of rows) {
+      if (!raw || typeof raw !== 'object') continue
+      const row = raw as Partial<ChatSummary> & { sessionId?: unknown }
+      const charId = typeof row.charId === 'string' ? row.charId : typeof row.sessionId === 'string' ? row.sessionId : ''
+      if (!charId) continue
+      if (typeof row.text !== 'string' || typeof row.upToId !== 'string') continue
+      if (typeof row.upToAt !== 'number' || typeof row.covered !== 'number') continue
+      out.push({
+        charId,
+        text: row.text,
+        upToId: row.upToId,
+        upToAt: row.upToAt,
+        covered: row.covered,
+        updatedAt: typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt) ? row.updatedAt : row.upToAt
+      })
+    }
+    return out
+  } catch {
+    return []
+  }
 }
 
 /* ===== 角色此刻的心情 =====
@@ -1355,4 +1367,94 @@ export function detectMimeFromDataUrl(dataUrl: string): string {
   if (head.startsWith('R0LG')) return 'image/gif'
   if (head.startsWith('UKLGR')) return 'image/webp'
   return 'image/png'
+}
+/* ===== 记忆条目(PRD §3.2-E / F) ======================================
+   一条条独立的事实,不是那一段压缩纪要(见 MEMORY_STORE 的说明)。
+   读法上有一条与消息、心情完全一致的纪律:**从盘上读回来的东西要逐项收口**。
+   这里坏掉的后果比那两处更重 —— 一条 origin 不是 'user'/'ai' 的记忆,
+   会让"这是它猜的还是他说的"这个区分静默消失,而 PRD 明确要求
+   "不能把 AI 推断包装成用户明确说过的话"。
+   -------------------------------------------------------------------- */
+
+/** 一条记忆从库里出来时的收口。形状不对的整条丢掉(宁可少一条,不可错标一条) */
+export function memoryFromRow(row: unknown): MemoryItem | undefined {
+  if (!row || typeof row !== 'object') return undefined
+  const m = row as Partial<MemoryItem>
+  if (typeof m.id !== 'string' || !m.id) return undefined
+  if (typeof m.text !== 'string' || !m.text.trim()) return undefined
+  const category: MemoryCategory =
+    m.category === 'profile' || m.category === 'event' ? m.category : 'character'
+  /* 认不出的来源一律按 'ai' 收 —— 宁可把一条用户说过的话标成"推断",
+     也不能把一条推断标成"他说的":前者的代价是少一分亲近,后者是伪造事实 */
+  const origin: MemoryOrigin = m.origin === 'user' ? 'user' : 'ai'
+  const charId = typeof m.charId === 'string' && m.charId ? m.charId : null
+  return {
+    id: m.id,
+    charId,
+    category,
+    text: m.text.trim(),
+    origin,
+    important: m.important === true,
+    /* 只有共享画像才认 shared。角色专属记忆永远私有(见 lib/memory 的 selectMemories,
+       读取那一侧同样收死一次 —— 两处都收是为了任何一处被改坏都不会漏) */
+    ...(category === 'profile' && m.shared === true ? { shared: true } : {}),
+    ...(typeof m.note === 'string' && m.note ? { note: m.note } : {}),
+    createdAt: typeof m.createdAt === 'number' && Number.isFinite(m.createdAt) ? m.createdAt : Date.now(),
+    updatedAt: typeof m.updatedAt === 'number' && Number.isFinite(m.updatedAt) ? m.updatedAt : Date.now()
+  }
+}
+
+/** 读出全部记忆条目。读不出来当空 —— 记忆中心空着,好过整页打不开 */
+export async function getAllMemories(): Promise<MemoryItem[]> {
+  try {
+    const db = await openDB()
+    const rows = await new Promise<unknown[]>((resolve, reject) => {
+      const req = db.transaction(MEMORY_STORE, 'readonly').objectStore(MEMORY_STORE).getAll()
+      req.onsuccess = () => resolve(req.result as unknown[])
+      req.onerror = () => reject(req.error)
+    })
+    const out: MemoryItem[] = []
+    for (const row of rows) {
+      const m = memoryFromRow(row)
+      if (m) out.push(m)
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/** 写一条(新增或覆盖)。与别的域一样:调用方负责把内存里那份也换掉 */
+export async function putMemory(item: MemoryItem): Promise<void> {
+  const db = await openDB()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(MEMORY_STORE, 'readwrite')
+    tx.objectStore(MEMORY_STORE).put(item)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+/** 一批一起写(抽取结果落地时用)。开一个事务,避免写一半失败留下半批 */
+export async function putMemories(items: readonly MemoryItem[]): Promise<void> {
+  if (!items.length) return
+  const db = await openDB()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(MEMORY_STORE, 'readwrite')
+    const store = tx.objectStore(MEMORY_STORE)
+    for (const m of items) store.put(m)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+/** 删一条 */
+export async function deleteMemory(id: string): Promise<void> {
+  const db = await openDB()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(MEMORY_STORE, 'readwrite')
+    tx.objectStore(MEMORY_STORE).delete(id)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
 }

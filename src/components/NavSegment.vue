@@ -6,6 +6,7 @@ import {
   PhChatCircleDots,
   PhFrameCorners,
   PhBooks,
+  PhBrain,
   PhClockCounterClockwise,
   PhGear
 } from '@phosphor-icons/vue'
@@ -13,7 +14,7 @@ import RubberSegment from './RubberSegment.vue'
 import { NAV_ITEMS } from '../lib/nav'
 
 /* 顶部导航(分段控件)。
-   六个条目是六个平级页面,不是六个动作:滑块停在哪儿就是当前在看哪一页。
+   几个条目就是几个平级页面,不是几个动作:滑块停在哪儿就是当前在看哪一页。
    条目清单在 lib/nav.ts —— 顶部字标也要按页面取名字,那份清单两处共用。
 
    这里只管渲染与转手状态,当前是哪一页由主界面持有(page / navView)。
@@ -72,6 +73,11 @@ onBeforeUnmount(() => mq.removeEventListener('change', sync))
     <template #lib>
       <!-- Phosphor 的 Books:表达"收藏成册的提示词库" -->
       <PhBooks class="seg-ico" aria-hidden="true" />
+    </template>
+    <template #memory>
+      <!-- 大脑:记忆中心是"它记得你什么"。不用笔记本(Notebook)那枚 ——
+           那读起来像"待办/笔记",而这里的东西不是用户写的,是这段关系攒下来的 -->
+      <PhBrain class="seg-ico" aria-hidden="true" />
     </template>
     <template #history>
       <PhClockCounterClockwise class="seg-ico" aria-hidden="true" />

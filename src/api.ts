@@ -1,5 +1,5 @@
-import type { ApiConfig, GenParams, HistoryEntry, PromptItem, ResultItem, ReuseParams, Collection, Character, CharacterDraft, CharacterFields, CharacterPersona, CharacterView, CharacterViewKind, CharacterVoice, ChatMessage, ImportedCharacter, ImportedChat, ImportedChatMessage } from './types'
-import type { PruneResult, CoverRecord, CharRefRecord } from './lib/idb'
+import type { ApiConfig, GenParams, HistoryEntry, ResultItem, ReuseParams, Collection, Character, CharacterDraft, CharacterFields, CharacterPersona, CharacterView, CharacterViewKind, CharacterVoice, ChatMessage, ImportedCharacter, ImportedChat, ImportedChatMessage } from './types'
+import type { PruneResult, CharRefRecord } from './lib/idb'
 import { titleFromPrompt } from './lib/text'
 /* 角色设定那一份权威定义(键 / 顺序 / 标签 / 必填 / 枚举)住在服务端 ——
    那边拼起稿提示词用的就是它。前端在这里取用它的读法,
@@ -24,8 +24,6 @@ import {
   urlToBlob,
   base64ToBlob,
   detectMimeFromDataUrl,
-  getAllCovers,
-  putCovers,
   getAllCharRefs,
   putCharRefs,
   charSourceKey,
@@ -1137,6 +1135,14 @@ type CharacterManifest = {
        几百条消息塞进 character.json 会让那份"给人看的清单"变成一坨机器数据。
        没有这一项 = 这个包没带对话(老包、或没聊过的角色) */
     chat?: string
+    /* 对话背景图(沉浸页铺满屏幕的那一张,见 idb.ts 的 ChatBackdrop)。
+       它是**这段对话的一部分**:chat.json 带走了消息,却把背景落在家,
+       对方进沉浸页只见一片主题色。与设定图同一处理 —— 包内相对路径 */
+    backdrop?: string
+    /* 画它时的那段场景。原样带上:ChatBackdrop 的 scene 只说得出
+       "这是最后一幕",而导入后这一幕要与消息对得上(截到导入侧同一上限,
+       脏数据不进库)。老包没有这一项 */
+    backdropScene?: string
   }>
 }
 
@@ -1196,7 +1202,11 @@ function characterZipName(name: string): string {
 export async function exportCharacter(
   c: Character,
   views: CharacterView[],
-  chat?: ImportedChat
+  chat?: ImportedChat,
+  /* 这段对话的背景图(沉浸页那一张,见 idb.ts 的 ChatBackdrop)。
+     与 chat 分开传:它俩来源不同(chat 来自消息表,背景来自 BACKDROP_STORE),
+     而**没有对话也可以有背景**(消息清过、背景还在)—— 那种包也该把背景带走 */
+  backdrop?: { blob: Blob; scene?: string }
 ): Promise<number> {
   const files: Record<string, Uint8Array> = {}
   const entry: CharacterManifest['characters'][number] = {
@@ -1248,6 +1258,17 @@ export async function exportCharacter(
     for (const img of chat.images || []) {
       files[`chat/${img.id}.${extOfBlob(img.blob)}`] = new Uint8Array(await img.blob.arrayBuffer())
     }
+  }
+
+  /* 背景图跟着角色走(S-14:从前整个包里没有这一项,对方进沉浸页退到主题色)。
+     与 chat 是否为空无关 —— 它是"最后那一幕"的一张图,消息清过之后它仍在,
+     那种包同样该把这一场带走。scene 一起写:导入方据此与消息对得上 */
+  if (backdrop?.blob) {
+    const name = `backdrop.${extOfBlob(backdrop.blob)}`
+    files[name] = new Uint8Array(await backdrop.blob.arrayBuffer())
+    entry.backdrop = name
+    if (backdrop.scene) entry.backdropScene = backdrop.scene.slice(0, PHOTO_SCENE_CHARS)
+    images++
   }
 
   const manifest: CharacterManifest = { format: 'kimage-character', version: 1, characters: [entry] }
@@ -1337,7 +1358,7 @@ function coerceImportedChat(raw: unknown): ImportedChat | undefined {
         : {})
     })
   })
-  const memory = typeof src.memory === 'string' ? src.memory.trim().slice(0, CHAT_MAX_CHARS) : ''
+  const memory = typeof src.memory === 'string' ? src.memory.trim().slice(0, CHAT_MEMORY_CHARS) : ''
   if (!messages.length && !memory) return undefined
   return { messages, memory }
 }
@@ -1428,6 +1449,11 @@ export async function readCharacterZip(file: File): Promise<ImportedCharacter[]>
         chat = undefined
       }
     }
+    /* 背景图。**读不出来只丢它自己** —— 与对话同一条:一个坏掉的图不该让
+       整份角色设定进不来。scene 一并截到导入侧上限,脏数据不进库 */
+    const backdropBytes = typeof c.backdrop === 'string' ? fileAt(c.backdrop) : undefined
+    const backdropScene =
+      typeof c.backdropScene === 'string' ? c.backdropScene.trim().slice(0, PHOTO_SCENE_CHARS) : ''
     /* 把这段对话真正引用到的图挂上去。**只挂用到的那些** ——
        包里的图是全体角色共用的一个目录,每个角色都装一份会重复写库 */
     if (chat) {
@@ -1467,7 +1493,11 @@ export async function readCharacterZip(file: File): Promise<ImportedCharacter[]>
         ? { refKind: c.refKind as CharacterViewKind }
         : {}),
       views,
-      ...(chat ? { chat } : {})
+      ...(chat ? { chat } : {}),
+      ...(backdropBytes
+        ? { backdrop: new Blob([backdropBytes as BlobPart], { type: sniffMime(backdropBytes) }) }
+        : {}),
+      ...(backdropScene ? { backdropScene } : {})
     })
   }
   return out
@@ -2084,6 +2114,12 @@ export const CHAT_WINDOW = 20
    只由服务端切,用户看到的是"我发了一大段,它只回了前半截" */
 export const CHAT_MAX_CHARS = 8000
 
+/* 记忆正文的上限。**与 CHAT_MAX_CHARS 分开**:那是"一条消息"的上限,
+   这个是"一整段摘要"的 —— 记忆是整段对话压出来的,按消息的上限砍,
+   分享一个养熟的角色时会把记忆的尾巴静默砍掉(导出侧不设限、导入侧却截)。
+   两边都用它:导入在 coerceImportedChat,导出在 readChatForExport(useChat) */
+export const CHAT_MEMORY_CHARS = 20000
+
 /** 一轮对话收尾时的状态 */
 export interface ChatStreamResult {
   /* 上游为什么停下:'stop' 是正常说完,'length' 是撞上了 max_tokens,
@@ -2163,6 +2199,47 @@ export async function summarizeChat(
   return out
 }
 
+/**
+ * 从一段对话里挑出**值得长期记住的几条事实**(PRD §3.2-E)。
+ *
+ * 与 summarizeChat 是两件事,所以是两次调用而不是一次:
+ * 那一份产出"这一整段对话的压缩纪要"(成篇、会被反复重写),
+ * 这一份产出"一条条独立的事实"(各自可编辑/删除/标记/授权)。
+ * 合成一次调用会让两件事互相污染 —— 而两者的温度、输出形状与失败后果都不同。
+ *
+ * **只负责把输入摊成文本、把输出原样带回**:那几行怎么读是纯逻辑,
+ * 在 lib/memory 的 parseExtractedMemories 里(可单测,且坏一行只丢一行)。
+ */
+export async function extractMemories(
+  cfg: ApiConfig,
+  messages: ReadonlyArray<{ role: string; content: string }>,
+  alreadyKnown: string,
+  signal?: AbortSignal
+): Promise<string> {
+  const lines = messages.map(
+    (m) => `${m.role === 'user' ? 'User' : 'Character'}: ${m.content}`
+  )
+  const prompt =
+    (alreadyKnown ? `What the character already remembers:\n${alreadyKnown}\n\n` : '') +
+    `What was said:\n${lines.join('\n')}`
+
+  const resp = await fetch('/api/enhance', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify({
+      prompt,
+      mode: 'memory',
+      textModel: cfg.model,
+      baseUrl: cfg.baseUrl,
+      apiKey: cfg.apiKey
+    })
+  })
+  if (!resp.ok) throw new Error(await failureMessage(resp))
+  const data = (await resp.json()) as { prompt?: string }
+  return typeof data.prompt === 'string' ? data.prompt : ''
+}
+
 /** 把一个角色摊成对话要用的那份资料 */
 export function chatPayloadOf(c: Character): ChatCharacterPayload {
   const f = c.fields
@@ -2196,6 +2273,20 @@ export interface ChatStreamOpts {
      (IndexedDB 的 char_moods)。
      不给 / 词不合法 / 超过 6 小时,那一段就整块不出现 —— 三种情况都走同一条退路 */
   mood?: { word: string; at: number }
+  /* **用户希望被怎么对待**(相处偏好,见 lib/prefs 的 interactionGuidance)。
+     它已经在客户端摊成几行指令,服务端只负责加标签、限长、插进 system ——
+     标签里那句"这是偏好、不覆盖人格"是这条边界本身,所以留在服务端,
+     不能指望每个调用点都记得带上。
+     空串 = 用户一项都没表态,那一段整块不出现(与 memory 同一条退路) */
+  guidance?: string
+  /* **它记得的关于你的一条条事实**(记忆条目,见 types 的 MemoryItem)。
+     与 memory 那份简报是两样东西,所以分两个字段送:简报是"这段对话的来龙去脉",
+     这一份是"关于他/你们的事实清单",服务端给它们各自的标签(见 chat.js)。
+     每条已经摊成 "- …"(见 lib/memory 的 memoryLines),**推断出来的带 (inferred) 前缀** ——
+     那个标记是 PRD 反目标"不能把 AI 推断包装成用户说过的话"的执行者,
+     而解释它的那句边界话由服务端加。
+     空数组 = 这个角色还什么都没记住,那一段整块不出现 */
+  memories?: string[]
   cfg: ApiConfig
   /** 每一块增量。调用方拿到就往气泡上追加 */
   onDelta: (delta: string) => void
@@ -2223,6 +2314,8 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
       nowLocal: localStamp(),
       lastAt: opts.lastAt,
       mood: opts.mood,
+      guidance: opts.guidance || undefined,
+      memories: opts.memories?.length ? opts.memories : undefined,
       textModel: opts.cfg.model,
       baseUrl: opts.cfg.baseUrl,
       apiKey: opts.cfg.apiKey
@@ -2312,115 +2405,13 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
   return { finish, mood, photo, photoSelf, photoShot, photoFrame }
 }
 
-/* ===== 提示词库(收藏) ===== */
-export const LIB_KEY = 'kimage.prompts'
-/* 提示词库的读入规范化。老记录只有一个 category 字符串,新的是 tags 数组;
-   两套字段的判断收口在这里,别散到各个组件里去分辨"这条是新的还是旧的"。
-   'Uncategorized' 是当初的默认值,不是用户填的,转成标签只会多出一个噪声分类 */
-export function normalizePrompt(p: PromptItem): PromptItem {
-  const out: PromptItem = { ...p }
-  if (!Array.isArray(out.tags)) {
-    const legacy = (out.category || '').trim()
-    out.tags = legacy && legacy !== 'Uncategorized' ? [legacy] : []
-  }
-  out.tags = [...new Set(out.tags.map((t) => String(t).trim()).filter(Boolean))]
-  delete out.category
-  return out
-}
-
-/* 读入库。封面不在 localStorage 里(那里只有约 5MB),而是按 id 存在 IndexedDB;
-   所以这里要异步,并把封面贴回条目上。
-   老数据(以及旧版导出文件)把封面写成条目里的 thumb —— data URL,而且是当年
-   为了挤进 5MB 压到 320px 的缩略图。读到这里顺手转成 Blob 搬进 IDB,
-   并从条目里摘掉,否则它一直占着那 5MB 不撒手。旧封面糊就糊了,没法凭空变清楚 */
-export async function loadPrompts(): Promise<PromptItem[]> {
-  let list: PromptItem[] = []
-  try {
-    const raw = localStorage.getItem(LIB_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    // 存的是本地数据,但别信它一定是好的:被写坏(同步工具截断、手改)时
-    // 直接当数组用会让整个库页崩掉,这里滤一遍,坏项丢掉即可
-    if (!Array.isArray(parsed)) return []
-    list = parsed
-      .filter(
-        (p): p is PromptItem =>
-          !!p && typeof p === 'object' && typeof (p as PromptItem).prompt === 'string'
-      )
-      .map(normalizePrompt)
-  } catch {
-    return []
-  }
-
-  const covers = await getAllCovers()
-  let legacy = false
-  for (const item of list) {
-    const thumb = typeof item.thumb === 'string' ? item.thumb : ''
-    if (thumb.startsWith('data:image/')) {
-      legacy = true
-      // 库里已经有这条封面(上次搬运成功过)就以库里那份为准
-      if (!covers.has(item.id)) {
-        try {
-          covers.set(item.id, await urlToBlob(thumb))
-        } catch {
-          /* 转不出来:这条没封面,不影响其余 */
-        }
-      }
-    }
-    delete item.thumb
-    const cover = covers.get(item.id)
-    if (cover) item.cover = cover
-  }
-  if (legacy) {
-    try {
-      await putCovers([...covers].map(([id, data]) => ({ id, data })))
-      /* 目录单独写,不走 savePrompts:那条路会按"条目里现存的封面"反向裁剪 IDB,
-         而这里条目的封面还没摘(内存里要留着给界面用),一裁就把刚搬进去的全删了 */
-      localStorage.setItem(LIB_KEY, JSON.stringify(slimList(list)))
-    } catch {
-      /* 搬不过去就先算了:下次加载会再试一遍,条目里那份还在,数据不会丢 */
-    }
-  }
-  return list
-}
-
-/** 目录:localStorage 只存这个(没有封面,每条几百字节) */
-function slimList(list: PromptItem[]): PromptItem[] {
-  return list.map((item) => {
-    const copy = { ...item }
-    delete copy.cover
-    delete copy.thumb
-    return copy
-  })
-}
-
-/** 封面:按 id 进 IndexedDB */
-function coversOf(list: PromptItem[]): CoverRecord[] {
-  return list
-    .filter((i): i is PromptItem & { cover: Blob } => i.cover instanceof Blob)
-    .map((i) => ({ id: i.id, data: i.cover }))
-}
-
-/* 存回库。封面与目录分开写:localStorage 只留目录(小),封面按 id 进 IndexedDB。
-   以前两者都在 localStorage 里,装不下时只能整批丢封面 —— 去掉封面之后
-   每条只剩几百字节,那一整套"逐级丢封面"的降级路径也就不需要了。
-   返回 false 表示有东西没落盘,界面据此提示 */
-export async function savePrompts(list: PromptItem[]): Promise<boolean> {
-  const covers = coversOf(list)
-  let ok = true
-  try {
-    await ensurePersisted()
-    // 顺带清掉已经不在库里的封面:删掉一条提示词,它的封面不该永远留在这儿
-    await putCovers(covers)
-  } catch {
-    ok = false
-  }
-  try {
-    localStorage.setItem(LIB_KEY, JSON.stringify(slimList(list)))
-  } catch {
-    // 连目录都写不下(现实里到不了:去掉封面后每条只有几百字节),如实返回失败
-    ok = false
-  }
-  return ok
-}
-
+/* ============================================================
+   (2026-10-12)原「提示词库(收藏)」整块已删除。
+   它随提示词库页面一起被裁掉:nav.ts 只有 chat / chars / history / settings 四页,
+   全仓再无调用方 —— loadPrompts / savePrompts / normalizePrompt / slimList /
+   coversOf 与 LIB_KEY、以及 idb 的 getAllCovers / putCovers(covers store)
+   一并清掉。跨标签页同步里的 prompts 目录与 library 广播也随之移除
+   (见 lib/crossTab.ts 与它的测试)。
+   老库里的 `covers` store 与 localStorage 的 kimage.prompts 键都留着不动:
+   删它们要动迁移路径,而它们不占代码面,也不会有人再读到。
+   ============================================================ */

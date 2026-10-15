@@ -19,8 +19,8 @@ export default defineConfig({
     }
   },
   server: {
-    // 固定端口(前端):默认的 5173 被本机另一个项目长期占用,自动顺延会让地址一直漂
-    port: 5180,
+    // 固定端口(前端):5180/3100 留给其他分支,本分支用 5181/3101
+    port: 5181,
     // 端口被占时直接报错退出,而不是悄悄换一个端口
     strictPort: true,
     /* 默认只听 localhost —— 用手机连本机调试时要显式开:
@@ -30,9 +30,9 @@ export default defineConfig({
      * LAN=1 时探的是 0.0.0.0,vite 会顺手把可用的局域网地址打在启动日志里 */
     host: process.env.LAN === '1' ? true : undefined,
     proxy: {
-      // 开发环境将 /api 转发给本地 Express 后端(后端固定 3100),避开跨域
+      // 开发环境将 /api 转发给本地 Express 后端(后端固定 3101),避开跨域
       '/api': {
-        target: 'http://localhost:3100',
+        target: 'http://localhost:3101',
         changeOrigin: true
       }
     }

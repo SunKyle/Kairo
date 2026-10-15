@@ -164,7 +164,41 @@ Environment: <one short phrase>
 - Never write a focal length in millimetres or an f-number. Describe the framing and the depth of field instead.
 - Each line is one short phrase of under 20 words, comma-separated, in English — even when the scene is written in another language. No quotes, no colons, no full stops, no markdown.
 - Be specific to this scene. A sentence that would fit any scene is worthless here.
-- No preamble, no explanation. The four lines are the entire answer.`
+- No preamble, no explanation. The four lines are the entire answer.`,
+  /* 记忆抽取(PRD §3.2-E):从一段对话里挑出**值得长期记住的几条事实**。
+     与 summary 那档的分工要分清楚,否则两件事会互相污染:
+     - summary 产出的是"这一整段对话的压缩纪要",成篇、会被反复重写、带压缩游标;
+     - memory 产出的是**一条条独立的事实**,各自可编辑/删除/标记/授权,
+       而且**只挑真正有长期价值的**,没有就一条都不给。
+
+     固定前缀的行而不是 JSON:与 character 那档同一条理由 —— 少一整类
+     "围栏 / 多余解释 / 半截引号"的解析坑,坏一行只丢一行。
+
+     **来源必须分开写**(user / ai)是这一档最要紧的一条:PRD 把
+     "角色将 AI 推测当成用户明确说过的事实"列进了反目标,
+     而这里正是那句话唯一可能被制造出来的地方。宁可标成推断,不可伪装成事实。
+
+     分类只有三类,刻意不含"当前对话记忆" —— 那一类是 summary 的活儿,
+     把它也放进来会让每段闲聊都变成一条永久记忆(PRD:"普通闲聊、
+     短期情绪和无长期价值的细节不默认永久保存")。 */
+  memory: `You pick out the few things from a roleplay conversation that are worth remembering long after it ends, between a user and the character they are talking to.
+
+Rules:
+- Output one memory per line, in exactly this format and nothing else:
+Category|Origin|The memory, written as one plain sentence.
+- Category is exactly one of: profile, character, event.
+  - profile: a stable fact about the user themselves — an interest, a habit, a preference, a long-term goal. It is about them, not about this relationship.
+  - character: something specific to this user and this one character — a shared experience, a promise between them, how they treat each other.
+  - event: something with a long tail — a change in their life, an ongoing worry, a plan that has not happened yet.
+- Origin is exactly one of: user, ai.
+  - user: they said it outright, in so many words.
+  - ai: you worked it out from what they said rather than being told. When in doubt, write ai.
+- Only what is worth remembering weeks later. Drop small talk, pleasantries, moods of the moment, and anything that would not change how the character behaves in a future conversation.
+- Never invent anything. If the conversation does not support a line, leave that line out. It is completely fine to output nothing at all.
+- At most 8 lines. Prefer 2 or 3 good ones over 8 thin ones.
+- One sentence each, under 30 words, in English — but keep names, places and titles in their original language.
+- Write in the third person, from the character's point of view ("they", "the user"). Never write dialogue, never speak as either of them.
+- Do not restate anything already covered by what you are told the character already remembers.`,
 }
 // 改写强度:保守档给低温度,让它贴着原句走;重构档放开,否则出来的东西没差别。
 // 拆角色要具体又不重复,取中间偏放开。识图要的是"照着图写",再放开就会开始编。
@@ -178,7 +212,10 @@ const ENHANCE_TEMPERATURE = {
   character: 0.7,
   vision: 0.4,
   summary: 0.3,
-  photo: 0.6
+  photo: 0.6,
+  /* 抽取要的是"忠实":编出来的记忆比没有记忆更糟(与 summary 同一条),
+     所以取最低的一档 */
+  memory: 0.2
 }
 
 export { ENHANCE_PROMPTS, ENHANCE_TEMPERATURE }

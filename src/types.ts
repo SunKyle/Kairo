@@ -42,12 +42,14 @@ export interface GenParams {
   seed?: number
 }
 
-// 提示词库收藏项
+/* 【遗留】提示词库收藏项。提示词库页面已移除(2026-10-12),本类型
+   不再有任何读写方 —— 留着只为让老导出包与本地数据的形状有据可查。
+   读入时"并把 tags"的逻辑(原 api.ts 的 normalizePrompt)已随整块功能删除 */
 export interface PromptItem {
   id: string
   prompt: string
   /* 标签。一条提示词可以挂多个 —— 原先只有一个 category 字符串,
-     加这个字段时把它并了进来(见 api.ts 的 normalizePrompt) */
+     加这个字段时把它并了进来 */
   tags?: string[]
   // 自定义标题。空着就按提示词开头派生一个(见 lib/text.ts)
   title?: string
@@ -483,7 +485,7 @@ export interface Character {
   /* 封面与头像用的那张图。生成正脸成功后它就是正脸本身(见 App 的 genCharView),
      所以列表、详情、创作区三处读它读到的都是同一张脸 */
   ref?: Blob
-  /* 第一步上传的那张底图(也含"从作品提升为参考"的那一张)。
+  /* 第一步上传的那张底图。
      它有两处用处:生成正脸时的参考图,以及其余四张设定图与正脸一起送出去的第二张参考图 ——
      正脸定的是"这张脸长什么样",底图定的是"这个人原本是什么样子"
      (发型轮廓、体态、服装这些一张正面头像交代不了的东西)。
@@ -563,6 +565,12 @@ export interface ImportedCharacter {
   views: CharacterView[]
   /* 包内带过来的那段对话。老包、或没聊过的角色没有这一项 */
   chat?: ImportedChat
+  /* 包内带过来的对话背景图(沉浸页铺满屏幕的那一张,见 idb.ts 的 ChatBackdrop)。
+     老包、或没画过背景的角色没有这一项 */
+  backdrop?: Blob
+  /* 画它时的那段场景。导入后写进 ChatBackdrop.scene —— 它记着"这是最后一幕",
+     与消息里的场景对得上时,沉浸页那行说明才不打架。老包没有这一项 */
+  backdropScene?: string
 }
 
 /* 一个角色的用量:被拿去出过多少张作品、最后一次是什么时候。
@@ -604,4 +612,90 @@ export interface ReuseParams {
   /* 「拉自某条记录」时的出处记录 id。带上来,主界面才知道这次生成
      把谁当父记录(parentId)。可选:手动手写提示词开始的生成没有 */
   fromEntryId?: string
+}
+/* ===== 相处偏好(PRD §3.2-D) ==========================================
+   用户希望"被怎么对待"的一组偏好:主动程度、幽默、直接、节奏、安慰方式。
+   它与 CharacterPersona 是**两件不同的事**,不能混:
+
+   - persona 是**这个角色是谁**(性格、说话方式、称呼、禁区),由用户为角色写;
+   - 相处偏好是**用户希望这段相处是什么样**,由用户为自己写。
+
+   分开存是有理由的:PRD 明确"用户偏好属于相处指导,不是要求角色无条件服从的命令",
+   "用户不能通过普通偏好设置直接重写角色的核心人格"。两者一旦存进同一处,
+   这个边界在数据层就没了 —— 而它正是"所有角色最后都变成同一种顺从的聊天机器人"
+   那条反目标的防线。
+
+   挂在角色上而不是全局:PRD §3.2-C "每个角色与用户拥有独立的关系状态",
+   相处方式自然也是每个角色各一份(跟 A 可以爱开玩笑,跟 B 希望它正经)。
+   -------------------------------------------------------------------- */
+
+/** 三档强度。空/缺省一律按 neutral 处理 —— 也就是"用户没表态" */
+export type PrefLevel = 'neutral' | 'low' | 'high'
+
+/* 用户难受时希望怎么被对待。它不是强度,是三种不同的做法,所以单独一组取值:
+   听我说完 / 帮我理一理 / 带我把注意力挪开 */
+export type ComfortMode = 'neutral' | 'listen' | 'advise' | 'distract'
+
+export interface InteractionPrefs {
+  /* 主动程度:角色多久自己找上来说话。它同时是 PRD §3.2-J「主动联系」里
+     "角色主动程度"那一项 —— 所以刻意用同一个词,不做第二套叫法 */
+  initiative: PrefLevel
+  /* 幽默程度:爱不爱开玩笑 */
+  humor: PrefLevel
+  /* 表达直接程度:直说 vs 绕着说 */
+  directness: PrefLevel
+  /* 聊天节奏:一次说很多(快) vs 慢悠悠一两句(慢)。
+     high = 希望它多写一点、接得快;low = 短句、别刷屏 */
+  pace: PrefLevel
+  /* 安慰方式:它察觉用户状态不好时该怎么做 */
+  comfort: ComfortMode
+  /** 最后一次改动。界面拿它显示"改于…" */
+  updatedAt: number
+}
+
+/* ===== 记忆条目(PRD §3.2-E / F) ======================================
+   与 ChatSummary 是**两件事**,所以两张表:
+
+   - ChatSummary 是**这一整段对话的压缩纪要**(滑出窗口的消息压成的一段简报),
+     它带着压缩游标(upToAt/covered),是机制性的、会被反复重写。
+   - MemoryItem 是**一条离散的事实**,由 AI 抽取或用户手写,各自独立地
+     编辑/删除/标记/授权。它没有游标,也不会被下一轮覆盖。
+
+   PRD 把它们分开点名:「当前对话记忆」用于保持当下连贯性,「不必全部转成长期记忆」。
+   合并成一张表会让"忘掉这条"与"重压这段"变成同一个动作。
+   -------------------------------------------------------------------- */
+
+/** 记忆的分类。分类决定它在记忆中心怎么组织,以及能不能跨角色 */
+export type MemoryCategory =
+  /* 共享用户画像:关于用户的稳定兴趣、偏好、长期目标、生活习惯。
+     只有用户授权共享时,其他角色才看得到(见 MemoryItem.shared) */
+  | 'profile'
+  /* 角色专属记忆:与某个角色的私人谈话、共同经历、约定、关系记忆。默认私有 */
+  | 'character'
+  /* 重要事件与计划:有长期价值的变化、持续困扰、未来计划,可在适当时机被跟进 */
+  | 'event'
+
+/** 这条记忆是谁说的。**AI 推断的必须能一眼看出来** ——
+ *  PRD 反目标里那条"角色将 AI 推测当成用户明确说过的事实"就死在这一位上 */
+export type MemoryOrigin = 'user' | 'ai'
+
+export interface MemoryItem {
+  id: string
+  /* 归属哪个角色。**'profile' 类挂 null** —— 它是"关于用户"的,
+     不属于任何一段关系,所以谁都不该独占它 */
+  charId: string | null
+  category: MemoryCategory
+  /** 记忆正文。一句自然语言,不是聊天原文 */
+  text: string
+  origin: MemoryOrigin
+  /** 用户标记的重要记忆。界面上置顶、且不进任何自动清理 */
+  important: boolean
+  /* 是否授权跨角色共享。**只有 profile 类有意义**:角色专属记忆永远私有,
+     即便这里被写成 true 也不会被别的角色读到(见 lib/memory 的 selectMemories)。
+     默认不勾 —— PRD:"跨角色共享需要用户明确授权" */
+  shared?: boolean
+  /** 来源背景或用途说明。界面详情里展示"这条是从哪来的" */
+  note?: string
+  createdAt: number
+  updatedAt: number
 }

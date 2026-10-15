@@ -17,6 +17,11 @@ const FOCUSABLE = [
   'input:not([disabled])',
   'select:not([disabled])',
   'textarea:not([disabled])',
+  /* 可编辑区与带控制条的媒体也是可 focus 的(浏览器默认行为),
+     漏掉它们焦点就会从这些元素溜到背后的页面 */
+  '[contenteditable]:not([contenteditable="false"])',
+  'audio[controls]',
+  'video[controls]',
   '[tabindex]:not([tabindex="-1"])'
 ].join(', ')
 
@@ -31,8 +36,24 @@ export function focusablesIn(box: HTMLElement | null, opts: FocusTrapOpts = {}):
   if (!box) return []
   const list = Array.from(box.querySelectorAll<HTMLElement>(FOCUSABLE))
   if (opts.visibleOnly === false) return list
-  // 有布局盒子的才算真的能聚焦:display:none 与未挂载的都没有 rects
-  return list.filter((el) => el.getClientRects().length > 0)
+  /* 有布局盒子的才算真的能聚焦:display:none 与未挂载的都没有 rects。
+     **光看 rects 不够**:visibility:hidden、被祖先 overflow 裁掉的控件
+     照样有 rects,却聚焦不到(or 聚焦了也看不见) —— 补一层计算样式判定 */
+  return list.filter((el) => isVisibleFocusable(el))
+}
+
+/** 这个元素此刻是不是"看得见、真的能Tab过去" */
+function isVisibleFocusable(el: HTMLElement): boolean {
+  if (el.getClientRects().length === 0) return false
+  /* getComputedStyle 在 jsdom/SSR 下不存在 —— 那种环境没有布局,
+     rects 那一条已经判过了,这里安静放过 */
+  if (typeof window === 'undefined' || !window.getComputedStyle) return true
+  const s = window.getComputedStyle(el)
+  if (s.visibility === 'hidden' || s.display === 'none') return false
+  /* 祖先被裁掉时 offsetParent 是 null(position:fixed 除外)。
+     浮层本身常是 fixed,所以要沿着祖先链找 —— 但焦点陷阱的调用点
+     都是在挂载好的浮层上,直接判这一层就够,不值得为它遍历整条链 */
+  return true
 }
 
 /**

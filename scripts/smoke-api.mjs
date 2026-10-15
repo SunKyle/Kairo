@@ -14,7 +14,7 @@
    2. **429 记为失败**。端点有限流(30 次/分钟/IP),被挡掉的那几条等于
       根本没进处理器 —— 那是最危险的一种"绿"。
 
-   需要后端已经在跑(npm run dev)。默认 http://127.0.0.1:3000,用 --base 改。
+   需要后端已经在跑(npm run dev)。默认 http://127.0.0.1:3101,用 --base 改。
    用法:npm run smoke:api
    -------------------------------------------------------------------- */
 
@@ -22,7 +22,7 @@ const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`)
   return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback
 }
-const BASE = arg('base', 'http://127.0.0.1:3000').replace(/\/$/, '')
+const BASE = arg('base', 'http://127.0.0.1:3101').replace(/\/$/, '')
 /* 丢弃端口:连接必然失败,于是请求走完整条前置逻辑也出不了网。
    9 在 undici 的禁用端口表里,连 TCP 都不会真的发出去 */
 const DEAD = 'http://127.0.0.1:9/'

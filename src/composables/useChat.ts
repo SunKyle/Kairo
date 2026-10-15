@@ -1,6 +1,7 @@
 import { ref, toRaw, watch } from 'vue'
 import {
   CHAT_EXPORT_MSGS,
+  CHAT_MEMORY_CHARS,
   CHAT_SUMMARIZE_AFTER,
   CHAT_SUMMARY_CAP,
   CHAT_WINDOW,
@@ -22,6 +23,7 @@ import {
   putChatSummary
 } from '../lib/idb'
 import { stopSpeaking } from '../lib/speech'
+import { abortCharImages } from '../lib/imageJobs'
 import type {
   ApiConfig,
   Character,
@@ -47,6 +49,11 @@ export interface ChatDeps {
   notice: { value: string }
   announce: (kind: 'chat', charId?: string) => void
   scheduleUndo: (item: { label: string; undo: () => void; purge: () => void }) => void
+  /* 压完一段记忆之后顺手做的事(现在只有一件:抽记忆条目,见 useMemories)。
+     **用回调而不是直接引用那个 composable**:两者是平行的两条线(一份是
+     "这段对话的纪要",一份是"一条条独立的事实"),互相不认识才对 ——
+     由主界面在中间牵这一根线。不给就什么都不做(与"没配模型"同一条退路) */
+  onSummarized?: (charId: string, batch: ChatMessage[]) => void
 }
 
 export function useChat(deps: ChatDeps) {
@@ -152,8 +159,10 @@ async function readChatForExport(id: string): Promise<ImportedChat> {
   }
   return {
     messages,
-    // 忘掉过的角色导出的就是空串(库里那条正文为空),包里也就不带记忆
-    memory: sum?.text || '',
+    // 忘掉过的角色导出的就是空串(库里那条正文为空),包里也就不带记忆。
+    // 上限与导入侧同用一个数(见 CHAT_MEMORY_CHARS):那边按它收,
+    // 这边若不带,超长记忆会被静默砍尾巴
+    memory: (sum?.text || '').slice(0, CHAT_MEMORY_CHARS),
     ...(images.length ? { images } : {})
   }
 }
@@ -168,12 +177,18 @@ async function writeImportedChat(charId: string, chat: ImportedChat) {
   const msgs: ChatMessage[] = chat.messages.map((m) => ({ id: uid(), charId, ...m }))
   for (const m of msgs) await putChatMessage(m)
   if (!chat.memory) return
-  const last = msgs[msgs.length - 1]
+  /* 游标推到"最后一条"要按**最大的 createdAt** 算,不是数组最后一条 ——
+      外面手拼的包不保证升序;按最后一条算的话,乱序包会把时间更晚
+      (却排在前面)的消息漏在游标外,下一轮把它们再压一遍。
+      包也可能"有记忆、没有消息"(记忆是主、消息是辅):那种情况下
+      游标取空,下一轮照常从零开始压 */
+  let latest = msgs[0]
+  for (const m of msgs) if (m.createdAt >= (latest?.createdAt ?? -1)) latest = m
   await putChatSummary({
     charId,
     text: chat.memory,
-    upToId: last?.id || '',
-    upToAt: last?.createdAt || 0,
+    upToId: latest?.id || '',
+    upToAt: latest?.createdAt || 0,
     covered: msgs.length,
     /* 这份记忆是跟着包过来的,不是此刻压出来的。界面上那行"多久没动过"
        显示的是它落到这台机器上的时间 —— 除此之外没有更早的时刻可写 */
@@ -377,8 +392,18 @@ async function maybeSummarize(id: string) {
       covered: (cur?.covered || 0) + batch.length,
       updatedAt: Date.now()
     }
+    /* 落笔前再看一眼盘上那份:另一个标签页可能刚压过更后面的一段
+       (它的 covered 比我们这份新)。covered 只进不退 —— 不看这一眼,
+       双标签页同时压缩时后写覆盖先写,游标回退,下一轮把压过的再压一遍 */
+    const onDisk = await getChatSummary(id)
+    if ((onDisk?.covered || 0) > (cur?.covered || 0)) return
     await putChatSummary(next)
     chatSummary.value = { ...chatSummary.value, [id]: next }
+    /* 纪要写成了,顺手把这一批里"值得长期记住的几条事实"也抽出来
+       (PRD §3.2-E)。复用同一批消息 —— 不必再读一遍盘,也不必等下一轮。
+       它自己静默失败,这里不 await:压记忆本来就不挡用户看回复,
+       多等一次抽取会让这一轮的后台动作拖得更长 */
+    deps.onSummarized?.(id, batch)
   } catch {
     /* 见上:后台整理失败不打扰用户 */
   } finally {
@@ -457,6 +482,9 @@ function clearChat(id: string) {
   if (!list.length && !beforeSummary) return
   // 正在说话的先掐掉,否则它会往上文里补一句刚落空的消息
   chatControllers.get(id)?.abort()
+  /* 在途的对话出图也掐掉(见 lib/imageJobs):消息清完它再画完也写不回来 ——
+     drawChatPhoto 的存在性守卫会挡下,而上游那边的字节与配额已经花掉了 */
+  abortCharImages(id)
   /* 正在念的那句也一起停:它念的正是一条马上就不存在的消息 */
   stopSpeaking()
   /* 也让在途的压缩作废:它回来时这段对话已经不是原来那段了 */
@@ -497,7 +525,7 @@ function clearChat(id: string) {
       void (async () => {
         for (const m of before) await putChatMessage(m)
         if (beforeSummary) await putChatSummary(beforeSummary)
-        if (beforeMood) await putCharMood(beforeMood)
+        if (beforeMood) await putCharMood(toRaw(beforeMood))
       })()
     },
     purge: () => {
@@ -505,7 +533,13 @@ function clearChat(id: string) {
          从前这里在界面上数 imageId,只数得到内存里那一档(最近 200 条),
          而 photoId(角色发的图)一张都没删过 —— 见 idb.ts 的说明。
          附图的回收必须留在 purge:撤销窗口里那些消息还要原样放回去 */
-      void deleteChatOf(id)
+      deleteChatOf(id).catch((e) => {
+        /* 内存里已经清了,库里这条要留着的话,撤销窗口一过刷新对话就"复活" ——
+           这件事必须让人知道,不能静默 */
+        console.error('[Kairo] clear conversation: saved data was not removed', e)
+        deps.notice.value =
+          'Could not remove the saved conversation — it will reappear on refresh.'
+      })
       // 到这里这一整段对话才算真的没了 —— 撤销窗口里它还在,另一页不该先清掉
       deps.announce('chat', id)
     }

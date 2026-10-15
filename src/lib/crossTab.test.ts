@@ -6,7 +6,6 @@ import {
   COLL_KEY,
   CONFIG_ACTIVE_KEY,
   CONFIG_KEY,
-  LIB_KEY,
   TEXT_ACTIVE_KEY,
   TTS_ACTIVE_KEY,
   VISION_ACTIVE_KEY
@@ -26,15 +25,14 @@ describe('syncTargetsOf · 哪个键该触发哪份目录重载', () => {
     }
   })
 
-  it('角色 / 作品集 / 提示词各归各的', () => {
+  it('角色 / 作品集各归各的', () => {
     expect(syncTargetsOf(CHAR_KEY)).toEqual(['characters'])
     expect(syncTargetsOf(COLL_KEY)).toEqual(['collections'])
-    expect(syncTargetsOf(LIB_KEY)).toEqual(['prompts'])
   })
 
-  it('key 为 null(另一个标签页 clear 了)时四份目录全部重载', () => {
+  it('key 为 null(另一个标签页 clear 了)时三份目录全部重载', () => {
     expect(syncTargetsOf(null).sort()).toEqual(
-      ['characters', 'collections', 'configs', 'prompts'].sort()
+      ['characters', 'collections', 'configs'].sort()
     )
   })
 
@@ -51,7 +49,6 @@ describe('syncTargetsOf · 哪个键该触发哪份目录重载', () => {
     expect(flat).toContain(CONFIG_KEY)
     expect(flat).toContain(CHAR_KEY)
     expect(flat).toContain(COLL_KEY)
-    expect(flat).toContain(LIB_KEY)
     // 每个键都必须是 kimage.* 命名空间下的,别把别的应用/别的用途的键卷进来
     for (const k of flat) expect(k.startsWith('kimage.')).toBe(true)
   })
@@ -74,12 +71,19 @@ describe('同步范围 · 与源码里的写入点保持一致', () => {
     TTS_ACTIVE_KEY: { key: TTS_ACTIVE_KEY, synced: true },
     COLL_KEY: { key: COLL_KEY, synced: true },
     CHAR_KEY: { key: CHAR_KEY, synced: true },
-    LIB_KEY: { key: LIB_KEY, synced: true },
     THEME_KEY: { key: 'kimage.theme', synced: false },
     /* 沉浸模式(见 lib/prefs.ts)。与 THEME_KEY 同一类:它答的是"这台设备上
        这个人喜欢怎么看界面",丢了不影响任何数据的完整性;另一个标签页切了
        沉浸跟着一起变,反而突兀 */
-    IMMERSIVE_KEY: { key: 'kimage.immersive', synced: false }
+    IMMERSIVE_KEY: { key: 'kimage.immersive', synced: false },
+    /* 相处偏好(见 lib/prefs.ts)。同上一条:它是"这个人希望被怎么对待"的
+       界面偏好,不是覆盖写的数据目录 —— 每次保存都先把盘上那份重读一遍再合并
+       单个角色,所以两个标签页各改各的不会互相覆盖,也就不需要同步 */
+    INTERACTION_KEY: { key: 'kimage.interactionPrefs', synced: false },
+    /* 存量简报的一次性地标(见 lib/memoryMigrate.ts)。它答的是"这台设备
+       搬过没",不是一份数据目录 —— 没有"重载哪一份"这回事,所以不进 SYNC_KEYS。
+       另一个标签页要不要知道?不必:库是共享的,它自己下次启动会读到同一个地标 */
+    MIGRATED_KEY: { key: 'kimage.memoryMigrated', synced: false }
   }
 
   /* 用 Vite 的 import.meta.glob 把 src 下的源码按原文读进来,而不是 node:fs ——
@@ -148,7 +152,7 @@ describe('coalesceSync · 一批广播怎么收拢', () => {
   })
 
   it('不同类分开留', () => {
-    expect(coalesceSync([{ kind: 'history' }, { kind: 'library' }])).toHaveLength(2)
+    expect(coalesceSync([{ kind: 'history' }, { kind: 'memories' }])).toHaveLength(2)
   })
 
   it('带 charId 与不带的算两条(后者表示"整类都变了")', () => {
@@ -156,8 +160,8 @@ describe('coalesceSync · 一批广播怎么收拢', () => {
   })
 
   it('顺序按首次出现,空批次给空数组', () => {
-    expect(coalesceSync([{ kind: 'library' }, { kind: 'history' }]).map((m) => m.kind)).toEqual([
-      'library',
+    expect(coalesceSync([{ kind: 'memories' }, { kind: 'history' }]).map((m) => m.kind)).toEqual([
+      'memories',
       'history'
     ])
     expect(coalesceSync([])).toEqual([])

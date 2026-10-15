@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import { PhSun, PhMoon, PhX } from '@phosphor-icons/vue'
 import ImagePreview from './components/ImagePreview.vue'
 import HistoryPage from './components/HistoryPage.vue'
 import CharacterPage from './components/CharacterPage.vue'
 import ChatPage from './components/ChatPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
+import ApiSettingsPanel from './components/ApiSettingsPanel.vue'
+import AppearancePanel from './components/AppearancePanel.vue'
+import InteractionSettingsPanel from './components/InteractionSettingsPanel.vue'
+import MemoryPrivacyPanel from './components/MemoryPrivacyPanel.vue'
+import MemoryPage from './components/MemoryPage.vue'
 import NavSegment from './components/NavSegment.vue'
 import UndoToast from './components/UndoToast.vue'
 import {
@@ -34,13 +39,17 @@ import {
   deleteVoiceSample,
   putChatImage
 } from './lib/idb'
+import { abortCharImages } from './lib/imageJobs'
+import { migrateSummariesOnce } from './lib/memoryMigrate'
 import { NAV_ITEMS, type Page } from './lib/nav'
+import { DEFAULT_SETTINGS_SECTION, type SettingsSection } from './lib/settingsNav'
 import { formatHash, parseHash } from './lib/router'
 import { useFeedback } from './composables/useFeedback'
 import { useConfigs } from './composables/useConfigs'
 import { useHistory } from './composables/useHistory'
 import { useCharacters } from './composables/useCharacters'
 import { useChat } from './composables/useChat'
+import { useMemories } from './composables/useMemories'
 import { useChatFlow } from './composables/useChatFlow'
 import { useGeneration } from './composables/useGeneration'
 // 另一个标签页改了 localStorage 里的目录时,本页要跟着重载(见 lib/crossTab.ts)
@@ -69,7 +78,7 @@ import {
   putChatBackdrop,
   type ChatBackdrop
 } from './lib/idb'
-import type { HistoryEntry, Character, CharacterFields, CharacterPersona, CharacterViewKind, CharacterVoice, ImportedCharacter } from './types'
+import type { HistoryEntry, Character, CharacterFields, CharacterPersona, CharacterViewKind, CharacterVoice, ChatMessage, ImportedCharacter } from './types'
 
 // —— 状态 ——
 /* 反馈三通道(错误 / 中性提示 / 删除撤销)收在 composables/useFeedback.ts ——
@@ -128,8 +137,11 @@ const {
   importConfigs
 } = useConfigs({
   scheduleUndo,
-  // 从参数面板进设置页:切页与收起面板都归主界面
+  /* 从参数面板进设置页:切页与收起面板都归主界面。
+     落点必须是**接口那一区** —— 用户是从某个模型的参数面板点过来的,
+     把他丢在"外观"上等于让他自己再找一次(见 settingsSection 的说明) */
   enterSettings: () => {
+    settingsSection.value = 'api'
     page.value = 'settings'
     openPanel.value = ''
   }
@@ -197,6 +209,13 @@ const {
 /* 对话这一域分两处:非流式那一半（消息、长期记忆、清空、导入导出）收在
    composables/useChat.ts;**流式那一轮**（进对话页挑人 / 发一句 / 重生成 /
    停止 / 出图调度 / 单条删除的撤销）现在收在 composables/useChatFlow.ts */
+
+/* 压完记忆顺手抽记忆条目这一件事的接线口(见 useChat 的 onSummarized 与
+   useMemories 的 autoExtract)。useChat 先创建、useMemories 后创建,
+   而两者互不认识 —— 于是先摆一个"还没接上"的空实现,下面接上它。
+   它只在**调用时**被读,所以顺序不影响正确性 */
+let autoExtractMemories: (charId: string, batch: ChatMessage[]) => Promise<void> = async () => {}
+
 const {
   chatCharId,
   chatMessages,
@@ -207,12 +226,10 @@ const {
   chatLastReady,
   chatBusy,
   chatControllers,
-  bumpChatSeq,
   chatSeqOf,
   loadChatLast,
   setChatLast,
   setChatMood,
-  dropChatMood,
   dropChatLast,
   loadChatMessages,
   loadEarlierChat,
@@ -222,7 +239,52 @@ const {
   readChatForExport,
   writeImportedChat,
   clearChat
-} = useChat({ characters, chatConfig, notice, announce, scheduleUndo })
+} = useChat({
+  characters,
+  chatConfig,
+  notice,
+  announce,
+  scheduleUndo,
+  /* 压完一段记忆顺手抽一次记忆条目(见 useMemories)。
+     两个 composable 互不认识,由主界面牵这一根线:先摆一个可替换的入口,
+     下面创建出 useMemories 之后再接上。它是**调用时才读**这个变量,
+     所以先后顺序不影响 */
+  onSummarized: (charId, batch) => void autoExtractMemories(charId, batch)
+})
+
+/* 记忆条目这一域(PRD §3.2-E / F):一条条独立的事实(可编辑/删除/标记/授权),
+   以及记忆中心那一页要用的读写。与 useChat 的 chatSummary 是平行的两条线 */
+const {
+  memories,
+  extracting,
+  loadMemories,
+  addMemory,
+  editMemory,
+  setImportant,
+  setShared,
+  removeMemory,
+  extractNow,
+  autoExtract
+} = useMemories({ characters, chatConfig, notice, announce, scheduleUndo })
+// 接上上面那根线(见 useChat 的 onSummarized)
+autoExtractMemories = (charId, batch) => autoExtract(charId, batch)
+
+/* 记忆中心那枚"整理一下"。抽到 0 条**也要说一声** ——
+   什么都不说的话,用户分不清"这轮没找到值得记的"和"按钮坏了",
+   而这一步要打一次模型,静默失败是最难查的那种。
+   (自动抽取那条路反过来:它是后台整理,不打断用户 —— 见 useMemories 的说明) */
+async function extractMemoriesFromPage(id: string) {
+  const n = await extractNow(id)
+  notice.value = n
+    ? `Remembered ${n} new ${n === 1 ? 'thing' : 'things'}.`
+    : 'Nothing new worth remembering in that conversation.'
+}
+
+/* 整理要用对话那条模型配置(与压记忆同一条:它该和回话用同一个脑子)。
+   配不齐时按钮给出理由,而不是点了没反应 */
+const canExtractMemories = computed(
+  () => !!chatConfig.value?.model.trim() && !!chatConfig.value?.baseUrl.trim()
+)
 
 /* —— 页面落在哪一页:由 hash 说了算(见 lib/router.ts) ——
    页面与对话对象都进地址栏,于是刷新不再回到首页,某段对话也能直接把链接发给别人。
@@ -233,6 +295,55 @@ const page = ref<Page>(initialRoute.page)
 if (initialRoute.id && initialRoute.page === 'chat') {
   chatCharId.value = initialRoute.id
 }
+
+/* 设置页内部的分区(PRD §11.12)。**不进地址栏** ——
+   地址栏里放的是"哪一页、在看哪个对象"(见上面那段);设置页的分区是
+   一页之内的分类浏览,刷新回到第一区是可以接受的,而把它塞进 hash 要动
+   那条已经绕开好几个坑的 parse/format 往返。
+   常来配接口的人也不会因此多走一步:那些引导入口直接把这一格设成 'api'
+   (见下面的 openChatConfig)。
+   等哪天真需要"把某个分区发给别人",再加也来得及 —— 那时改的是
+   lib/router 的 VALID_PAGES 那一层,不是这里 */
+const settingsSection = ref<SettingsSection>(DEFAULT_SETTINGS_SECTION)
+
+/* 引导入口("先配一个模型"那一类)要落到**接口那一区**。
+   useChatFlow 只知道"去设置页"(它不认识设置页内部的分区),
+   所以由这里补上那一步 —— 两件事写在一处,免得以后有人只改了其中一半 */
+function openChatConfig() {
+  settingsSection.value = 'api'
+  openChatConfigSettings()
+}
+
+/* —— 非对话页的深链:那个 id 从前**解析出来就被丢了**(S-21),
+   于是 #/chars/:id 打不开某个角色的详情、#/history/:id 定位不到某条记录。
+   两处各自有现成的入口,这里只负责把 id 递过去:
+   - 角色页 → 它暴露的 openDetail(与详情页那枚 Details、角色页卡片走同一条);
+   - 历史页 → openPreview,先在已读到的历史里按 id 找那一条。
+   找不到就当没这回事(老书签 / 那条已被删),界面退回列表 —— 不弹错。 */
+const pendingHistoryId = ref('')
+function applyRouteId(p: Page, id: string | undefined) {
+  if (!id) return
+  if (p === 'chars') {
+    /* 等这一帧渲染完再叫:角色页那时才挂得上(与 openCharacterDetail 同一处理) */
+    nextTick(() => charPageRef.value?.openDetail(id))
+  } else if (p === 'history') {
+    const entry = history.value.find((h) => h.id === id)
+    /* 刷新直接进深链时历史还没读完(它在启动后才 load)—— 记下来,读完再开 */
+    if (entry) openPreview(entry)
+    else pendingHistoryId.value = id
+  }
+}
+/* 首帧那一次:等挂载之后再用 id(角色页/历史页这时才在) */
+onMounted(() => applyRouteId(initialRoute.page, initialRoute.id))
+/* 深链等的是"历史读完了"这一件事:读到那一条就开,读完整份还没有就放弃 */
+watch(history, (list) => {
+  const id = pendingHistoryId.value
+  if (!id) return
+  const entry = list.find((h) => h.id === id)
+  if (!entry) return
+  pendingHistoryId.value = ''
+  openPreview(entry)
+})
 
 /* 状态变了就写回地址栏。用 replaceState 而不是 pushState:这些变化
    (切页、换对话对象)每一步都进历史栈的话,用户按一次后退只退回上一个 tab,
@@ -250,9 +361,18 @@ watch([page, chatCharId], ([p, cid]) => {
 function onHashChange() {
   const { page: p, id } = parseHash(window.location.hash)
   if (page.value !== p) page.value = p
-  if (id && p === 'chat' && chatCharId.value !== id) {
-    chatCharId.value = id
+  if (p === 'chat') {
+    if (id) {
+      if (chatCharId.value !== id) chatCharId.value = id
+    } else if (chatCharId.value) {
+      /* hash 里的 id 段没了(用户手改回 #/chat)时也要把当前角色放掉 ——
+         否则界面停在旧角色,而地址栏已经不代表它了 */
+      chatCharId.value = ''
+    }
+    return
   }
+  // 非对话页:把 id 交给对应的页(见 applyRouteId),不再丢掉
+  applyRouteId(p, id)
 }
 
 /* —— 沉浸式对话页 ——
@@ -265,9 +385,15 @@ function onHashChange() {
      所以只要不在对话页,chrome 就必须回到普通。偏好留着,下次进对话页直接生效。 */
 const immersive = ref(savedImmersive())
 const immersiveOn = computed(() => immersive.value && page.value === 'chat')
+/* 设定某一档。与 setTheme 同一条:对话页顶上那枚按钮与设置页的外观分区
+   共用这一个入口,落盘只发生在这里 */
+function setImmersive(on: boolean) {
+  if (immersive.value === on) return
+  immersive.value = on
+  saveImmersive(on)
+}
 function toggleImmersive() {
-  immersive.value = !immersive.value
-  saveImmersive(immersive.value)
+  setImmersive(!immersive.value)
 }
 
 /* —— 对话背景图 ——
@@ -336,7 +462,14 @@ async function drawBackdrop(id: string) {
     const stale = had?.blob
     const rec: ChatBackdrop = { charId: id, scene, blob: out.blob, createdAt: Date.now() }
     backdrops.value = { ...backdrops.value, [id]: rec }
-    await putChatBackdrop(rec)
+    try {
+      await putChatBackdrop(rec)
+    } catch (e) {
+      /* 写不进去就只活在内存里这一场(下一次重画),但不能一声不响 ——
+         用户看到过这张图,刷新没了却没人说过为什么 */
+      console.error('[Kairo] could not save the backdrop', e)
+      notice.value = 'This background will only show for this session — it could not be saved.'
+    }
     if (stale && stale !== rec.blob) releaseSrc(stale)
     /* 背景图也进历史(见 saveChatWork):它同样是这个角色的一张作品。
        从前它只活在库里那一条记录上 —— 换一场戏就被下一张顶掉,
@@ -420,10 +553,16 @@ const { generateChatPhoto, generateChatBackdrop, recordFor } = useGeneration({
    原来这里只认存档、没有就硬当浅色,于是系统是深色且用户没手动设过时:
    页面已是深色,按钮却显示"切到深色",点一下毫无变化 —— 要连点两次才对 */
 const theme = ref<Theme>(currentTheme())
+/* 设定某一档。**顶栏那枚按钮与设置页的外观分区共用这一个入口** ——
+   两处都能改主题,落盘与套用必须只发生在这一个地方(两份写法迟早分叉) */
+function setTheme(t: Theme) {
+  if (theme.value === t) return
+  theme.value = t
+  applyTheme(t)
+  saveTheme(t)
+}
 function toggleTheme() {
-  theme.value = theme.value === 'dark' ? 'light' : 'dark'
-  applyTheme(theme.value)
-  saveTheme(theme.value)
+  setTheme(theme.value === 'dark' ? 'light' : 'dark')
 }
 /* 系统里切深浅色,页面要跟着走(用户手动设过就不再跟,见 watchSystemTheme) */
 let unwatchSystemTheme: (() => void) | null = null
@@ -483,6 +622,18 @@ onMounted(() => {
        启动时补一趟就够:之后每一句都由 sendChat / runChat 就地更新 */
     void loadChatLast()
   })
+  /* 记忆条目整份读进来。它不像消息那样按角色懒加载 ——
+     记忆中心的筛子与计数都要看全量,而且条数是几十的量级(见 useMemories) */
+  void loadMemories()
+  /* 存量简报搬成记忆条目(见 lib/memoryMigrate)。它只在**第一次启动**时
+     真做事 —— 升级前攒下的那些简报搬进来,老用户的记忆中心才不是空的。
+     搬完要重读一次,否则这一页看不到刚搬进去的那几条;
+     顺便广播一声让别的标签页也跟着重读:库是共享的,而地标是各读各的 */
+  void migrateSummariesOnce().then((moved) => {
+    if (!moved) return
+    void loadMemories()
+    announce('memories')
+  })
   window.addEventListener('storage', onStorageSync)
   window.addEventListener('hashchange', onHashChange)
   /* 记录与字节那一侧走广播(BroadcastChannel)。它与上面的 storage 事件
@@ -519,13 +670,21 @@ function onStorageSync(e: StorageEvent) {
     repickActiveTts()
     labels.push('API settings')
   }
+  let loadFailed = false
   if (targets.includes('characters')) {
-    loadCharacters().then((list) => {
-      characters.value = list.map(normalizeChar)
-      // 目录变了,左栏那行"最后说了什么"也要跟着对齐
-      void loadChatLast()
-    })
-    labels.push('characters')
+    loadCharacters()
+      .then((list) => {
+        characters.value = list.map(normalizeChar)
+        // 目录变了,左栏那行"最后说了什么"也要跟着对齐
+        void loadChatLast()
+        labels.push('characters')
+      })
+      .catch((e) => {
+        /* 读失败不能伪装成"同步成功" —— 那句 Updated from another tab
+           会把一次没拿到的新数据说成已经拿到了。留痕,并且如实说 */
+        console.error('[Kairo] reload characters failed', e)
+        loadFailed = true
+      })
   }
   if (targets.includes('collections')) {
     reloadCollectionsFromDb()
@@ -533,8 +692,14 @@ function onStorageSync(e: StorageEvent) {
   }
 
   /* 说一声。不说的话用户只会觉得"我明明没动,列表却变了" ——
-     这是同步本身带来的观感问题,不是噪音 */
-  notice.value = `Updated from another tab — reloaded ${labels.join(' and ')}.`
+     这是同步本身带来的观感问题,不是噪音。
+     但有一类必须分开说:重载本身失败了。那时数据没有更新,
+     再说"已从另一个标签页更新"是在骗人 */
+  notice.value = loadFailed
+    ? 'Updated from another tab, but the character list could not be reloaded.'
+    : labels.length
+      ? `Updated from another tab — reloaded ${labels.join(' and ')}.`
+      : ''
 }
 
 /* —— 另一页改了 IndexedDB 里的东西 ——
@@ -562,6 +727,16 @@ async function handleRemoteSync(batch: SyncMessage[]) {
     labels.push('conversations')
   }
 
+  /* 记忆条目:另一页改了一条(或抽了一批)就整份重读。
+     它是几十条的量级,重读一次比按 id 增量合并更不容易出错 ——
+     而"共享画像"改一次会牵动**所有**角色的可见范围,本来也没法只重读一条。
+     这里不看 charId:广播里那个 charId 只说"是谁的那条变了",
+     而本页手上这份是全量 */
+  if (batch.some((m) => m.kind === 'memories')) {
+    await loadMemories()
+    labels.push('memory')
+  }
+
   if (labels.length) {
     notice.value = `Updated from another tab — reloaded ${[...new Set(labels)].join(' and ')}.`
   }
@@ -584,6 +759,9 @@ async function reloadChatFromDb(id: string) {
   /* 记忆也要先摘掉:loadChatMessages 只在"库里有"时才写回这一格,
      另一页刚点了"忘记"的话,留着旧的那份会让本页继续拿旧记忆说话 */
   chatSummary.value = drop(chatSummary.value)
+  /* 心情同理:另一页清空/删掉这段对话之后,本页内存里那份"它正恼着"
+     也得跟着放掉 —— 留着的话,下一轮会把用户刚刚清掉的心情又喂回模型 */
+  chatMood.value = drop(chatMood.value)
   await loadChatMessages(id)
   // 左栏那行"最后说了什么"同样要跟上
   await loadChatLast()
@@ -758,6 +936,10 @@ function deleteChar(id: string) {
      留着一个已经不在列表里的 id,下一次生成会莫名多出一段角色描述 */
   if (wasActive) detachCharacter()
   if (wasChatting) chatCharId.value = ''
+  /* 在途的对话出图 / 背景图也掐掉(见 lib/imageJobs)。角色删掉之后它们再画完
+     只有两个下场:照片被 drawChatPhoto 的存在性守卫挡下(字节白花),
+     背景图连守卫都没有 —— 它会把这个已删角色的背景图重新写回库里 */
+  abortCharImages(id)
 
   scheduleUndo({
     label: 'Character deleted',
@@ -787,38 +969,30 @@ function deleteChar(id: string) {
       const rest = { ...charViews.value }
       delete rest[id]
       charViews.value = rest
-      // 别的标签页若缓存着这个角色的设定图或对话,也要把它们放掉
-      announce('charViews', id)
-      announce('chat', id)
-      /* 对话跟着角色一起走:人没了,跟他聊的那一段留着也没有对象了。
-         放在这一步(真正落盘)而不是点删除那一刻 —— 撤销回来时对话还得在。
-         **附图不在这里数**:deleteChatOf 会按 charId 把该角色的消息整批读出来,
-         把 imageId 与 photoId 一并收掉。从前这里只遍历内存里那一档(最近 200 条)
-         且只认 imageId —— 更早的附件与角色发的每一张图都成了孤儿 */
-      chatControllers.get(id)?.abort()
-      chatControllers.delete(id)
-      const chatRest = { ...chatMessages.value }
-      delete chatRest[id]
-      chatMessages.value = chatRest
-      const moreRest = { ...chatHasMore.value }
-      delete moreRest[id]
-      chatHasMore.value = moreRest
-      /* 在途的压缩也要作废 —— 它会往一份已经没人认领的记忆里写。
-         deleteChatOf 连记忆一起清,所以这里不用再单独删一次库里的那份 */
-      bumpChatSeq(id)
-      const sumRest = { ...chatSummary.value }
-      delete sumRest[id]
-      chatSummary.value = sumRest
-      /* 心情同理:人没了,它此刻恼不恼也没有承载者了(库里那条由 deleteChatOf 收) */
-      dropChatMood(id)
-      dropChatLast(id)
-      void deleteChatOf(id)
       /* 背景图也一起走:它属于这个角色这一场戏,角色没了就没有"这一场"了 */
-      void deleteChatBackdrop(id)
       const bgRest = { ...backdrops.value }
       delete bgRest[id]
       backdrops.value = bgRest
-      saveCharacters(characters.value)
+      /* **先落盘,再广播。** 顺序从前是反的:announce 一发,别的标签页立刻重读,
+         而那时 deleteChatOf / putCharRefs 还没落地(都是未 await 的 void)——
+         对面读到的是"没删干净"的那份,并且此后再没有一次广播来纠正,
+         幽灵对话/设定图就留在了别的标签页里。purge 是同步回调,await 不了,
+         于是把这一串收进一个 async 块:删完再通知,失败也有个说法 */
+      void (async () => {
+        try {
+          await deleteChatOf(id)
+          await deleteChatBackdrop(id)
+          // 目录这一步同时按"属主前缀"把这个角色的图从库里收走(见 putCharRefs)
+          await saveCharacters(characters.value)
+        } catch (e) {
+          console.error('[Kairo] delete character: saved data was not removed', e)
+          notice.value = 'Could not fully remove this character — reopen to try again.'
+        } finally {
+          // 别的标签页若缓存着这个角色的设定图或对话,也要把它们放掉
+          announce('charViews', id)
+          announce('chat', id)
+        }
+      })()
     }
   })
 }
@@ -882,13 +1056,18 @@ async function exportChar(id: string) {
   try {
     if (!charViews.value[id]) await loadCharViews(id)
     const chat = await readChatForExport(id)
-    const images = await exportCharacter(c, charViews.value[id] || [], chat)
+    /* 背景图**从库里读**,不走内存那份:backdrops 是按角色懒加载的,
+       没进过沉浸页的角色在内存里根本没有(见 loadBackdrop)。与 chat 一起交给
+       导出 —— 缺了它,对方拿到的是一个进沉浸页只有主题色的角色(S-14) */
+    const backdrop = await getChatBackdrop(id)
+    const images = await exportCharacter(c, charViews.value[id] || [], chat, backdrop)
     const msgCount = chat.messages.length
-    /* 回执要把两样都说到:一个只有设定没有图的角色,与一个连对话都带走的角色,
-       导出来的东西差别很大,让用户知道包里到底装了什么 */
+    /* 回执要把三样都说到:一个只有设定没有图的角色、一个连对话都带走的角色、
+       一个还带着背景的,导出来的东西差别很大,让用户知道包里到底装了什么 */
     const parts: string[] = []
     if (images) parts.push(`${images} image${images === 1 ? '' : 's'}`)
     if (msgCount) parts.push(`${msgCount} message${msgCount === 1 ? '' : 's'}`)
+    if (backdrop) parts.push('a background')
     notice.value = parts.length
       ? `Exported “${c.name}” with ${parts.join(' and ')}.`
       : `Exported “${c.name}” — it has no images or conversation yet, so the zip is settings only.`
@@ -927,20 +1106,25 @@ async function importCharFile(file: File) {
   }
 
   const added: Character[] = []
+  const failed: string[] = []
   let msgs = 0
-  try {
-    for (const imp of list) {
-      const c: Character = {
-        id: uid(),
-        name: imp.name,
-        createdAt: imp.createdAt,
-        ...(imp.fields ? { fields: { ...imp.fields } } : {}),
-        ...(imp.desc ? { desc: imp.desc } : {}),
-        ...(imp.persona ? { persona: { ...imp.persona } } : {}),
-        ...(imp.ref ? { ref: imp.ref } : {}),
-        ...(imp.sourceRef ? { sourceRef: imp.sourceRef } : {}),
-        ...(imp.refKind ? { refKind: imp.refKind } : {})
-      }
+  /* **逐个导入,逐个兜底。** 从前是一个 try 包住整个循环:第 N 个角色
+     写盘失败时,前面已经落库的设定图/消息/图全成了无人认领的孤儿,
+     而目录一条都没进 —— 用户看到的是"什么都没导进来"加一句
+     Could not save。现在:坏的那一个跳过并如实计数,好的照进 */
+  for (const imp of list) {
+    const c: Character = {
+      id: uid(),
+      name: imp.name,
+      createdAt: imp.createdAt,
+      ...(imp.fields ? { fields: { ...imp.fields } } : {}),
+      ...(imp.desc ? { desc: imp.desc } : {}),
+      ...(imp.persona ? { persona: { ...imp.persona } } : {}),
+      ...(imp.ref ? { ref: imp.ref } : {}),
+      ...(imp.sourceRef ? { sourceRef: imp.sourceRef } : {}),
+      ...(imp.refKind ? { refKind: imp.refKind } : {})
+    }
+    try {
       // 与 duplicateChar 同一条顺序要求:图先写,再交给 saveCharacters 落盘
       for (const v of imp.views) await putCharView(c.id, v.kind, v.data)
       if (imp.views.length) announce('charViews', c.id)
@@ -955,21 +1139,48 @@ async function importCharFile(file: File) {
           await putChatImage({ id: img.id, blob: img.blob, createdAt: Date.now() })
         }
       }
+      /* 背景图跟着角色落库(S-14)。它挂在新的 charId 上,与对话同一归属 ——
+         一起失败时下面的兜底也该把它收掉。putChatBackdrop 自己不抛(写不进去
+         只当没画过),所以这一步不会成为"角色导不进来"的新理由 */
+      if (imp.backdrop) {
+        await putChatBackdrop({
+          charId: c.id,
+          scene: imp.backdropScene || '',
+          blob: imp.backdrop,
+          createdAt: Date.now()
+        })
+      }
       added.push(c)
+    } catch (e) {
+      /* 这个 id 是刚生成的(不与任何现有角色冲突),所以兜底收掉
+         可能已经写了一半的东西:消息/图/记忆由 deleteChatOf 一并清,
+         背景图另属一张表、单独收,设定图则由随后那次 saveCharacters 按"属主前缀"裁剪 */
+      console.error('[Kairo] import one character failed', c.name, e)
+      failed.push(c.name)
+      try {
+        await deleteChatOf(c.id)
+        await deleteChatBackdrop(c.id)
+      } catch {
+        /* 收不掉也只是多几个无人认领的键,不该再抛出来 */
+      }
     }
-    characters.value = [...added, ...characters.value]
-    await saveCharacters(characters.value)
-    /* 补一趟左栏那行摘要:导入的对话已经在库里,而 chatLast 只在启动时读过一次 ——
-       不补的话,这些明明带着历史的角色在左栏会显示 "No messages yet" */
-    if (msgs) void loadChatLast()
-    const base =
-      added.length === 1 ? `Imported “${added[0].name}”.` : `Imported ${added.length} characters.`
-    notice.value = msgs
+  }
+  if (!added.length) {
+    notice.value = 'Could not import any of the characters in that file.'
+    return
+  }
+  characters.value = [...added, ...characters.value]
+  await saveCharacters(characters.value)
+  /* 补一趟左栏那行摘要:导入的对话已经在库里,而 chatLast 只在启动时读过一次 ——
+     不补的话,这些明明带着历史的角色在左栏会显示 "No messages yet" */
+  if (msgs) void loadChatLast()
+  const base =
+    added.length === 1 ? `Imported “${added[0].name}”.` : `Imported ${added.length} characters.`
+  notice.value = failed.length
+    ? `${base} ${failed.length} failed (${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}) — they were skipped.`
+    : msgs
       ? `${base} Includes ${msgs} message${msgs === 1 ? '' : 's'} of conversation.`
       : base
-  } catch {
-    notice.value = 'Could not save the imported characters.'
-  }
 }
 
 /* 每个角色被用了几次、最后一次是什么时候。数据全在历史里 ——
@@ -989,7 +1200,7 @@ async function importCharFile(file: File) {
    只是让一套 6 张图多占几 MB */
 /**
  * 生成一张设定图。
- * 正脸:角色有主参考图(上传的 / 从作品提升的 / 上一版正脸)就以它为参考图,
+ * 正脸:角色有主参考图(上传的 / 上一版正脸)就以它为参考图,
  * 没有就是纯文生图 —— 三种输入因此走同一条流水线;
  * 其余四张一律以正脸为参考图。
  * 返回是否成功,好让"补齐"那一步知道该停下还是继续。
@@ -1157,6 +1368,8 @@ const {
   dropChatLast,
   loadChatLast,
   maybeSummarize,
+  /* 记忆条目那份清单:发这一轮时要按"这个角色看得到什么"筛一遍(见 useChatFlow) */
+  memories,
   notice,
   scheduleUndo,
   generateChatPhoto,
@@ -1304,7 +1517,23 @@ function createAssignCollection(title: string) {
         @load-earlier="loadEarlierChat"
         @goto-chars="page = 'chars'"
         @open-character="openCharacterDetail"
-        @configure-chat-model="openChatConfigSettings"
+        @configure-chat-model="openChatConfig"
+      />
+
+      <!-- 记忆中心(PRD §5.5)。与对话页是同一个对象的两个面:
+           一个把话说出来,一个把"它记得什么"摊开给用户管 -->
+      <MemoryPage
+        v-else-if="page === 'memory'"
+        :memories="memories"
+        :characters="characters"
+        :extracting="extracting"
+        :can-extract="canExtractMemories"
+        @add="addMemory"
+        @edit="editMemory"
+        @remove="removeMemory"
+        @important="setImportant"
+        @shared="setShared"
+        @extract="extractMemoriesFromPage"
       />
 
       <!-- 历史记录 -->
@@ -1320,31 +1549,65 @@ function createAssignCollection(title: string) {
         @delete-collection="deleteCollection"
       />
 
-      <!-- 接口设置 -->
+      <!-- 设置(PRD §5.6 / §11.12)。SettingsPage 只是骨架(左栏分区导航 + 插槽),
+           当前哪一区渲染成什么由这里装配 —— 各分区的 props 一路是显式传的,
+           没有 $attrs 那种"编译器看不见"的转手。
+           下面那一组 configs / active-* / mode / seed 与那串 @activate-*
+           全是**接口配置那一区自己的**事,别的地方不认识它们 -->
       <SettingsPage
         v-else-if="page === 'settings'"
-        :configs="configs"
-        :active-id="activeId"
-        :active-text-id="activeTextId"
-        :active-chat-id="activeChatId"
-        :active-vision-id="activeVisionId"
-        :active-tts-id="activeTtsId"
-        :mode="cfgView"
-        :seed="cfgSeed"
-        :capability-note="capabilityNote"
-        @activate="activateConfig"
-        @activate-text="activateTextConfig"
-        @activate-chat="activateChatConfig"
-        @activate-vision="activateVisionConfig"
-        @activate-tts="activateTtsConfig"
-        @edit="editConfig"
-        @duplicate="duplicateConfig"
-        @remove="removeConfig"
-        @create="newConfig"
-        @cancel="cancelConfig"
-        @save="saveSettings"
-        @import="importConfigs"
-      />
+        :section="settingsSection"
+        @section="settingsSection = $event"
+      >
+        <AppearancePanel
+          v-if="settingsSection === 'appearance'"
+          :theme="theme"
+          :immersive="immersive"
+          @theme="setTheme"
+          @immersive="setImmersive"
+        />
+
+        <InteractionSettingsPanel
+          v-else-if="settingsSection === 'interaction'"
+          :characters="characters"
+        />
+
+        <MemoryPrivacyPanel
+          v-else-if="settingsSection === 'memory'"
+          :memories="memories"
+          :characters="characters"
+          @open="page = 'memory'"
+        />
+
+        <!-- 接口配置那一整块(1823 行,2026-10-14 从 SettingsPage 整份搬出来的)。
+             写成 v-else-if 而不是 v-else:注册表里加了分区、这里却没有分支时,
+             页面会**空白**而不是静默变成接口配置页 —— 那是一个能被测出来的漏
+             (见 lib/settingsNav.test.ts 那条读源码的防漂移断言) -->
+        <ApiSettingsPanel
+          v-else-if="settingsSection === 'api'"
+          :configs="configs"
+          :active-id="activeId"
+          :active-text-id="activeTextId"
+          :active-chat-id="activeChatId"
+          :active-vision-id="activeVisionId"
+          :active-tts-id="activeTtsId"
+          :mode="cfgView"
+          :seed="cfgSeed"
+          :capability-note="capabilityNote"
+          @activate="activateConfig"
+          @activate-text="activateTextConfig"
+          @activate-chat="activateChatConfig"
+          @activate-vision="activateVisionConfig"
+          @activate-tts="activateTtsConfig"
+          @edit="editConfig"
+          @duplicate="duplicateConfig"
+          @remove="removeConfig"
+          @create="newConfig"
+          @cancel="cancelConfig"
+          @save="saveSettings"
+          @import="importConfigs"
+        />
+      </SettingsPage>
       </Transition>
     </main>
 

@@ -62,7 +62,7 @@ export { app, assertSafeTarget, safeFetch, isBlockedAddress }
 const isEntry =
   process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url
 if (isEntry) {
-  const port = process.env.PORT || 3100
+  const port = process.env.PORT || 3101
   app.listen(port, () => {
     console.log(`[Kairo] 后端已启动: http://localhost:${port}`)
   })

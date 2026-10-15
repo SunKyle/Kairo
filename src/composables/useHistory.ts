@@ -25,7 +25,7 @@ import type { Collection, HistoryEntry, ResultItem } from '../types'
 
 export interface HistoryDeps {
   /** 告诉其他标签页"这一类变了"(见 lib/crossTab.ts) */
-  announce: (kind: 'history' | 'library', charId?: string) => void
+  announce: (kind: 'history', charId?: string) => void
   /** 删除的后悔药(见 useFeedback) */
   scheduleUndo: (item: { label: string; undo: () => void; purge: () => void }) => void
   /** 中性提示通道:存储清理、落盘失败都走它 */
@@ -150,7 +150,7 @@ export function useHistory(deps: HistoryDeps) {
       undo: () => {
         history.value.splice(Math.min(at, history.value.length), 0, entry)
         // 窗口里可能正好生成了新图并触发淘汰,把这条按最旧的清掉了,所以补写一次
-        saveHistoryRecord(entry)
+        saveHistoryRecord(toRaw(entry))
       },
       purge: () => {
         removeHistoryRecord(entry.id)

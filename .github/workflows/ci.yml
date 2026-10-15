@@ -57,10 +57,10 @@ jobs:
         run: |
           npm run dev:server &
           for _ in $(seq 1 40); do
-            curl -sf -o /dev/null http://127.0.0.1:3000/api/health && break
+            curl -sf -o /dev/null http://127.0.0.1:3101/api/health && break
             sleep 0.5
           done
-          curl -sf http://127.0.0.1:3000/api/health || { echo "后端没起来"; exit 1; }
+          curl -sf http://127.0.0.1:3101/api/health || { echo "后端没起来"; exit 1; }
 
       # 请求一律不碰真上游(目标写成丢弃端口 127.0.0.1:9),断言的是
       # "拿到了响应" + "进程仍然健康",所以不花钱、不联网。

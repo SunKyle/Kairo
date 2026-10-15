@@ -1,5 +1,5 @@
 /* 站点的一级页面清单。
-   两处要用它:顶部导航(分段控件)把它渲染成四个图标,
+   两处要用它:顶部导航(分段控件)把它渲染成五个图标,
    顶部字标取"当前在哪一页"的那个名字。各写一份迟早对不上 ——
    加了页面只改一处,所以摆在这儿。
 
@@ -9,10 +9,10 @@
    label 是给人看的完整名字:导航里它是悬停提示与读屏名(条目本身只显示图标),
    字标里则直接显示出来。
 
-   Kairo 的定位是超拟人对话,所以只留这四页:对话、角色、历史、设置。
+   Kairo 的定位是超拟人对话,所以只留这五页:对话、角色、记忆、历史、设置。
    (KImage 那份里的 Studio 出图工作台、Canvas 画布、Prompt Library 提示词库
     三个页面没有带过来 —— 它们不属于"跟角色说话"这件事) */
-export type Page = 'chat' | 'chars' | 'history' | 'settings'
+export type Page = 'chat' | 'chars' | 'memory' | 'history' | 'settings'
 
 export interface NavItem {
   value: string
@@ -24,6 +24,11 @@ export const NAV_ITEMS: NavItem[] = [
   { value: 'chat', label: 'Chat' },
   // 角色紧跟对话:两者是同一个对象的两件事,一个造它,一个跟它说话
   { value: 'chars', label: 'Characters' },
+  /* 记忆排在角色之后、历史之前。
+     它不是"又一个管理页",而是这段关系的另一半:**它记得你什么** ——
+     用户看不到也管不了的东西,就等于没有(PRD §5.5 记忆中心)。
+     所以它紧挨着关系那两页(对话/角色),而不该沉到历史那种"产出归档"里去。 */
+  { value: 'memory', label: 'Memory' },
   { value: 'history', label: 'History' },
   { value: 'settings', label: 'Settings' }
 ]

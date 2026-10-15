@@ -18,6 +18,12 @@ import {
 } from '../lib/idb'
 import { stopSpeaking } from '../lib/speech'
 import { contextText } from '../lib/chatContext'
+/* 相处偏好:按角色读出来摊成 system 里那几行"希望被怎么对待"(见 lib/prefs) */
+import { interactionGuidanceFor } from '../lib/prefs'
+/* 记忆条目:发这一轮时把"它记得的、且这个角色看得到的"摊成几行事实(见 lib/memory)。
+   走 selectMemories 而不是直接过滤 —— **隐私边界就在那个函数里**
+   (角色专属记忆不跨角色、共享画像要用户授权),这一层不该有第二套判法 */
+import { memoryLines, selectMemories } from '../lib/memory'
 /* 对话左栏的顺序:进对话页替用户挑一个时,与 ChatPage 铺左栏时用的是同一份规则 */
 import { lastMessageLookup, orderConversations } from '../lib/chatOrder'
 /* 打字节奏:上游吐字是匀速的,而匀速正是机器感最直接的来源(见那份文件的四条纪律) */
@@ -30,6 +36,7 @@ import type { useCharacters } from './useCharacters'
 import type { useFeedback } from './useFeedback'
 import type { useGeneration } from './useGeneration'
 import type { useHistory } from './useHistory'
+import type { useMemories } from './useMemories'
 
 /* ===== 角色对话：流式那一轮 ==========================================
    这是「对话这一域」的另一半 —— 非流式的那一半(消息、长期记忆、清空、
@@ -48,6 +55,7 @@ type CharactersApi = ReturnType<typeof useCharacters>
 type FeedbackApi = ReturnType<typeof useFeedback>
 type GenerationApi = ReturnType<typeof useGeneration>
 type HistoryApi = ReturnType<typeof useHistory>
+type MemoriesApi = ReturnType<typeof useMemories>
 
 export interface ChatFlowDeps {
   /* 角色目录与"选中/详情"三件套 —— 挑进对话页看谁、进详情、以及请求里那份设定 */
@@ -77,6 +85,9 @@ export interface ChatFlowDeps {
   dropChatLast: ChatApi['dropChatLast']
   loadChatLast: ChatApi['loadChatLast']
   maybeSummarize: ChatApi['maybeSummarize']
+  /* 记忆条目那一域交出来的那份清单(见 useMemories)。
+     发这一轮时要按"这个角色看得到什么"筛一遍,所以得拿到全量那份 */
+  memories: MemoriesApi['memories']
   /* 反馈三通道里这一轮用到的两样(提示与撤销条) */
   notice: FeedbackApi['notice']
   scheduleUndo: FeedbackApi['scheduleUndo']
@@ -117,6 +128,7 @@ const {
   dropChatLast,
   loadChatLast,
   maybeSummarize,
+  memories,
   notice,
   scheduleUndo,
   generateChatPhoto,
@@ -354,6 +366,17 @@ async function runChat(id: string) {
          记忆不跟着走,心情也不该 —— 所以两样都从这一份对话的状态里取。
          过没过期由服务端按 6 小时窗口判,这里只管原样送出去 */
       mood: chatMood.value[id],
+      /* **用户希望被怎么对待**(相处偏好,见 lib/prefs)。它按角色存在 localStorage 里,
+         发请求这一刻现读 —— 偏好改完下一轮就该生效,不必等任何重载。
+         没表态时是空串,服务端据此整段不出现(与记忆、心情同一条退路)。
+         它只改**口吻与相处方式**,不碰角色是谁:那句边界写在服务端的提示词里 */
+      guidance: interactionGuidanceFor(id),
+      /* **它记得的关于你的事**(记忆条目,见 lib/memory)。与上面那份简报分开送:
+         简报是这段对话的来龙去脉,这一份是一条条事实。
+         走 selectMemories —— 它同时就是 PRD §3.2-F 那条隐私边界:
+         角色专属记忆只喂给本角色,共享画像要用户明确勾过才出现在这里。
+         没记住任何东西时是空数组,服务端据此整段不出现 */
+      memories: memoryLines(selectMemories(memories.value, id)),
       images,
       lastAt,
       cfg: useCfg,
@@ -464,10 +487,20 @@ async function runChat(id: string) {
     dropChatLast(id)
     void loadChatLast()
   } else {
-    // 落盘要交原始对象:reactive 代理进不了 IndexedDB 的 structuredClone
-    await putChatMessage({ ...toRaw(reply) })
-    // 另一页的左栏与消息流都要跟上(它可能正开着这个角色)
-    announce('chat', id)
+    /* 落盘要交原始对象:reactive 代理进不了 IndexedDB 的 structuredClone。
+       **这一笔会失败**(另一页此刻升级库、配额满),而它从前是裸 await ——
+       一失败整轮变成未处理的拒绝:回复只在内存里,连一句交代都没有。
+       于是分两条:写进去了才广播(没写进去就广播,对面重读会把这一句当成没有),
+       左栏那行照旧更(它只是本页内存里的一面镜子,与落盘无关) */
+    try {
+      await putChatMessage({ ...toRaw(reply) })
+      // 另一页的左栏与消息流都要跟上(它可能正开着这个角色)
+      announce('chat', id)
+    } catch (e) {
+      console.error('[Kairo] this reply could not be saved', e)
+      notice.value =
+        'This reply is on screen but could not be saved — it will be lost on refresh.'
+    }
     setChatLast(id, { ...toRaw(reply) })
   }
   if (stopped) notice.value = 'Stopped.'
@@ -592,7 +625,11 @@ function drawChatPhoto(id: string, reply: ChatMessage) {
     reply.photoFailed = true
     reply.photoError = why
     // 落盘:**刷新之后那行提示与重试键还在**,否则又变回一个永远转的骨架
-    await putChatMessage(toRaw(reply)).catch(() => {})
+    await putChatMessage(toRaw(reply)).catch((e) => {
+      /* 写不进去也尽力了。界面不回滚(它此刻显示的就是失败态),
+         但必须留个痕 —— 完全无声的话,刷新后提示没了没人知道为什么 */
+      console.error('[Kairo] chat photo: failure state not persisted', e)
+    })
   }
 
   void generateChatPhoto(
@@ -619,8 +656,14 @@ function drawChatPhoto(id: string, reply: ChatMessage) {
       reply.photoId = photoId
       reply.photoError = ''
       /* 落库只是把这条消息补全。失败也不回滚界面 —— 失败那一路见上,
-         成功的这一路写不进去也不该把已经画好的图从界面上撤掉 */
-      await putChatMessage(toRaw(reply)).catch(() => {})
+         成功的这一路写不进去也不该把已经画好的图从界面上撤掉。
+         只留痕不弹窗:这一张已经在屏幕上,出声反而像"图失败了" */
+      await putChatMessage(toRaw(reply)).catch((e) => {
+        console.error('[Kairo] chat photo: finished message not persisted', e)
+      })
+      /* 另一页也得知:它若重读过这个角色,手上那条消息还停在"没有 photoId"的
+         副本上 —— 不补这一次广播的话,这张图在别的标签页里一直不出现 */
+      announce('chat', id)
       /* 再落一份进历史(见 saveChatWork)。**排在消息之后**是有意的:
          这一张图先要在对话里出现,历史是第二件事 —— 历史那份写不成
          不该让对话里这张也跟着没了。它自己不抛,所以下面那个 catch

@@ -25,6 +25,7 @@ import {
 import type { ChatPhotoPlan } from '../lib/chatPhoto'
 import { DIRECTOR_SLOTS, applyDirector, directorTask, parseDirector } from '../lib/photoDirector'
 import { urlToBlob } from '../lib/idb'
+import { registerImageJob, unregisterImageJob } from '../lib/imageJobs'
 import type { ApiConfig, Character, HistoryEntry, HistorySource, ResultItem } from '../types'
 
 /* ===== 对话出图:角色发的那张照片 + 沉浸页的背景图 ====================
@@ -269,6 +270,10 @@ export function useGeneration(deps: GenerationDeps) {
     const gap = imageConfigGap(cfg)
     if (gap) return { error: gap }
     const ctrl = new AbortController()
+    /* 登记到在途表(见 lib/imageJobs):清对话 / 删角色时要把这张掐掉。
+       abort 之后这里抛 AbortError,走的是下面那个 catch —— 返回的 error
+       由调用方的"消息还在不在"守卫接住,不会写回一段刚被清掉的对话 */
+    registerImageJob(charId, 'photo', ctrl)
     try {
       /* —— 摄影指导层(见 lib/photoDirector 与设计文档 §四)——
          插在"剪完标签"和"发图"之间。这一段本来就是异步的(正文早就可读,
@@ -344,6 +349,8 @@ export function useGeneration(deps: GenerationDeps) {
       /* 上游/代理的真实错误。`generate()` 抛的就是 /api/generate 回给我们的
          那句话(例如"密钥不对""模型不存在"),它比任何我们编的文案都有用 */
       return { error: photoFailureText(e) }
+    } finally {
+      unregisterImageJob(charId, 'photo', ctrl)
     }
   }
 
@@ -367,6 +374,7 @@ export function useGeneration(deps: GenerationDeps) {
     const gap = imageConfigGap(cfg)
     if (gap) return { error: gap }
     const ctrl = new AbortController()
+    registerImageJob(charId, 'backdrop', ctrl)
     try {
       let refList: string[] = []
       try {
@@ -409,6 +417,8 @@ export function useGeneration(deps: GenerationDeps) {
       }
     } catch (e) {
       return { error: photoFailureText(e) }
+    } finally {
+      unregisterImageJob(charId, 'backdrop', ctrl)
     }
   }
 

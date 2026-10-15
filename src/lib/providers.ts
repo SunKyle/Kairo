@@ -276,6 +276,10 @@ export function inferVendor(baseUrl: string): string {
      aiplatform.googleapis.com —— 那是 Vertex,鉴权要 GCP access token、
      模型名还带 google/ 前缀,和这里不是一套,硬认出来只会误导 */
   if (h.includes('generativelanguage')) return 'gemini'
+  /* Azure 的 OpenAI 地址也含 "openai",但它是另一套(要 api-version、
+     路径前缀也不同)。判成 openai 会按 /images/generations 拼路径,必 404 ——
+     让它落回 custom,至少不会按错的那家的形状发请求 */
+  if (h.includes('azure')) return 'custom'
   if (h.includes('openai')) return 'openai'
   if (h.includes('deepseek')) return 'deepseek'
   if (h.includes('volces') || h.includes('ark.cn')) return 'ark'
@@ -290,7 +294,7 @@ export function allowedSizes(vendorId: string | undefined, model: string): strin
       ? ['1024x1024', '1792x1024', '1024x1792']
       : ['auto', '1024x1024', '1536x1024', '1024x1536']
   }
-  return getProvider(vendorId).sizes
+  return getProvider(vendorId, model).sizes
 }
 
 /* ===== 尺寸与扩展参数：按能力决定「能不能」与「发什么」 ==================

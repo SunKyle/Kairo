@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -n server,web -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
     "dev:web": "vite",
-    "dev:server": "PORT=3100 node --watch server/index.js",
+    "dev:server": "PORT=3101 node --watch server/index.js",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

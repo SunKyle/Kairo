@@ -27,6 +27,8 @@ import {
   coverSrc
 } from '../api'
 import LatticeLoader from './LatticeLoader.vue'
+// 相处偏好(PRD §3.2-D):用户希望被怎么对待。自带存取,不需要这一页传任何状态
+import InteractionPanel from './InteractionPanel.vue'
 // 角色海报卡(顶图 + 名字 + 特征 + 用量 + ⋮ 菜单)。只做展示与上报
 import CharacterCard from './CharacterCard.vue'
 // 设定图格子(生成中 / 已有图 / 空格 / 锁着)。三处共用,只做展示与上报
@@ -1468,6 +1470,11 @@ function pickStyle(v: string) {
              这一页是看角色的,翻作品该去历史页 -->
         <p v-if="worksRest" class="works-more">{{ worksRest }} more in History.</p>
       </section>
+
+      <!-- 相处偏好(PRD §3.2-D)。排在资料表之前:它是"你要怎么跟它相处",
+           属于这一页的主线;下面那三张是"要用的时候才查"的附录。
+           它与 Personality 那张卡不是一回事 —— 那张是角色是谁,这张是你想要什么 -->
+      <InteractionPanel :char-id="detailChar.id" />
 
       <!-- 三张资料表并排成一段"附录"(见 .dt-facts 的说明)。
            它们同等次要,所以每一张都得是个完整的卡:标题 + 一句话(说明它管哪一头) -->

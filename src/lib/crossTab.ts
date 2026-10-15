@@ -4,7 +4,6 @@ import {
   COLL_KEY,
   CONFIG_ACTIVE_KEY,
   CONFIG_KEY,
-  LIB_KEY,
   TEXT_ACTIVE_KEY,
   TTS_ACTIVE_KEY,
   VISION_ACTIVE_KEY
@@ -12,7 +11,7 @@ import {
 
 /* ===== 跨标签页同步 ==================================================
    为什么需要它:localStorage 里的几份目录都是**整份覆盖写**的
-   (见 api.ts 的 saveCharacters / savePrompts / saveCollections / saveConfigs)。
+   (见 api.ts 的 saveCharacters / saveCollections / saveConfigs)。
    两个标签页同时开着时,A 页删掉一个角色,B 页内存里还留着那份旧目录 ——
    B 页下一次保存会把它整个写回去,用户看到的是"我删掉的东西自己回来了"。
 
@@ -25,7 +24,7 @@ import {
    -------------------------------------------------------------------- */
 
 /** 一次重载要动的目录 */
-export type SyncTarget = 'configs' | 'characters' | 'collections' | 'prompts'
+export type SyncTarget = 'configs' | 'characters' | 'collections'
 
 /* 键常量一律从 api.ts 取,不在这里重抄一遍字符串 ——
    抄一份的后果是"哪天改了键名,同步就悄悄不工作了",而且不报错 */
@@ -40,15 +39,14 @@ export const SYNC_KEYS: Record<SyncTarget, readonly string[]> = {
     TTS_ACTIVE_KEY
   ],
   characters: [CHAR_KEY],
-  collections: [COLL_KEY],
-  prompts: [LIB_KEY]
+  collections: [COLL_KEY]
 }
 
 /**
  * 一个 storage 事件该触发哪些目录的重载。
  *
  * key 为 null 表示另一个标签页调用了 localStorage.clear() —— 那种情况下
- * 什么都可能变,四个目录一律重读。
+ * 什么都可能变,三份目录一律重读。
  */
 export function syncTargetsOf(key: string | null): SyncTarget[] {
   const targets = Object.keys(SYNC_KEYS) as SyncTarget[]
@@ -57,8 +55,8 @@ export function syncTargetsOf(key: string | null): SyncTarget[] {
 }
 
 /* ===== 记录与字节那一侧 ==============================================
-   上面那条走的是 localStorage 的 storage 事件,管的是"目录"(配置/角色/作品集/
-   提示词目录)—— 那几份是整份覆盖写的,覆盖会带来真正的数据丢失。
+   上面那条走的是 localStorage 的 storage 事件,管的是"目录"(配置/角色/作品集)
+   —— 那几份是整份覆盖写的,覆盖会带来真正的数据丢失。
 
    但历史记录、角色的设定图、对话消息都在 IndexedDB 里,**改它们不会触发
    storage 事件**。没有这一层的话:A 页删掉一条记录,B 页内存里还留着 ——
@@ -70,12 +68,13 @@ export function syncTargetsOf(key: string | null): SyncTarget[] {
    就对不上(重读是幂等的),代价是一次多读几条记录。
    -------------------------------------------------------------------- */
 
-export type SyncKind = 'history' | 'charViews' | 'chat' | 'library'
+export type SyncKind = 'history' | 'charViews' | 'chat' | 'memories'
 
 export interface SyncMessage {
   /** 哪一类变了 */
   kind: SyncKind
-  /** charViews 与 chat 要说清是哪个角色 —— 别的类的视图是整份的 */
+  /** charViews / chat / memories 要说清是哪个角色 —— 别的类的视图是整份的。
+   *  memories 不带 charId 表示"整份记忆目录都变了"(含共享画像那一类) */
   charId?: string
 }
 

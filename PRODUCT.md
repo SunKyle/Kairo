@@ -1,7 +1,7 @@
 # PRODUCT.md
 
 > 本文件是设计工作的项目上下文（由 impeccable 技能读取）。
-> 内容取自仓库既有文档：[doc/项目梳理.md](doc/项目梳理.md) 与 [doc/整体设计风格.md](doc/整体设计风格.md)，
+> 内容取自仓库既有文档：[doc/Kairo项目梳理（现状）.md](doc/Kairo项目梳理（现状）.md) 与 [doc/整体设计风格.md](doc/整体设计风格.md)，
 > 二者仍是更详细的出处。
 
 ## Register

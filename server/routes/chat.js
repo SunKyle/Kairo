@@ -12,6 +12,11 @@ import {
 import { splitTags, stripStandaloneTags, tailHold } from '../chatTags.js'
 import { timeContext } from '../chatTime.js'
 import { moodContext } from '../chatMood.js'
+/* 两段"客户端给几行、服务端加标签限长"的注入块。它们各有自己的纪律
+   (逐行白名单 + 边界话必须留在服务端),所以各自单独成文件、单独可测 ——
+   见 chatGuidance.js 与 chatMemory.js 顶上那两段说明 */
+import { guidanceSection } from '../chatGuidance.js'
+import { memorySection } from '../chatMemory.js'
 
 /* ===== 角色对话的人格提示词 ==========================================
    几条规则不是装饰,每一条都冲着模型的具体通病去:
@@ -86,8 +91,18 @@ function chatOneLine(v, max = CHAT_FIELD_CHARS) {
  * mood 是**上一轮那个情绪词**({ word, at }),由前端存着发回来(见 chatMood.js)。
  * 它回答的是"它现在是什么心情",与 time 同属"此刻的事实",所以紧跟在 time 之后 ——
  * 而**必须排在记忆前面**:记忆是一段成篇的叙述,夹在两块短事实中间会把它切碎。
+ *
+ * guidance 是**用户希望被怎么对待**(相处偏好,见 guidanceSection)。
+ * 它排在规则之前、其余各段之后 —— 它是最后一条"软"指令,离硬规则最近,
+ * 跟着走的可能性最高;而它**绝不能排进 Who you are**:那是这个角色是谁,
+ * 偏好改的是相处方式,不是人格(PRD §3.2-D)。
+ *
+ * memories 是**一条条独立的事实**(记忆条目,见 memorySection),与 memory
+ * (那段成篇的简报)是两样东西,所以两段分开、标签也分开。
+ * 它紧跟在简报之后:两者同属"你记得什么"这一层,先叙述、后清单 ——
+ * 反过来会把那段成篇的叙述切碎。而它同样必须排在 guidance 之前。
  */
-function chatSystemPrompt(character, memory, time, mood) {
+function chatSystemPrompt(character, memory, time, mood, guidance, memories) {
   const char = character && typeof character === 'object' ? character : {}
   const p = char.persona && typeof char.persona === 'object' ? char.persona : {}
 
@@ -152,6 +167,16 @@ function chatSystemPrompt(character, memory, time, mood) {
      当成一件事实去读 */
   const past = chatOneLine(memory, CHAT_MAX_CHARS)
   if (past) parts.push(`What you remember:\n${past}`)
+  /* 记忆条目压在简报之后、相处偏好之前。
+     与简报同属"你记得什么"那一层,但它是一条条事实而不是一段叙述 ——
+     所以先铺叙述再列清单,反过来会把叙述切碎(与 time/mood 那两段的排法同一条理由)。
+     同样过一遍 memorySection 的逐行白名单:它也是外部输入 */
+  const facts = memorySection(memories)
+  if (facts) parts.push(facts)
+  /* 相处偏好压在规则之前:它是最后一条软指令,离硬规则最近。
+     与上面几段一样,空串时整段不出现 —— 用户一项都没表态,就不该有任何指导 */
+  const guide = guidanceSection(guidance)
+  if (guide) parts.push(guide)
   parts.push(CHAT_RULES)
   return parts.join('\n\n')
 }
@@ -194,7 +219,7 @@ const CHAT_IMAGE_CHARS = 4 * 1024 * 1024
 
 export function registerChatRoute(app) {
 app.post('/api/chat', rateLimit, async (req, res) => {
-  const { character, messages, memory, images, nowLocal, lastAt, mood, textModel, baseUrl, apiKey } =
+  const { character, messages, memory, memories, images, nowLocal, lastAt, mood, guidance, textModel, baseUrl, apiKey } =
     req.body || {}
 
   if (!baseUrl) {
@@ -282,7 +307,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
      这里没这个问题,所以可以算好一份直接用 */
   const body = JSON.stringify({
     model: textModel,
-    messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood) }, ...history],
+    messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood, guidance, memories) }, ...history],
     temperature: CHAT_TEMPERATURE,
     max_tokens: CHAT_MAX_TOKENS,
     stream: true

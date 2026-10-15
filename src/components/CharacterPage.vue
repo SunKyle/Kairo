@@ -223,6 +223,8 @@ const {
   coverOf,
   avatarSrc,
   sheetCells,
+  extraCells,
+  extraFilled,
   filledCount,
   missingCount,
   works,
@@ -1445,6 +1447,40 @@ function originBadge(key: SpecFieldKey): string {
           />
         </div>
 
+        <!-- 「其他设定图」:默认五类之外的图。现在是两枚退役的历史键
+             (转面 Angles / 细部 Details),日后自定义设定图也落在这一排 ——
+             这一层就是 PRD 那句"可自由增加其他设定图"的容器。
+
+             **它不参与上面那个"还差几张"的计数**:那是个待办数字,而这一排是
+             "想加就加"。把可选项算进待办会让每一页都显示欠着两张图,
+             而用户可能永远不想要它们(哪几格属于哪一组由 api.ts 的 group 定) -->
+        <div class="sheet-sub">
+          <h4 class="sheet-sub-title">Other views</h4>
+          <span class="sheet-sub-note">
+            {{
+              extraFilled
+                ? `${extraFilled} of ${extraCells.length} generated · optional`
+                : 'Optional — add them whenever you want'
+            }}
+          </span>
+        </div>
+        <div class="sheet is-extra">
+          <ViewCell
+            v-for="cell in extraCells"
+            :key="cell.kind"
+            :label="cell.label"
+            :view="cell.view"
+            :busy="isBusy(detailId, cell.kind)"
+            :locked="isLocked(cell.kind)"
+            :blocked="viewBlocked(detailId, cell.kind)"
+            :portrait="cell.framing === 'portrait'"
+            action="open"
+            @stop="emit('stopView', detailId, cell.kind)"
+            @generate="emit('generate', detailChar.id, cell.kind)"
+            @open="openViewer(cell.kind)"
+          />
+        </div>
+
       </section>
 
       <!-- 用这个角色出过的图。排在设定图之后:上面是"材料",这里是"产出"。
@@ -2045,24 +2081,18 @@ function originBadge(key: SpecFieldKey): string {
   font-size: var(--fs-base);
   color: var(--text);
 }
-/* 其余四张:一排四格,与详情页的设定图同一套格子语言。
-   四格必须一样高 —— 其中 Full body 是竖幅(2:3),照它自己的比例铺,
-   那一格会高出别人一大截,四枚标签也就落不到同一条基线上,
-   而"一排里哪张不齐"会被读成"这张出了问题"。
-   所以这一排统一用方框:方图本来就把框占满(cover 不裁任何东西),
-   竖幅那张在方框里完整放下(contain),两侧留出图片画布色 ——
-   它读起来是"一张缩略预览",而且头和脚都还在(详情页那一排是
-   另一套排法:竖幅跨两行,因为那边一屏只有五格,腾得出位置) */
+/* 其余四张(全身 / 侧面 / 服装 / 肢体):一排四格,与详情页的设定图同一套格子语言。
+   **这一排只管列数,高度不归它管** —— 框一律 1:1、竖幅在里面 contain,
+   那件事收在 ViewCell 里(见它的 .cell.is-portrait),两处共用一条规则。
+
+   从前这里自己抄了一遍"竖幅按回方框 + contain",而详情页抄的是另一套
+   (竖幅跨两行、1.4fr 那一列)。T10 之后五格变成两张方块 + 三张竖幅,
+   详情页那套先废了(三条竖幅会全部叠进同一格)。收进 ViewCell 就是为了
+   不再出现第二份 —— 两处各写一遍的规则,改一处就漏一处 */
 .wz-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: var(--sp-3);
-}
-.wz-grid .cell.is-portrait :deep(.cell-img) {
-  aspect-ratio: 1;
-}
-.wz-grid .cell.is-portrait :deep(.cell-img) img {
-  object-fit: contain;
 }
 
 /* 第三张卡:进退动作。主操作在左,回退与退出紧跟其后
@@ -3219,23 +3249,46 @@ textarea.wz-idea {
 }
 
 /* —— 设定图 ——
-   原来是五格并排。但四张方块(1:1)与 Full body 那张竖幅(2:3)同排并立时,
-   竖幅会比旁人高出一大截,一行里参差不齐 —— 改成"左四右一":
-   四张方块拼成 2×2,竖幅独占右列。这个分法也正好对上信息层级:
-   左边是同一张脸的四个方向,右边是整个人 */
+   默认五类(主视图 / 全身 / 侧面 / 服装 / 肢体)排成一排。
+
+   **这里原本是"左四右一"**:四张方块拼成 2×2、竖幅独占右列(1fr 1fr 1.4fr),
+   靠 `.cell.is-portrait { grid-column: 3 }` 把竖幅挪过去。那个排法把
+   "四张方块 + 一张竖幅"这个**当时的事实**编进了 CSS —— 而 T10 之后五格是
+   "两张方块 + 三张竖幅",三条 `.cell.is-portrait` 会全部落进第 3 列、互相盖住。
+   手调的格数排法加一次格子就废一次,所以改回**等宽自动排**:每一格的框一样大
+   (见 ViewCell 的 .cell-img),竖幅在里面 contain 完整放下。
+   代价是竖幅两侧有留白,换来的是以后再加设定图不必改这里 */
 .sheet {
   display: grid;
-  /* 1.4fr 是算出来的:要让左边 2×2 的总高与右边那张 2:3 的总高相等,
-     竖幅这列就得比一个方块宽 1.4 倍。按内容区 1040px 宽算,两边差 6px 上下 ——
-     落在标签的字里行间,看不出来 */
-  grid-template-columns: 1fr 1fr 1.4fr;
+  /* auto-fit 而不是 auto-fill:后者会为放不下的那几列留出空轨道,
+     于是五格挤在左边、右边空掉一条 */
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
   gap: var(--sp-3);
-  align-items: start;
 }
-/* 竖幅挪到第三列并纵向跨两行;四张方块随之自动落进左边的 2×2 */
-.cell.is-portrait {
-  grid-column: 3;
-  grid-row: 1 / span 2;
+/* 「其他设定图」那一排:同一套格子,但它是次要的 —— 缩一档,
+   免得跟默认五类抢同一个层级 */
+.sheet.is-extra {
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+}
+.sheet-sub {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin: var(--sp-4) 0 var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.sheet-sub-title {
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.sheet-sub-note {
+  font-size: var(--fs-xs);
+  color: var(--text-4);
 }
 
 /* —— 这个角色出过的图 ——
@@ -3680,33 +3733,16 @@ textarea.wz-idea {
   .hero-cta {
     width: 100%;
   }
-  /* 窄屏放不下"左四右一":竖幅那一列会被压成细条。
-     改成方块自己 2×2,竖幅另起一行居中,并给它一个高度上限 ——
-     2:3 的图占满整屏宽会长到屏幕外面去 */
+  /* 窄屏:等宽自动排自己会退列,这里只把最小宽度调小一档 ——
+     148px 在 360px 的屏上放不下两列。
+     竖幅**不再需要单独一条规则**:框一律 1:1、图在里面 contain
+     (见 ViewCell 的 .cell.is-portrait),而从前那两条
+     (跨整行 + 46vh 高度上限)是为"左四右一"服务的,那一套已经撤了 */
   .sheet {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   }
-  .cell.is-portrait {
-    grid-column: 1 / -1;
-    grid-row: auto;
-  }
-  .cell.is-portrait :deep(.cell-img) {
-    height: 46vh;
-    width: auto;
-    align-self: center;
-  }
-  /* 向导里那四格不跟这条:它一排两格、四格的形状本来就要一致
-     (见 .wz-grid 的说明),所以仍旧是方框 + 竖幅完整放下,也不跨行。
-     放在上面那两条之后 —— 特异性相同时靠先后定胜负 */
-  .wz-grid .cell.is-portrait {
-    grid-column: auto;
-    grid-row: auto;
-  }
-  .wz-grid .cell.is-portrait :deep(.cell-img) {
-    aspect-ratio: 1;
-    width: 100%;
-    height: auto;
-    align-self: stretch;
+  .sheet.is-extra {
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   }
   .spec {
     grid-template-columns: 1fr;

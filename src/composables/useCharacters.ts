@@ -209,7 +209,22 @@ export function useCharacters(deps: CharacterDeps) {
    *               体型与服装轮廓,而特写那一档反过来把全身像摘掉。
    *               从前这里写死"正面永远排最前",于是拍全身也拿一张头像当主
    *               参考图 —— 身高体型全靠模型现编。
-   *               不传 = 保持原顺序(创作区那条路照旧) */
+   *               不传 = 按 CHARACTER_VIEWS 的排列取前几张(创作区那条路)。
+   *
+   *  —— T10(2026-10-15)之后,不传 order 时取到的那几张变了 ——
+   *
+   *  取的还是 CHARACTER_VIEWS 的排列(默认五类在前、退役的两格在后),而五类
+   *  对齐把 side / outfit 插在了 full 之后、body 之前。于是默认那四张:
+   *
+   *  - 新角色 = front / full / side / outfit —— **一张 2×2 网格都没有**。
+   *    比从前那套(front / detail / full / closeups,两张网格)干净:参考图在
+   *    i2i 那条路上是**拷贝先验**,给它一张网格就多一份把画面排成多格、多人、
+   *    多手的先验(见 api.ts 里那两张 2×2 的说明);
+   *  - 老角色没有 side / outfit,取到 front / full / body / detail —— 仍是两张
+   *    网格,与从前的张数、网格数都相当。
+   *
+   *  **这一改动要拿真图 A/B 验收** —— 与 lib/chatPhoto 里那两次同一条纪律
+   *  (畸形是概率问题,单张说明不了什么)。 */
   async function charRefSrcsOf(charId: string, order: string[] = []): Promise<string[]> {
     const c = characters.value.find((x) => x.id === charId)
     if (!c) return []
@@ -230,7 +245,7 @@ export function useCharacters(deps: CharacterDeps) {
   }
 
   /** 创作区当前选中的那个角色(出图面板用)。
-   *  order 由调用方给:创作区那条路不传,保持"正面打头"的原顺序 */
+   *  order 由调用方给:创作区那条路不传,按默认五类的排列取(见上面那段) */
   async function charRefSrcs(order: string[] = []): Promise<string[]> {
     return activeCharId.value ? charRefSrcsOf(activeCharId.value, order) : []
   }

@@ -1,5 +1,5 @@
 import { computed, nextTick, ref } from 'vue'
-import { CHARACTER_VIEWS, coverSrc, imageSrc } from '../api'
+import { CHARACTER_VIEWS, coverSrc, defaultViews, extraViews, imageSrc } from '../api'
 import type {
   Character,
   CharacterStat,
@@ -103,13 +103,30 @@ export function useCharacterDetail(deps: CharacterDetailDeps) {
     return coverSrc(viewOf(c.id, 'front')?.data ?? c.ref)
   })
 
-  /** 设定图网格的五格:修饰词与取景来自 CHARACTER_VIEWS,内容是当前已有的那张 */
+  /* 设定图网格的**默认五类**那一排(PRD 的 主视图/全身/侧面/服装 + 肢体):
+     修饰词与取景来自 CHARACTER_VIEWS,内容是当前已有的那张。
+     **这里必须是 defaultViews() 而不是 CHARACTER_VIEWS** —— 后者含退役的
+     detail / closeups,拿它当主网格会让"还差几张"把不打算生成的格子也算进去,
+     于是按钮永远停不下来(见 App 的 genRemainingViews,它只跑默认组) */
   const sheetCells = computed(() =>
-    CHARACTER_VIEWS.map((v) => ({ ...v, view: viewOf(detailId.value, v.kind) }))
+    defaultViews().map((v) => ({ ...v, view: viewOf(detailId.value, v.kind) }))
+  )
+
+  /* 「其他设定图」那一排:退役的历史键(detail / closeups),以及日后自定义图的
+     落点。**它不参与 missingCount** —— 那是个"还差几张"的计数,而这一排是
+     "想加就加"的,把可选项算进待办会让每一页都显示欠三张图。
+
+     **有图的排前面**:老角色那两张是已经生成好的资产,不该被一排空格子挤下去 */
+  const extraCells = computed(() =>
+    extraViews()
+      .map((v) => ({ ...v, view: viewOf(detailId.value, v.kind) }))
+      .sort((a, b) => Number(!!b.view) - Number(!!a.view))
   )
 
   const filledCount = computed(() => sheetCells.value.filter((c) => c.view).length)
   const missingCount = computed(() => sheetCells.value.length - filledCount.value)
+  /** 其他设定图里已经有几张。区块标题上用它说"其中 N 张已生成" */
+  const extraFilled = computed(() => extraCells.value.filter((c) => c.view).length)
 
   /* 这个角色出过的图(主界面按 characterId 归拢好传进来)。
      与上面那张设定图网格是两回事:设定图是参考料,这里是作品 */
@@ -255,6 +272,8 @@ export function useCharacterDetail(deps: CharacterDetailDeps) {
     coverOf,
     avatarSrc,
     sheetCells,
+    extraCells,
+    extraFilled,
     filledCount,
     missingCount,
     works,

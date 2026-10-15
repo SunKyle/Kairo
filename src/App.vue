@@ -31,7 +31,11 @@ import {
   vendorOf,
   coverSrc,
   releaseSrc,
-  CHARACTER_VIEWS
+  CHARACTER_VIEWS,
+  /* 默认五类(主视图/全身/侧面/服装/肢体)。**"一次补齐"只跑这一组** ——
+     退役的 detail / closeups 归在详情页的「其他设定图」,是"想加就加"的,
+     自动补齐带上它们会让每一次新建都多花两次出图调用 */
+  defaultViews
 } from './api'
 import {
   blobToDataURL,
@@ -1328,10 +1332,15 @@ async function genCharView(charId: string, kind: CharacterViewKind): Promise<boo
 
 /** 停掉正在重跑的那一张设定图,只停它 —— 别张还在跑的自己跑完。
  *  已经落库的那张不受影响:只有成功写入的那一刻才作数,半路掐断不会留下坏图 */
-/** 一次补齐五张。串行跑:每张都以前一张为参考图,并行只会互相抢带宽;
- *  中途失败(多半是配置或配额)就直接停下,免得连错四次 */
+/** 一次补齐**默认五类**。串行跑:每张都以前一张为参考图,并行只会互相抢带宽;
+ *  中途失败(多半是配置或配额)就直接停下,免得连错四次。
+ *
+ *  **只遍历 defaultViews()**,不是 CHARACTER_VIEWS —— 后者含退役的
+ *  detail / closeups,那两张是详情页「其他设定图」里的可选项。
+ *  带上它们的话,每新建一个角色都会多花两次出图调用,而用户可能并不想要
+ *  (见 api.ts 的 group) */
 async function genRemainingViews(charId: string) {
-  for (const v of CHARACTER_VIEWS) {
+  for (const v of defaultViews()) {
     if (viewOf(charId, v.kind)) continue
     // 已经自己在跑的那张跳过:这个循环只把"还缺的"补上,不重发一遍
     if (charViewBusy.value[charId]?.includes(v.kind)) continue

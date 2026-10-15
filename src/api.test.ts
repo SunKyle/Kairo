@@ -11,7 +11,9 @@ import {
   chatExtraParams,
   configKindOf,
   defaultSizeFor,
+  defaultViews,
   extraParamsFor,
+  extraViews,
   getProvider,
   mergeHistory,
   normalizeSize,
@@ -765,6 +767,26 @@ describe('characterViewPrompt · 设定图的提示词', () => {
     expect(p).toMatch(/low angle/i)
   })
 
+  it('侧面那一格要的是**单张** —— 默认五类里已经有一张 2×2 头角度了', () => {
+    const p = characterViewPrompt(c, 'side', true)
+    expect(p).toMatch(/single full-body side view/i)
+    /* 这三个否定是这张图的关键:模型看到 side view 很容易顺手交一张多角度网格 */
+    expect(p).toMatch(/not a turnaround sheet/i)
+    expect(p).toMatch(/not a grid/i)
+    expect(p).toMatch(/not multiple panels/i)
+    /* 朝向写死 —— 不写的话两次生成会给出朝向相反的两张,而这一格是要当参考图用的 */
+    expect(p).toMatch(/facing left/i)
+  })
+
+  it('服装那一格要的是"穿在身上",不是设计稿也不是平铺图', () => {
+    const p = characterViewPrompt(c, 'outfit', false)
+    expect(p).toMatch(/wearing the outfit/i)
+    expect(p).toMatch(/not a clothing catalogue/i)
+    /* 这一格存在的理由就是 outfit 那个字段终于有属于自己的图了 ——
+       所以设定文本必须真的到得了这一格的提示词里 */
+    expect(p).toContain(c.fields!.outfit)
+  })
+
   it('认不出的 kind 给空串,不拼半条提示词出去', () => {
     expect(characterViewPrompt(c, 'nope' as never, true)).toBe('')
   })
@@ -772,6 +794,61 @@ describe('characterViewPrompt · 设定图的提示词', () => {
   it('老角色(没有 fields)照旧退回 desc,不因为这一改就没了设定', () => {
     const legacy: Character = { id: 'y', name: 'Y', createdAt: 0, desc: 'a quiet stranger' }
     expect(characterViewPrompt(legacy, 'front', false)).toContain('a quiet stranger')
+  })
+})
+
+/* ===== 设定图的分组:哪几格是默认五类,哪几格是「其他设定图」 =====
+   这一节钉的是**一份清单**(api.ts 的 group 那一列)。它之所以值得钉:
+   group 漏写会**静默**落进 undefined,那一格就既不在默认组、也不在其他组 ——
+   界面上凭空消失,而没有任何地方会报错(向导第 3 步少一格、"一次补齐"
+   少一张,都只是"看起来就该是四张")。
+
+   分组的两条判据:
+   - **默认五类** = PRD §3.2-A / §8 要的那五格。前四格与 PRD 逐字对齐;
+     第五格 PRD 写的是"表情设定",而这里用**肢体** —— 那是 2026-10-06 的
+     刻意决策(理由见 api.ts 的 body 那条),不是遗漏,也不再改回去。
+   - **其他** = 退役的 detail / closeups。不删、不迁移(库里已生成的图照旧
+     读得到),但不再默认生成,只在详情页的「其他设定图」区按需补。 */
+describe('CHARACTER_VIEWS · 默认五类与其他设定图', () => {
+  it('默认五类就是 PRD 那五格(第五格用肢体代替表情,这是刻意的)', () => {
+    expect(defaultViews().map((v) => v.kind)).toEqual(['front', 'full', 'side', 'outfit', 'body'])
+  })
+
+  it('其他设定图 = 两枚退役的历史键', () => {
+    expect(extraViews().map((v) => v.kind)).toEqual(['detail', 'closeups'])
+  })
+
+  it('两组加起来就是全部 —— 没有哪一格两边都不在(漏写 group 的形状)', () => {
+    expect(defaultViews().length + extraViews().length).toBe(CHARACTER_VIEWS.length)
+    for (const v of CHARACTER_VIEWS) {
+      expect(v.group === 'default' || v.group === 'extra', v.kind).toBe(true)
+    }
+  })
+
+  it('默认组排在前面 —— 取参考图时先取它们(见 useCharacters 的 charRefSrcsOf)', () => {
+    const kinds = CHARACTER_VIEWS.map((v) => v.kind)
+    expect(kinds.slice(0, defaultViews().length)).toEqual(defaultViews().map((v) => v.kind))
+  })
+
+  it('默认五类里只有 body 是 2×2 网格,而它排第 5、取参考图时够不着', () => {
+    /* 参考图在 i2i 那条路上是拷贝先验:给它一张网格就多一份把画面排成
+       多格、多人、多手的先验。所以默认组里网格越少越好,而 MAX_CHAR_REFS=4
+       恰好把排第 5 的 body 挡在默认那四张之外 */
+    expect(defaultViews().filter((v) => /2x2/.test(v.suffix)).map((v) => v.kind)).toEqual(['body'])
+    expect(CHARACTER_VIEWS.filter((v) => /2x2/.test(v.suffix)).map((v) => v.kind)).toEqual([
+      'body',
+      'detail',
+      'closeups'
+    ])
+  })
+
+  it('每一格都有名字与提示词,且名字不重名 —— 重名会让界面上两格看不出区别', () => {
+    const labels = CHARACTER_VIEWS.map((v) => v.label)
+    expect(new Set(labels).size).toBe(labels.length)
+    for (const v of CHARACTER_VIEWS) {
+      expect(v.label.trim(), v.kind).toBeTruthy()
+      expect(v.suffix.trim().length, v.kind).toBeGreaterThan(20)
+    }
   })
 })
 

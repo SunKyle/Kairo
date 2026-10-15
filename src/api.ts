@@ -1812,6 +1812,16 @@ export const CHARACTER_VIEWS: Array<{
   // 追加在角色设定之后的修饰词,写明取景与用途
   suffix: string
   framing: 'square' | 'portrait'
+  /* 归哪一组(见 types.ts 的 CharacterViewKind 那段)。**这一列是有判据的**:
+     - 'default' 向导第 3 步、详情页的主网格、以及"一次补齐"只跑这一组;
+     - 'extra'   退役的历史键(detail / closeups),只在详情页的「其他设定图」
+                 区出现,不参与自动补齐 —— 一个不打算生成的格子不该出现在
+                 "还差几张"的计数里。
+
+     新增一格时必须想清它属于哪一组:漏写会**静默**落进 undefined,
+     而那会让它既不在默认组、也不在其他组 —— 界面上凭空消失,不报错。
+     所以下面有一条单测直接断言这两组各自的名单 */
+  group: 'default' | 'extra'
 }> = [
   {
     kind: 'front',
@@ -1825,51 +1835,61 @@ export const CHARACTER_VIEWS: Array<{
        (profile / side view / three-quarter)。 */
     suffix:
       'single front-facing headshot of one person, head and shoulders fully in frame with headroom above the head, facing the camera directly with both eyes level and fully visible and the nose pointing at the camera, head not turned and not tilted, neutral expression, plain background, centered, not a profile, not a side view, not a three-quarter view, the face turned front-on even if the reference image shows the person from the side',
-    framing: 'square'
-  },
-  {
-    /* 头部转面:左右正侧 + 上下 45° 俯仰,拼成一张 2×2。
-       正脸只管正面那一张脸,"换个方向才看得见"的东西它一个都交代不了:
-       正侧交代鼻梁高度、下颌线、耳朵位置与发型的侧面走向;
-       俯视交代颅顶与发顶;仰视交代下颌底与鼻底。
-       模型拿到这四格,画侧脸、抬头、低头时才不至于把人的脸重新编一个。
-
-       俯仰指的是相机高度(高角度俯拍 / 低角度仰拍),不是让人自己抬低头 ——
-       要的是"同一张脸换个方向看",不是四种表情。
-
-       它排在正脸之后:原来这个位置是 3/4,而 3/4 只是"同一个方向的另一张头像",
-       与这里第一格的正侧几乎重复;换成转面之后,五格里"脸"这条线才算走完。
-
-       注意 kind 仍叫 detail 而不是 angles:它是索引里的键。
-       改名会让库里已经存下的那些 detail 图对不上(见 App 的 loadCharViews
-       会按已知 kind 过滤),图还在、但画面上会凭空少一格 */
-    kind: 'detail',
-    label: 'Angles',
-    suffix:
-      'a 2x2 turnaround grid of head angles of the same person, head and shoulders in every panel, identical framing, lighting and plain background: left side profile, right side profile, high angle from 45 degrees above eye level, low angle from 45 degrees below eye level, neutral expression',
-    framing: 'square'
+    framing: 'square',
+    group: 'default'
   },
   {
     kind: 'full',
     label: 'Full body',
     suffix:
       'single full-body shot of one person standing, the whole figure head to toe in frame with a small margin above the head and below the feet, plain background, centered',
-    framing: 'portrait'
+    framing: 'portrait',
+    group: 'default'
   },
   {
-    /* 四格细部特写:眼睛、皮肤与脸部标记、手、面料与配件。
-       这些是前面几张交代不了的 —— 头像里眼睛只占几十个像素,
-       机械臂上的纹样、皮衣的缝线更是看不见。模型要画特写时(比如提示词里写
-       "close-up of the hands"),没有这几格就只能凭空编,而编出来的
-       多半和参考图里不是同一双手。
+    /* 侧面视图(PRD §3.2-A / §8 五类之一,2026-10-15 补)。
 
-       四格必须点明"同一人、同一打光、同一背景",否则模型会画成四个不同的人;
-       末尾压一句 no text, no labels —— 拼图里最容易被顺手加上的就是标注文字 */
-    kind: 'closeups',
-    label: 'Details',
+       从前"侧面"这类内容只以**转面 2×2**的形式存在(detail 那格,四格里有两个
+       正侧),而 PRD 要的是**单张**侧面。分开是有用的:转面那张是"为了建模这张脸"
+       画的多角度网格,单张侧面答的是另一个问题 —— 这个人站着的时候从旁边看
+       是什么样。身高体型、肩背线条、发型的侧面走向、服装的侧缝都在这一张里,
+       而它们在正脸那张头肩像里一个都没有。
+
+       **末尾那三个否定是这张图的关键**:默认五类里已经有一张 2×2 头角度
+       (detail,它现在归在「其他设定图」),而模型看到 side view 很容易顺手交一张
+       多角度网格 —— 这张要的是单张。同理"面向左"写死:不写方向时同一套设定
+       两次生成会给出朝向相反的两张,而这一格是要当参考图用的。
+
+       不叫 profile 也不叫 turn:前者在提示词里已经被正面那格的三个否定占用了
+       ("not a profile"),同一个词在两个方向上用会互相削弱 */
+    kind: 'side',
+    label: 'Side view',
     suffix:
-      'a 2x2 grid of close-up detail shots of the same person under identical lighting on the same plain background, one detail per panel: the eyes, the skin and any face marks, the hands, the fabric and the accessories described above, no text, no labels',
-    framing: 'square'
+      'single full-body side view of one person standing in full profile, the whole figure head to toe in frame with a small margin above the head and below the feet, facing left, arms relaxed at the sides, plain background, centered, one single image and not a turnaround sheet, not a grid, not multiple panels',
+    framing: 'portrait',
+    group: 'default'
+  },
+  {
+    /* 服装设计(PRD §3.2-A / §8 五类之一,2026-10-15 补)。
+
+       `outfit` 这个字段一直存在、而且是 `sheetOnly`(只喂设定图,见
+       server/charSpec.js),可是在此之前它**没有属于自己的那一格** ——
+       它只在 closeups 的四格之一里露一角("面料与配件"),以及每张设定图的
+       设定文本里出现一次。于是"这一身到底长什么样"从来没有一张完整的图。
+
+       为什么是**穿在身上**的单张全身、而不是设计稿或平铺图:这一格与其余四格
+       一样是要当参考图用的,而参考图在 i2i 那条路上是拷贝先验 —— 一张平铺的
+       设计稿会让模型把衣服画成没有人的样子,或者把画面排成服装目录页。
+       写成"穿在这个人身上"才既交代了衣服、又保住了"还是同一个人"。
+
+       末尾压掉 catalogue / grid / panels 三个词与 side 那条同源:
+       "服装"这个词本身就会把模型带向多格目录页 */
+    kind: 'outfit',
+    label: 'Outfit',
+    suffix:
+      'single full-body shot of one person standing, wearing the outfit described above, the whole outfit visible head to toe and unobstructed, plain background, centered, one single image and not a clothing catalogue page, not a grid, not multiple panels, no text, no labels',
+    framing: 'portrait',
+    group: 'default'
   },
   {
     /* 四格肢体:手、臂、腿、脚。**它替掉的是原来那张表情 2×2**(2026-10-06)。
@@ -1880,6 +1900,11 @@ export const CHARACTER_VIEWS: Array<{
        特写**的那一处:提示词只能靠锚点句(七项全是头部特征)和特写那层的一句
        性别兜着,画出来常常不是这个人的手 —— 用户先后报过两次,第二次是
        "明明是女生,生成的手却很粗糙"(见 lib/chatPhoto 的 partLine)。
+
+       **它是默认五类里的第五格(2026-10-15 确认保留)。** PRD §8 写的那一格
+       是"表情设定",而这一格是肢体 —— 这是一处**有意的偏离**,不再改回去:
+       表情那张零下游用途(排第 5、上限 4),而肢体是唯一没有依据又常被特写的
+       一处。界面上如实叫它 Body,不借 PRD 那个名字。
 
        它与 closeups 的分工:那张管脸(眼睛、皮肤与脸上的标记、手、面料),
        这张管肢体(手、前臂、腿、脚)。两张都躲不开 2×2 网格那点拼贴先验,
@@ -1896,9 +1921,79 @@ export const CHARACTER_VIEWS: Array<{
     label: 'Body',
     suffix:
       'a 2x2 grid of close-up body shots of the same person under identical lighting on the same plain background, one part per panel: the hands with their fingers, the forearms, the legs, the bare feet and ankles, identical skin and build in every panel, no text, no labels',
-    framing: 'square'
+    framing: 'square',
+    group: 'default'
+  },
+  {
+    /* 头部转面:左右正侧 + 上下 45° 俯仰,拼成一张 2×2。
+       正脸只管正面那一张脸,"换个方向才看得见"的东西它一个都交代不了:
+       正侧交代鼻梁高度、下颌线、耳朵位置与发型的侧面走向;
+       俯视交代颅顶与发顶;仰视交代下颌底与鼻底。
+       模型拿到这四格,画侧脸、抬头、低头时才不至于把人的脸重新编一个。
+
+       俯仰指的是相机高度(高角度俯拍 / 低角度仰拍),不是让人自己抬低头 ——
+       要的是"同一张脸换个方向看",不是四种表情。
+
+       **T10(2026-10-15)把它移出默认五类,归入「其他设定图」** ——
+       不是因为它不好,而是 PRD 那五类里没有"多角度头"这一格,而侧面那格
+       已经由 side 单张承担。它库里已生成的图照旧读得到、也照旧能补生成,
+       只是不再进向导第 3 步、也不进"一次补齐"的计数。
+
+       为什么不干脆把它改造成"侧面视图":它是 2×2 四格、内容是**多角度**,
+       与单张侧面不是一类东西。按 types.ts 那条键名纪律,内容类别变了就必须
+       另起键 —— 复用会让库里已存的网格被当成"单张侧面"发出去。
+
+       注意 kind 仍叫 detail 而不是 angles:它是索引里的键。
+       改名会让库里已经存下的那些 detail 图对不上(见 App 的 loadCharViews
+       会按已知 kind 过滤),图还在、但画面上会凭空少一格 */
+    kind: 'detail',
+    label: 'Angles',
+    suffix:
+      'a 2x2 turnaround grid of head angles of the same person, head and shoulders in every panel, identical framing, lighting and plain background: left side profile, right side profile, high angle from 45 degrees above eye level, low angle from 45 degrees below eye level, neutral expression',
+    framing: 'square',
+    group: 'extra'
+  },
+  {
+    /* 四格细部特写:眼睛、皮肤与脸部标记、手、面料与配件。
+       这些是前面几张交代不了的 —— 头像里眼睛只占几十个像素,
+       机械臂上的纹样、皮衣的缝线更是看不见。模型要画特写时(比如提示词里写
+       "close-up of the hands"),没有这几格就只能凭空编,而编出来的
+       多半和参考图里不是同一双手。
+
+       四格必须点明"同一人、同一打光、同一背景",否则模型会画成四个不同的人;
+       末尾压一句 no text, no labels —— 拼图里最容易被顺手加上的就是标注文字。
+
+       **T10(2026-10-15)同 detail 一样移出默认五类** —— PRD 的五类里
+       "服装设计"是独立一格(见上面 outfit),而这一格里"面料与配件"只占四分之一。
+
+       代价说清:新角色不再默认生成它,于是 lib/chatPhoto 的 FRAME_REF_ORDER
+       里 close 那一档(['front','closeups','body'])对新角色会少一张参考图。
+       那一档要不要换成 side / outfit,得拿真图 A/B 才敢改 —— 与 2026-10-08
+       那次同一条纪律,本轮不做 */
+    kind: 'closeups',
+    label: 'Details',
+    suffix:
+      'a 2x2 grid of close-up detail shots of the same person under identical lighting on the same plain background, one detail per panel: the eyes, the skin and any face marks, the hands, the fabric and the accessories described above, no text, no labels',
+    framing: 'square',
+    group: 'extra'
   }
 ]
+
+/** 默认五类 —— PRD §3.2-A / §8 要的那五格(前四格逐字对齐,第五格按 2026-10-06
+ *  决策用肢体代替表情,见 body 那条)。
+ *
+ *  向导第 3 步、详情页的主网格、"一次补齐"都只跑这一组。**导出的不是常量而是
+ *  函数**:将来若支持自定义设定图,这一组的来源会变成"按角色算",调用方现在
+ *  就按函数写,那一天不必改一遍调用点 */
+export function defaultViews() {
+  return CHARACTER_VIEWS.filter((v) => v.group === 'default')
+}
+
+/** 其他设定图 —— 退役的历史键(detail / closeups),以及日后自定义图的落点。
+ *  只在详情页的「其他设定图」区出现,不参与自动补齐 */
+export function extraViews() {
+  return CHARACTER_VIEWS.filter((v) => v.group === 'extra')
+}
 
 /**
  * 一张设定图真正要发出去的提示词:角色设定 + 这一格的取景要求

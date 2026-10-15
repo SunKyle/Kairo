@@ -1,6 +1,6 @@
 import { computed, nextTick, ref, watch, type Component } from 'vue'
 import { PhSpeakerHigh, PhSquaresFour, PhTextAa } from '@phosphor-icons/vue'
-import { CHARACTER_VIEWS } from '../api'
+import { defaultViews } from '../api'
 import type { CharacterDraftForm, CharacterSavePayload } from './useCharacterDraft'
 import { stopSpeaking } from '../lib/speech'
 import type { Character, CharacterView, CharacterViewKind } from '../types'
@@ -148,9 +148,14 @@ export function useCharacterWizard(deps: CharacterWizardDeps) {
     const c = wizardChar.value
     return c?.sourceRef || c?.ref ? 'Your reference image' : 'Text only — no reference image'
   })
-  // 第 3 步的四张,主视图不在其中
+  /* 第 3 步的四张(全身 / 侧面 / 服装 / 肢体),主视图不在其中。
+     **只取默认组** —— 退役的 detail / closeups 归在详情页的「其他设定图」,
+     向导这一步不该把它们摊出来:这一步的问句是"其余四张要不要一起生成",
+     而那两张是"想要再加"的 */
   const wizardRest = computed(() =>
-    CHARACTER_VIEWS.filter((v) => v.kind !== 'front').map((v) => ({ ...v, view: wizardViewOf(v.kind) }))
+    defaultViews()
+      .filter((v) => v.kind !== 'front')
+      .map((v) => ({ ...v, view: wizardViewOf(v.kind) }))
   )
   const restMissing = computed(() => wizardRest.value.filter((c) => !c.view).length)
   /* 一次补齐的按钮文案。四张齐了就该停下 —— 齐了还能点、点了没反应,看着像坏了 */

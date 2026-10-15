@@ -38,7 +38,8 @@ const props = defineProps<{
   isMain?: boolean
   /** 正脸那一格:空态用 accent 淡底的 "+"(整条流水线的起点,该被一眼看见) */
   start?: boolean
-  /** 竖幅(2:3)。详情页那一排靠它跨两行,向导那一排则被按回方框 */
+  /** 竖幅(2:3)的那几张。**它只决定图怎么放进框**(contain 而不是 cover),
+   *  不再决定框本身的大小 —— 框一律 1:1,理由见下面 .cell-img 那段 */
   portrait?: boolean
   /** 有图时点它做什么:open = 看大图(详情页),generate = 重出(向导) */
   action: 'open' | 'generate'
@@ -82,8 +83,9 @@ const emptyAria = computed(() => {
 </script>
 
 <template>
-  <!-- 单根:父组件的网格按它排(.sheet 左四右一 / .wz-grid 一排四格),
-     竖幅跨不跨行也由父组件那两条规则决定 -->
+  <!-- 单根:父组件的网格按它排(.sheet 自适应等宽 / .wz-grid 一排四格)。
+       框的大小与比例**不归父组件管** —— 一律 1:1、竖幅在里面 contain,
+       所以父组件换排法时不必再跟一条"那竖幅怎么办"的规则 -->
   <div class="cell" :class="{ 'is-portrait': portrait, 'is-ref': isMain }">
     <!-- 正在跑的那一张(含重跑):整格换成"停止"入口。
          旧写法只给空格子加个呼吸,重跑一张已有的图时格子毫无变化 ——
@@ -170,12 +172,18 @@ const emptyAria = computed(() => {
 .cell-img.has-img:hover {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), var(--sh-sm);
 }
-/* 竖幅的输出只有 Full body 一张(见 api.ts 的 framing)。
-   它按 2:3 生成(App 的 PORTRAIT_RATIO),塞进 1:1 的格子会被 cover 上下各切掉约 1/6 ——
-   头和脚都没了。所以这一格改用同一个 2:3 装它:比例对齐,cover 一点不裁;
-   方块图仍用 1:1,它们的输出本来就是方的 */
-.cell.is-portrait .cell-img {
-  aspect-ratio: 2 / 3;
+/* 竖幅(2:3)的那几张 —— 全身 / 侧面 / 服装(见 api.ts 的 framing)。
+   它们按 2:3 生成(App 的 PORTRAIT_RATIO),塞进 1:1 的框会被 cover 从**两侧**
+   各切掉约 1/6,而切掉的正是服装的轮廓与侧面的身线。所以这里改成 contain:
+   整张完整放下,两侧留出图片画布色。
+
+   **为什么不按 2:3 铺框**(从前是这么做的):设定图那一排里方块与竖幅是混着的
+   —— 默认五类是两张方块 + 三张竖幅 —— 框跟着各自的比例走,一行里就会高低不齐,
+   而"一排里哪张不齐"会被读成"这张出了问题"(见 CharacterPage 的 .sheet 那段)。
+   代价是竖幅两侧有留白,换来的是每一格一样高、标签落在同一条基线上,
+   而且以后再加设定图不必动布局 */
+.cell.is-portrait .cell-img img {
+  object-fit: contain;
 }
 /* 空格子上的"+"做成一枚圆形按钮:说的是"这里可以生成",
    而不是"这里缺一件东西"。悬停时它转成墨色实心 ——

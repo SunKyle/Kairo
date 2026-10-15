@@ -1480,10 +1480,17 @@ async function main() {
       charsProbe.detail = await evaluate(() => ({
         name: document.querySelector('.hero-name')?.textContent?.trim() || '',
         meta: document.querySelector('.hero-meta')?.textContent?.trim() || '',
-        cells: document.querySelectorAll('.sheet .cell').length,
+        /* **必须排除 .is-extra** —— 两排用的是同一个 .sheet 类(见 CharacterPage
+           的 .sheet / .sheet.is-extra)。不排除的话数出来的是两排之和,
+           而下面那条断言钉的是"默认五类"这一排。T10 加「其他设定图」时正是踩在这儿 */
+        cells: document.querySelectorAll('.sheet:not(.is-extra) .cell').length,
+        /* 「其他设定图」那一排(见 api.ts 的 group)。**只断言它在场、不断言格数** ——
+           这一排是"想加就加"的,日后加自定义设定图会让它变长;而默认那一排的 5 是
+           PRD §8 的硬要求,`api.test.ts` 里对 defaultViews() 的断言才是它的权威出处 */
+        extraCells: document.querySelectorAll('.sheet.is-extra .cell').length,
         /* 每格都有一个 .cell-img 按钮(空格是"生成"、有图是"看大图"),
            所以数它没有意义 —— 有图的那一档带 .has-img */
-        filled: document.querySelectorAll('.sheet .cell-img.has-img').length,
+        filled: document.querySelectorAll('.sheet:not(.is-extra) .cell-img.has-img').length,
         specRows: document.querySelectorAll('.spec-row, .det-row, .row').length,
         voiceRows: (document.body.textContent || '').includes('Browser voice')
       }))
@@ -1646,6 +1653,7 @@ async function main() {
         charsProbe.openedDetail === 'clicked' &&
         charsProbe.detail?.name === 'Probe captain' &&
         charsProbe.detail?.cells === 5 &&
+        charsProbe.detail?.extraCells > 0 &&
         charsProbe.detail?.filled === 1 &&
         charsProbe.backToChars === true &&
         /Created/.test(charsProbe.detail?.meta || '') &&

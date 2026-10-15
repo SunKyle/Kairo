@@ -1995,6 +1995,19 @@ export function extraViews() {
   return CHARACTER_VIEWS.filter((v) => v.group === 'extra')
 }
 
+/* 设定图的「待确认」清单(见 types 的 Character.staleViews 与 lib/staleViews)。
+   与 coerceCharOrigin 同一条理由、同一个收口:它来自 localStorage,可能被手改、
+   被同步工具截断,也可能带着已经认不出的键。**认不出的丢掉** ——
+   一个拼错的 kind 会让详情页那条提醒点名一张界面上根本不存在的图
+   (判据与 loadCharViews 对 kind 的收窄是同一套:以 CHARACTER_VIEWS 为准) */
+export function coerceStaleViews(raw: unknown): CharacterViewKind[] {
+  if (!Array.isArray(raw)) return []
+  const known = new Set<string>(CHARACTER_VIEWS.map((v) => v.kind))
+  return Array.from(
+    new Set(raw.filter((k): k is CharacterViewKind => typeof k === 'string' && known.has(k)))
+  )
+}
+
 /**
  * 一张设定图真正要发出去的提示词:角色设定 + 这一格的取景要求
  * (+ 有参考图时那句"参考图只管脸")。
@@ -2242,6 +2255,12 @@ export async function loadCharacters(): Promise<Character[]> {
     const origin = coerceCharOrigin(c.origin)
     if (hasOrigin(origin)) c.origin = origin
     else delete c.origin
+    /* 待确认的设定图同样逐项收口(见 coerceStaleViews)。**空表不写回** ——
+       与 origin / pinned 同一条:让"从没过期"与"过期已处理完"两种角色
+       在读法上保持同一种形状 */
+    const stale = coerceStaleViews(c.staleViews)
+    if (stale.length) c.staleViews = stale
+    else delete c.staleViews
     const ref = refs.get(c.id)
     if (ref) c.ref = ref
     // 底图另有 key,不是设定图之一(见 idb.ts 的 charSourceKey)

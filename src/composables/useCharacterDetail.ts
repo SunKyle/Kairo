@@ -128,6 +128,46 @@ export function useCharacterDetail(deps: CharacterDetailDeps) {
   /** 其他设定图里已经有几张。区块标题上用它说"其中 N 张已生成" */
   const extraFilled = computed(() => extraCells.value.filter((c) => c.view).length)
 
+  /* —— 待确认的设定图(见 lib/staleViews)——
+     哪些图跟当前的「基准」对不上了:正脸被重跑(其余图还是上一张脸)、
+     或设定被改(所有图,连正脸自己,还是旧设定)。
+
+     详情页据此显示一条**持续**提醒,由用户决定重跑还是保留 —— PRD §3.2-A
+     要的就是"提示影响 + 保留现有图片 + 由用户决定",而弹一下就走的 toast
+     撑不住"用户过一会儿才回来处理"这件事(§11.13 也把它算作一种提醒状态)。
+
+     **只列确实有图的那几张**:清单可能留着、图却不在(理论上不会有,
+     但没有"单张删除"不等于永远不会加)。点名一张界面上找不到的图只会让人困惑。
+     顺序照 CHARACTER_VIEWS —— 与网格里那几格的顺序一致 */
+  const staleCells = computed(() => {
+    const marked = detailChar.value?.staleViews || []
+    return CHARACTER_VIEWS.filter(
+      (v) => marked.includes(v.kind) && viewOf(detailId.value, v.kind)
+    ).map((v) => ({ kind: v.kind, label: v.label }))
+  })
+  const hasStale = computed(() => staleCells.value.length > 0)
+
+  /** "A, B and C"。设定图最多七张,三项以上也仍读得顺,所以不摆列表 */
+  function joinNames(names: string[]): string {
+    if (names.length <= 1) return names[0] || ''
+    return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  }
+
+  /** 那条提醒在说什么。两种来源措辞不同,而**判据是"清单里有没有 front"**:
+   *  正脸自己从不会因为"重跑正脸"而上榜(见 lib/staleViews 的 staleAfterGen),
+   *  所以它出现在清单里只可能是"设定被改过" —— 那种情况下连正脸都得重跑。
+   *  这条推断被 staleViews.test.ts 钉着,别把 staleAfterGen 改成会标 front */
+  const staleNote = computed(() => {
+    const cells = staleCells.value
+    if (!cells.length) return ''
+    const names = joinNames(cells.map((c) => c.label))
+    const was = cells.length === 1 ? 'was' : 'were'
+    const from = (detailChar.value?.staleViews || []).includes('front')
+      ? 'the old spec'
+      : 'the previous front view'
+    return `${names} ${was} built from ${from}.`
+  })
+
   /* 这个角色出过的图(主界面按 characterId 归拢好传进来)。
      与上面那张设定图网格是两回事:设定图是参考料,这里是作品 */
   const works = computed(() => deps.works()[detailId.value] || [])
@@ -274,6 +314,8 @@ export function useCharacterDetail(deps: CharacterDetailDeps) {
     sheetCells,
     extraCells,
     extraFilled,
+    hasStale,
+    staleNote,
     filledCount,
     missingCount,
     works,

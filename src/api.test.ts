@@ -9,6 +9,7 @@ import {
   asConfigKind,
   characterViewPrompt,
   chatExtraParams,
+  coerceStaleViews,
   configKindOf,
   defaultSizeFor,
   defaultViews,
@@ -849,6 +850,31 @@ describe('CHARACTER_VIEWS · 默认五类与其他设定图', () => {
       expect(v.label.trim(), v.kind).toBeTruthy()
       expect(v.suffix.trim().length, v.kind).toBeGreaterThan(20)
     }
+  })
+})
+
+describe('coerceStaleViews · 待确认清单读盘收口', () => {
+  it('认得的 kind 原样留下', () => {
+    expect(coerceStaleViews(['full', 'side'])).toEqual(['full', 'side'])
+  })
+
+  it('认不出的键丢掉 —— 一个拼错的 kind 会让提醒点名一张不存在的图', () => {
+    expect(coerceStaleViews(['full', 'nope', 42, null, {}])).toEqual(['full'])
+  })
+
+  it('去重', () => {
+    expect(coerceStaleViews(['full', 'full', 'side'])).toEqual(['full', 'side'])
+  })
+
+  it('不是数组时给空表(手改 / 截断过的 localStorage)', () => {
+    expect(coerceStaleViews(undefined)).toEqual([])
+    expect(coerceStaleViews(null)).toEqual([])
+    expect(coerceStaleViews('full')).toEqual([])
+    expect(coerceStaleViews({ 0: 'full' })).toEqual([])
+  })
+
+  it('front 是合法成员 —— 改设定那条路会把它标进来', () => {
+    expect(coerceStaleViews(['front', 'full'])).toEqual(['front', 'full'])
   })
 })
 

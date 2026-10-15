@@ -72,6 +72,7 @@ import {
 } from './lib/crossTab'
 // 角色参考图的尺寸上限(角色发图、设定图两条路都从它取)
 import { REF_IMAGE_EDGE } from './lib/payload'
+import { sameStale, staleAfterGen, staleAfterSpecChange } from './lib/staleViews'
 import {
   applyTheme,
   currentTheme,
@@ -870,14 +871,26 @@ async function saveCharFromPage(d: CharacterSavePayload) {
       c.voice = { ...d.voice }
       if (prevSample && prevSample !== nextSample) void deleteVoiceSample(prevSample)
       if (ref) c.sourceRef = ref
+      /* 改的可能只是一个名字,也可能把脸改了。**设定动了 = 基准动了** ——
+         已经出过的那几张(连正脸一起)都是照旧设定生的,全部标为待确认。
+         正脸也在其中:它同样是旧设定的产物,重跑它才是跟上新设定的第一步。
+         详情页那条持续提醒会点名它们,由用户决定重跑还是保留(见 lib/staleViews)。
+
+         **只在设定图确实已经读进内存时才动这个标记** —— 没读到时我们并不知道
+         这个人有几张图,照空的算会把一个已有的标记无声抹掉 */
+      const viewsLoaded = charViews.value[c.id]
+      const specChanged = before !== JSON.stringify({ ...d.fields, desc: c.desc })
+      if (specChanged && viewsLoaded) {
+        const next = staleAfterSpecChange(viewsLoaded.map((v) => v.kind))
+        if (next.length) c.staleViews = next
+        else delete c.staleViews
+      }
       await saveCharacters(characters.value)
-      /* 改的可能只是一个名字,也可能把脸改了。设定动了就得说一声 ——
-         那五张设定图是按旧设定生成的,不提示的话用户会以为它们跟着一起变了。
-         一张视图都没有时不必说这句:没有"旧的"可以重跑 */
-      const hasViews = (charViews.value[c.id] || []).length > 0
+      /* 说一声,但不再自己决定"要不要重跑" —— 提醒条就落在这个人的详情页上,
+         这一句只是把用户送过去看它。一张视图都没有时不必说:没有"旧的"可重跑 */
       notice.value =
-        hasViews && before !== JSON.stringify({ ...d.fields, desc: c.desc })
-          ? 'Saved. The reference views were made from the old spec — regenerate them if the face changed.'
+        specChanged && viewsLoaded?.length
+          ? 'Saved. The reference views no longer match this spec — see them on this page.'
           : `Saved “${c.name}”.`
       /* 编辑没有第 2、3 步要走,收尾就是回到这个人自己的详情页 */
       charPageRef.value?.onUpdated(c.id)
@@ -1290,22 +1303,38 @@ async function genCharView(charId: string, kind: CharacterViewKind): Promise<boo
     announce('charViews', c.id)
     const rest = (charViews.value[c.id] || []).filter((v) => v.kind !== kind)
     charViews.value = { ...charViews.value, [c.id]: [...rest, { kind, data: blob }] }
+    /* —— 一致性标记:哪几张设定图跟当前的「基准」对不上了(见 lib/staleViews)——
+       正脸是基准,重跑它 = 其余每一张都过期;重跑别的张 = 只有它自己跟上了新基准。
+       只在**真的变了**时才落盘:每张图都重写一遍角色目录是白写,
+       而它顺带还会写一次参考图的 IndexedDB、并让别的标签页重读一遍角色 */
+    const nextStale = staleAfterGen(
+      kind,
+      (charViews.value[c.id] || []).map((v) => v.kind),
+      c.staleViews || []
+    )
+    const staleChanged = !sameStale(nextStale, c.staleViews || [])
+    if (staleChanged) {
+      if (nextStale.length) c.staleViews = nextStale
+      else delete c.staleViews
+    }
     /* 正脸同时是这张角色的封面与头像,生成成功后就写回 ref ——
        否则卡片上停留的还是那张上传的底图,跟刚生成的脸对不上。
        底图不会被这一下顶掉:它另存了一份(sourceRef),
        其余四张设定图还要拿它和正脸一起当参考 */
     if (kind === 'front') {
-      const stale = c.ref
+      const oldCover = c.ref
       c.ref = blob
       await saveCharacters(characters.value)
       // 界面已经换成新图,旧封面那张不再被任何地方引用
-      if (stale && stale !== blob) releaseSrc(stale)
+      if (oldCover && oldCover !== blob) releaseSrc(oldCover)
+    } else if (staleChanged) {
+      await saveCharacters(characters.value)
     }
-    /* 重跑正脸之后,其余四张就是照上一张正脸出的了。提醒一句,但不替用户删 ——
-       删是不可逆的,而"要不要重跑"只有他自己知道 */
+    /* 重跑正脸之后,其余那几张就是照上一张脸出的了。说一声就够 ——
+       **不替用户删、也不当场重跑**(删不可逆、重跑要花钱),而"到底哪几张对不上"
+       交给详情页上那条持续提醒点名,由用户决定(见 CharacterPage 的 .stale) */
     if (kind === 'front' && rest.length) {
-      notice.value =
-        'Other views were built from the previous front view — regenerate them if the face changed.'
+      notice.value = 'Front view updated — the other views still show the previous face.'
     }
     ok = true
   } catch (e) {
@@ -1346,6 +1375,36 @@ async function genRemainingViews(charId: string) {
     if (charViewBusy.value[charId]?.includes(v.kind)) continue
     if (!(await genCharView(charId, v.kind))) return
   }
+}
+
+/** 把「待确认」的那几张按顺序重跑一遍(详情页那条提醒上的主按钮)。
+ *
+ *  **正脸排在最前** —— 其余每一张都以它为参考图,先跑别的等于拿旧脸当基准,
+ *  跑完还是对不上。CHARACTER_VIEWS 的顺序本来就是正脸打头,照它排即可。
+ *
+ *  串行 + 中途失败就停:与 genRemainingViews 同一条 —— 每张都以前一张为参考,
+ *  并行只会互相抢带宽;而失败多半是配置或配额,连着错下去没意义。
+ *  每跑完一张,genCharView 会把它自己从清单里摘掉,所以全跑完清单自然就空了;
+ *  中途停下时剩下的还留在清单里,提醒条继续挂着 —— 那正是该有的样子 */
+async function regenerateStaleViews(charId: string) {
+  const c = characters.value.find((x) => x.id === charId)
+  if (!c?.staleViews?.length) return
+  // 先按基准顺序固定下来:循环里 genCharView 会一路改写 c.staleViews
+  const order = CHARACTER_VIEWS.map((v) => v.kind).filter((k) => c.staleViews?.includes(k))
+  for (const kind of order) {
+    // 标记留着、图却不在(理论上不会):跳过,免得为一张界面上没有的图发请求
+    if (!viewOf(charId, kind)) continue
+    if (!(await genCharView(charId, kind))) return
+  }
+}
+
+/** 用户决定保留现有那几张:撤掉「待确认」标记。
+ *  **一张图都不动** —— 这条提醒的本意就是"由用户决定",点掉它也是一种决定 */
+async function dismissStaleViews(charId: string) {
+  const c = characters.value.find((x) => x.id === charId)
+  if (!c?.staleViews?.length) return
+  delete c.staleViews
+  await saveCharacters(characters.value)
 }
 
 // 在创作区选中某个角色时顺手取一次;角色页那边由 @open 触发
@@ -1500,6 +1559,8 @@ function createAssignCollection(title: string) {
         @generate="genCharView"
         @generate-all="genRemainingViews"
         @stop-view="stopCharView"
+        @regenerate-stale="regenerateStaleViews"
+        @dismiss-stale="dismissStaleViews"
         @preview="openPreview"
         @chat="openChat"
       />

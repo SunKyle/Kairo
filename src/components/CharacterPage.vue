@@ -122,6 +122,10 @@ const emit = defineEmits<{
   (e: 'generateAll', charId: string): void
   // 停掉某个角色正在跑的那一张设定图(只停它)。中断手柄在主界面(请求从那里发出)
   (e: 'stopView', charId: string, kind: CharacterViewKind): void
+  /* 「待确认」那几张:重跑一遍 / 撤掉标记。两件事都在主界面做
+     (重跑要发请求、撤标记要落盘),这一页只发意图 —— 与 generate 同一套分工 */
+  (e: 'regenerateStale', charId: string): void
+  (e: 'dismissStale', charId: string): void
 }>()
 
 // 导入用的隐藏 file input:页头那个按钮点它(见模板里的注释)
@@ -225,6 +229,8 @@ const {
   sheetCells,
   extraCells,
   extraFilled,
+  hasStale,
+  staleNote,
   filledCount,
   missingCount,
   works,
@@ -1424,6 +1430,29 @@ function originBadge(key: SpecFieldKey): string {
                 : 'Start with the front view — the other four unlock once it exists.'
             }}
           </span>
+        </div>
+
+        <!-- 一致性提醒:正脸被重跑过、或设定被改过之后,下面这几张图还是照旧的
+             「基准」生的。**它是一条持续提醒,不是弹一下就走的 toast** ——
+             用户可能过一会儿才回来处理,而"到底哪几张对不上"只有摆在这儿才看得见
+             (PRD §3.2-A 的"提示影响 + 保留现有图片 + 由用户决定",§11.13 也把它
+             算作一种提醒状态)。
+
+             两个动作都不在这一页做:重跑要发请求、撤标记要落盘,都由主界面接 ——
+             与网格里那几格"点一下只发意图"同一套分工 -->
+        <div v-if="hasStale" class="stale" role="status">
+          <div class="stale-body">
+            <p class="stale-title">Reference views out of date</p>
+            <p class="stale-note">{{ staleNote }}</p>
+          </div>
+          <div class="stale-acts">
+            <button class="stale-regen" @click="emit('regenerateStale', detailChar.id)">
+              Regenerate these
+            </button>
+            <button class="stale-keep" @click="emit('dismissStale', detailChar.id)">
+              Keep them
+            </button>
+          </div>
         </div>
 
         <!-- 空格点一下即生成;有图的点开看大图,重新生成与设为主参考图都在大图里 ——
@@ -3248,6 +3277,73 @@ textarea.wz-idea {
   margin-bottom: var(--sp-3);
 }
 
+/* —— 一致性提醒 ——
+   正脸被重跑过、或设定被改过之后,下面那几格里有的还是照旧「基准」生的。
+   **它是一条持续提醒,不是 toast**:用户可能过一会儿才回来处理,而"到底哪几张
+   对不上"只有一直摆在这儿才看得见(PRD §3.2-A / §11.13)。
+
+   左边一道墨色细条,与记忆页那条「重要」标记同一套语言。整块换红底会把它说成
+   "出错了" —— 可这里没有任何东西坏掉:图还在、还能用,只是可能跟新基准对不上,
+   决定权在用户手里。红在本站留给"删掉就回不来"的东西(见 .dt-del) */
+.stale {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.stale-body {
+  flex: 1;
+  min-width: 0;
+}
+.stale-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+.stale-note {
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.stale-acts {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+/* 「重新生成这几张」是这条提醒唯一要做的事,给实心 —— 但比页头那颗主按钮小一号:
+   它是补救动作,不是这一页的主动作(页头只该有一个实心按钮) */
+.stale-regen,
+.stale-keep {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.stale-regen {
+  color: var(--accent-contrast);
+  background: var(--accent);
+}
+.stale-regen:hover {
+  background: var(--accent-strong);
+}
+/* 「保留」是"什么都不做",所以是次要款 —— 与 .dt-act 同一档 */
+.stale-keep {
+  color: var(--text-3);
+}
+.stale-keep:hover {
+  color: var(--text);
+  background: var(--bg-elev);
+}
+
 /* —— 设定图 ——
    默认五类(主视图 / 全身 / 侧面 / 服装 / 肢体)排成一排。
 
@@ -3743,6 +3839,18 @@ textarea.wz-idea {
   }
   .sheet.is-extra {
     grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  }
+  /* 窄屏:两个动作换到文字下面、贴右下 —— 并排会把说明挤成一列窄字,
+     而这条提醒的价值全在说明里(它要点名是哪几张) */
+  .stale {
+    flex-direction: column;
+  }
+  .stale-acts {
+    align-self: flex-end;
+  }
+  .stale-regen,
+  .stale-keep {
+    min-height: 40px;
   }
   .spec {
     grid-template-columns: 1fr;

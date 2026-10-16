@@ -217,6 +217,34 @@ Category|Origin|The memory, written as one plain sentence.
 - One sentence each, under 30 words, in English — but keep names, places and titles in their original language.
 - Write in the third person, from the character's point of view ("they", "the user"). Never write dialogue, never speak as either of them.
 - Do not restate anything already covered by what you are told the character already remembers.`,
+  /* 关系评估(PRD §3.2-C):看一段实质对话,判这三轴各动了多少。
+     与上面几档的分工:memory 抽的是"一条条事实",summary 压的是"这段的纪要",
+     这一档抽的是"你们熟了多少"——一个关于**关系本身**的判断,不是关于内容。
+
+     为什么固定三行、坏一行丢一行:与 memory 同一条理由(省掉整类解析坑),
+     而三轴正好是三行,读起来一眼能核。
+
+     三条要紧的写法各对着一种具体的失真:
+     - "0 是正常的一档" —— 否则模型会为"总要给点什么"而每轮都 +1,
+       关系会随消息数线性膨胀,而那正是 §3.2-C 要避开的"受消息数驱动"。
+     - "只在明确的疏远信号才写负" —— 缺席、安静、话少都**不是**扣分,
+       §3.2-C 硬要求"不因缺席扣减";这条把那个原则交到模型手里。
+     - "亲近不得高过信任、信任不得高过熟悉" —— 在提示词里就说一遍,
+       前端 applyEvaluation 再夹一次(两边都收,防模型越界,也防手搓请求)。 */
+  relationship: `You judge how much closer a user and a character have grown over one stretch of their conversation.
+
+Rules:
+- Output exactly 3 lines, in this order, and nothing else:
+familiarity|<delta>
+trust|<delta>
+affection|<delta>
+- Each <delta> is a signed integer from -3 to +8. It is the change over this one stretch, not the running total.
+- familiarity is how well they know each other; trust is how far they rely on each other and let their guard down; affection is warmth and ease between them.
+- Closeness is earned, not assumed. A normal stretch of talk nudges these a little; a real moment of openness, support or honesty moves them more. When nothing meaningful happened, 0 is the correct answer — do not invent progress just to have something to report.
+- Write a negative delta only for an explicit signal of pulling away: coldness, a boundary crossed, someone withdrawing. Never decay because time passed, because the exchange was quiet, or because the user was brief.
+- Respect the shape of a relationship: affection must not exceed trust, and trust must not exceed familiarity. If your three numbers would break that order, lower the higher one until they fit.
+- Judge only from the conversation you are given. Never invent shared history, inside jokes or confessions that are not in it.
+- No preamble, no explanation, no markdown, no quotes. The three lines are the entire answer.`,
 }
 // 改写强度:保守档给低温度,让它贴着原句走;重构档放开,否则出来的东西没差别。
 // 拆角色要具体又不重复,取中间偏放开。识图要的是"照着图写",再放开就会开始编。
@@ -233,7 +261,10 @@ const ENHANCE_TEMPERATURE = {
   photo: 0.6,
   /* 抽取要的是"忠实":编出来的记忆比没有记忆更糟(与 summary 同一条),
      所以取最低的一档 */
-  memory: 0.2
+  memory: 0.2,
+  /* 关系同理,甚至更要收着:编出来的亲密比没变的亲密更失真。
+     取最低一档,让它贴着"这段对话里真发生了什么"判,而不是随手给个进步 */
+  relationship: 0.2
 }
 
 export { ENHANCE_PROMPTS, ENHANCE_TEMPERATURE }

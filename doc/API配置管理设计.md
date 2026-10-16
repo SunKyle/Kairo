@@ -1,5 +1,6 @@
 # API 配置管理设计
 
+> 快照：`main` @ `398187f`（2026-10-16）。引用方式已于 2026-10-16 统一为符号名。
 > 本文总结 KImage 中「接口配置（ApiConfig）」的管理设计。
 > 相关实现集中在这几处：
 > - [SettingsPage.vue](../src/components/SettingsPage.vue) —— 设置页：列表、表单、连通性测试
@@ -16,14 +17,14 @@
 1. **一个列表，五种用途。** 所有配置放在同一个 `configs[]` 里，靠 `kind` 区分用途：`image`（出图）/ `text`（提示词改写）/ `chat`（角色对话）/ `vision`（识图）/ `tts`（朗读）。它们要填的模型不是一回事，但地址与密钥常常同源 —— 所以同列表、分区展示。
 2. **五类各记各的「当前生效」。** 出图、改写、对话、识图、朗读各有独立的 active id 与生效快照，**存一条不该把别类的当前项顶掉**。唯一的例外是对话那一类：**没专配时借用改写那条**（见 §5.4）—— 借用是活的，那边换了模型这边立刻跟着换。
 3. **草稿与生效值分离。** 设置页表单改的是自己的草稿副本，不直接写父级的生效配置 —— 于是「返回列表」是真正的放弃修改，而不是把半成品留在生效配置里。
-4. **能力表驱动界面。** 支持哪些参数、尺寸候选、图生图端点、走哪套协议，全部由 [PROVIDERS](../src/api.ts#L130-L183) 声明，界面按它决定显示什么、代理按它决定打哪个端点。加厂商只改一处。
+4. **能力表驱动界面。** 支持哪些参数、尺寸候选、图生图端点、走哪套协议，全部由 [PROVIDERS](../src/api.ts) 声明，界面按它决定显示什么、代理按它决定打哪个端点。加厂商只改一处。
 5. **数据只在本机。** 配置存 localStorage，不上传（密钥也一样）。
 
 ---
 
 ## 2. 数据模型
 
-`ApiConfig`（[types.ts](../src/types.ts#L1-L16)）：
+`ApiConfig`（[types.ts](../src/types.ts)）：
 
 | 字段 | 说明 |
 | --- | --- |
@@ -51,7 +52,7 @@
 | `kimage.apiActiveTts` | 朗读类别当前生效配置 id |
 | `kimage.apiConfig` | **旧键**（单份配置格式），迁移后删除 |
 
-### 3.2 读写（[api.ts#L336-L410](../src/api.ts#L336-L410)）
+### 3.2 读写（[api.ts](../src/api.ts)）
 
 - `loadConfigs()`：读列表，逐条过 `normalizeConfig`；读不到新键时回退读**旧键**，搬成列表后写回新键，并**把旧键删掉** —— 一份密钥在站点上存两处不该是长期状态。删除单独兜一层：它失败不该把这次迁移一起判死。
 - `saveConfigs(list)`：整表覆盖写。
@@ -63,7 +64,7 @@
 
 ## 4. 厂商能力表
 
-### 4.1 Provider 与 Cap（[api.ts#L31-L128](../src/api.ts#L31-L128)）
+### 4.1 Provider 与 Cap（[api.ts](../src/api.ts)）
 
 `Cap = 'yes' | 'no' | 'unknown'` —— `unknown` 表示"填了就发"，既不假装支持也不假装不支持；**只拦明确知道的**（如 OpenAI Images API 没有 `seed`）。
 
@@ -190,7 +191,7 @@
 
 表单**收窄并居中**（`max-width: 720px`）：单行输入拉到 900px 宽会读得很散。列表则铺满（两侧徽标与菜单正好互为对边）。
 
-### 6.4 草稿与预设回填（[SettingsPage.vue#L112-L174](../src/components/SettingsPage.vue#L112-L174)）
+### 6.4 草稿与预设回填（[SettingsPage.vue](../src/components/SettingsPage.vue)）
 
 - `watch(props.seed)`（immediate）灌草稿：seed 变了就重置一次；顺手**收回密钥显隐**（上一条的状态不该带过来）并**清掉上一条的报错**（留着会被挂在刚打开的那条配置上）。
 - `setPurpose(kind)`：只切 `kind` 并换预设行。**保留已填的 `baseUrl` / `apiKey`**（地址与密钥常常同源，用户可能刚填好）；`model` **只在与新用途不在同一个"模型命名空间"时才清空**（`modelSpace()`，见 §6.6）—— 图像模型名拿去打 `/chat/completions` 必错，反过来也一样，所以跨界要清；而改写 / 对话 / 识图之间要填的是同一种东西，清掉净是坑。
@@ -226,9 +227,9 @@
 
 ## 7. 连通性测试
 
-[testConnection](../src/api.ts#L426-L462) → `POST /api/test`。
+[testConnection](../src/api.ts) → `POST /api/test`。
 
-### 7.1 服务端策略（[server/index.js#L1086-L1216](../server/index.js#L1086-L1216)）
+### 7.1 服务端策略（[server/index.js](../server/index.js)）
 
 按顺序两条：
 1. **GET /models** —— 顺带回答"目标模型在不在它的清单里"。两条协议回法不同：OpenAI 是 `{ data: [{ id }] }`，Gemini 是 `{ models: [{ name: 'models/xxx' }] }`；
@@ -300,7 +301,7 @@
 
 ## 9. 参数面板与对比出图
 
-### 9.1 面板分组（[App.vue#L2829-L2889](../src/App.vue#L2829-L2889)）
+### 9.1 面板分组（[App.vue](../src/App.vue)）
 
 参数面板按用途分三组，各自标各自的"当前"：
 

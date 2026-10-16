@@ -574,6 +574,13 @@ export interface Character {
      而派生排序答不了"这几个我常找,别让它沉下去"。
      可选:加它之前存下来的角色没有这一项,读的时候当未置顶 */
   pinned?: boolean
+  /* 你们此刻的关系状态(PRD §3.2-C)。它管的是"熟到什么程度"——三个轴各一个
+     0..100 的分值,被摊成几行指令注入对话的 system,只改**相处的温度**、不改**角色是谁**
+     (那句边界写在服务端的 relationshipSection 里)。
+     可选:加它之前存下来的角色没有这一项,读的时候当"从没评估过"(全 0)。
+     与 origin / pinned 同一条:additive 字段,不动 DB_VERSION;
+     它挂在角色目录上,所以导出 zip 会自然带走、删角色会自然收掉 */
+  relationship?: RelationshipState
 }
 
 /* 从一个角色 zip 里读出来的角色。刻意不带 id ——
@@ -723,6 +730,29 @@ export interface InteractionPrefs {
   /* 安慰方式:它察觉用户状态不好时该怎么做 */
   comfort: ComfortMode
   /** 最后一次改动。界面拿它显示"改于…" */
+  updatedAt: number
+}
+
+/* ===== 关系状态(PRD §3.2-C)===========================================
+   "你们俩现在熟到什么程度"。与相处偏好一样挂在角色上、每个角色各一份
+   (跟 A 可以已经很亲近、跟 B 还刚认识)。
+   对用户只暴露由这三档阈值切出来的档位名(见 lib/relationship 的
+   relationshipStage),裸数字只是内部刻度。
+   三轴之间有一条结构约束:亲近 ≤ 信任 ≤ 熟悉 ——
+   挡的是"刚认识就掏心掏肺"那种失真,收口在纯逻辑层(applyEvaluation / coerce)。
+   -------------------------------------------------------------------- */
+
+/** 关系内部刻度上限(每轴 0..REL_MAX)。对用户不露裸数字,只露档位 */
+export const REL_MAX = 100
+
+export interface RelationshipState {
+  /** 熟悉:了解彼此多少、说话能不能省背景 */
+  familiarity: number
+  /** 信任:愿不愿意托付、会不会说软话 */
+  trust: number
+  /** 亲近:温度与自在的程度 */
+  affection: number
+  /** 最后一次评估的时间戳。0 = 从没评估过(与"评估到 0"在读法上同形) */
   updatedAt: number
 }
 

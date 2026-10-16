@@ -17,6 +17,7 @@ import { moodContext } from '../chatMood.js'
    见 chatGuidance.js 与 chatMemory.js 顶上那两段说明 */
 import { guidanceSection } from '../chatGuidance.js'
 import { memorySection } from '../chatMemory.js'
+import { relationshipSection } from '../relationship.js'
 
 /* ===== 角色对话的人格提示词 ==========================================
    几条规则不是装饰,每一条都冲着模型的具体通病去:
@@ -101,8 +102,13 @@ function chatOneLine(v, max = CHAT_FIELD_CHARS) {
  * (那段成篇的简报)是两样东西,所以两段分开、标签也分开。
  * 它紧跟在简报之后:两者同属"你记得什么"这一层,先叙述、后清单 ——
  * 反过来会把那段成篇的叙述切碎。而它同样必须排在 guidance 之前。
+ *
+ * relationship 是**你们此刻熟到什么程度**(关系状态,见 relationshipSection)。
+ * 它与记忆同属"你们之间发生过什么、现在什么状态"这一层,所以排在记忆条目之后;
+ * 而它排在相处偏好之前 —— 先讲"熟到哪了"(一个既定状态),再讲"希望被怎么对待"(一个意愿)。
+ * 它同样过逐行白名单,而"这只改温度、不改你是谁"那句边界留在服务端。
  */
-function chatSystemPrompt(character, memory, time, mood, guidance, memories) {
+function chatSystemPrompt(character, memory, time, mood, guidance, memories, relationship) {
   const char = character && typeof character === 'object' ? character : {}
   const p = char.persona && typeof char.persona === 'object' ? char.persona : {}
 
@@ -173,6 +179,12 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories) {
      同样过一遍 memorySection 的逐行白名单:它也是外部输入 */
   const facts = memorySection(memories)
   if (facts) parts.push(facts)
+  /* 关系压在记忆条目之后、相处偏好之前。
+     与记忆同属"你们之间现在是什么状态"这一层(先记得什么、再熟到什么程度),
+     而它排在偏好之前:先铺一个既定状态,最后才是"希望被怎么对待"这类意愿。
+     同样过一遍逐行白名单:它也是外部输入 */
+  const closeness = relationshipSection(relationship)
+  if (closeness) parts.push(closeness)
   /* 相处偏好压在规则之前:它是最后一条软指令,离硬规则最近。
      与上面几段一样,空串时整段不出现 —— 用户一项都没表态,就不该有任何指导 */
   const guide = guidanceSection(guidance)
@@ -219,7 +231,7 @@ const CHAT_IMAGE_CHARS = 4 * 1024 * 1024
 
 export function registerChatRoute(app) {
 app.post('/api/chat', rateLimit, async (req, res) => {
-  const { character, messages, memory, memories, images, nowLocal, lastAt, mood, guidance, textModel, baseUrl, apiKey } =
+  const { character, messages, memory, memories, images, nowLocal, lastAt, mood, guidance, relationship, textModel, baseUrl, apiKey } =
     req.body || {}
 
   if (!baseUrl) {
@@ -307,7 +319,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
      这里没这个问题,所以可以算好一份直接用 */
   const body = JSON.stringify({
     model: textModel,
-    messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood, guidance, memories) }, ...history],
+    messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood, guidance, memories, relationship) }, ...history],
     temperature: CHAT_TEMPERATURE,
     max_tokens: CHAT_MAX_TOKENS,
     stream: true

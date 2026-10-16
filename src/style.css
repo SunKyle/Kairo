@@ -18,6 +18,11 @@
   --bubble-bg: #EFEFEA;
   --image-bg: #F0EFEC;            /* 图片画布底,内嵌感 */
   --stage-bg: #F2F2F2;            /* 预览左侧图片区底:衬出图片与 contain 留边 */
+  /* 骨架屏(图未回时占位)那层流光的两档底色:base 与扫过的高光。
+     值与 ChatPage 里 var() 的行内兜底一致,所以浅色下观感不变;
+     单独成 token 是为了让暗色主题能把流光压暗(见下面 dark 块) */
+  --skel-a: #E9E9EE;             /* 骨架底色 */
+  --skel-b: #F5F5F8;             /* 骨架流光高光档 */
   --line: #E8E6E1;                /* 分隔线 */
   --line-strong: rgba(0, 0, 0, 0.16);
   --text: #111111;                /* text-primary */
@@ -33,6 +38,9 @@
   --accent-soft: rgba(0, 0, 0, 0.06);   /* 淡底与聚焦晕 */
   --accent-contrast: #FFFFFF;     /* 强调色实心上的文字 */
   --danger: #E5484D;
+  /* 报错正文用的深红:--danger 那档偏亮,是给徽标/填充/描边用的,
+     落到 12~13px 的报错文字上对比不足(约 3.2:1)。文字单独走这一档,压深到 ~5:1 */
+  --danger-ink: #C43A3E;
   /* (2026-10-12)原画布 AI 入口的粉→紫渐变 --ai-from / --ai-to 已删除:
      画布页移除后这两个 token 全仓零消费。下面的金色仍在用(见 .halo-breathe) */
   /* "AI 正在写"那圈呼吸光晕的金色(见 .halo-breathe)。
@@ -74,7 +82,6 @@
   /* —— 字距 ——
      低于 0.01em 的差异在 15px 上不足 0.15px,肉眼无法分辨,所以没有中间的碎档;
      正负两侧各一档,外加全大写微标签专用的一档 */
-  --ls-hero: -0.03em;  /* 首屏超大字 */
   --ls-tight: -0.02em; /* 标题 */
   --ls-wide: 0.01em;   /* 副标题的轻微松开 */
   /* 全大写微标签专用。它必须比 --ls-wide 大一档:
@@ -132,6 +139,9 @@ html[data-theme="dark"] {
   --image-bg: #0B0B0D;
   /* 深色下图片区往「内凹」走,比页面底(--bg)再暗一档 */
   --stage-bg: #0B0B0D;
+  /* 暗色下骨架流光压到surface 之上一点,不再是那档刺眼的浅纸色 */
+  --skel-a: #202024;
+  --skel-b: #2A2A2E;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.16);
   --text: #F5F5F5;
@@ -144,6 +154,8 @@ html[data-theme="dark"] {
   --accent-soft: rgba(255, 255, 255, 0.1);
   --accent-contrast: #131317;
   --danger: #FF5C5F;
+  /* 报错正文:暗底上把红再提亮一档,保证小字号可读 */
+  --danger-ink: #FF7A7D;
   /* 金色同理:暗底上不提亮就往褐里走,金色一脏就不再是金了 */
   --ai-halo: #F1C64B;
 

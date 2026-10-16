@@ -66,6 +66,16 @@ import {
   specRows,
   styleOptionsFor
 } from '../lib/characterSpec'
+/* 关系状态(PRD §3.2-C)那一块"你俩此刻熟到什么程度"的读法:刻度、档位、
+   起步值、空判都住在 lib/relationship,这里只把它摊成角色页上只读的一眼 */
+import {
+  REL_MAX,
+  REL_STAGES,
+  coerceRelationship,
+  defaultRelationship,
+  hasCloseness,
+  relationshipStage
+} from '../lib/relationship'
 
 /* 角色:网站的重点页面。
    一个角色 = 一组设定图 + 一段结构化设定。设定图是它的骨架 ——
@@ -268,6 +278,39 @@ const {
   works: () => props.works,
   busy: () => props.busy,
   emitGenerate: (charId, kind) => emit('generate', charId, kind)
+})
+
+/* —— 关系那一块(PRD §3.2-C):这一页对它的唯一职责是"照一眼",不改、不判 ——
+   三轴的顺序就是那条结构约束的方向(熟悉 ≥ 信任 ≥ 亲近),标签按这个顺序铺。
+   裸刻度(0..100)是**内部数**,界面不露:进度条的宽度可以按它折算成百分比来画,
+   但绝不把那个数当文字打出来;给眼睛读的一直是档位名 */
+const REL_AXES = [
+  { key: 'familiarity', label: 'Familiarity' },
+  { key: 'trust', label: 'Trust' },
+  { key: 'affection', label: 'Affection' }
+] as const
+
+const relationshipView = computed(() => {
+  const c = detailChar.value
+  if (!c) return null
+  /* 读回来的一律再 coerce 一遍:即便没评估过也当起步值,好让这一块永远能画"刚认识" */
+  const rel = hasCloseness(c.relationship) ? coerceRelationship(c.relationship) : defaultRelationship()
+  return {
+    /* 攒出东西了没有:全 0 就画一句实话的起步态,而不是三根空条 */
+    earned: hasCloseness(c.relationship),
+    /* 总档按熟悉度取 —— 它是那条地基,信任与亲近都要排在它后面 */
+    overall: REL_STAGES[relationshipStage(rel.familiarity)],
+    rows: REL_AXES.map((a) => {
+      const value = rel[a.key]
+      return {
+        key: a.key,
+        label: a.label,
+        stageName: REL_STAGES[relationshipStage(value)],
+        // 只是条宽,不是给用户读的数
+        fill: Math.round((value / REL_MAX) * 100)
+      }
+    })
+  }
 })
 
 /* —— 作品墙上"这张是哪来的" ——
@@ -1557,6 +1600,41 @@ function originBadge(key: SpecFieldKey): string {
            属于这一页的主线;下面那三张是"要用的时候才查"的附录。
            它与 Personality 那张卡不是一回事 —— 那张是角色是谁,这张是你想要什么 -->
       <InteractionPanel :char-id="detailChar.id" />
+
+      <!-- 关系那一块(PRD §3.2-C):这一页只负责"照一眼",不改、不判。
+           与相处偏好紧挨着放:那一块是"你想怎么被对待"(你说了算),
+           这一块是"你俩实际走到了哪一步"(聊出来的,不由谁设定)——
+           一个是指望,一个是账,刻意分开。
+           **只读**:所以不给输入,也不露 0-100 那个内部刻度,只给档位名与一条细进度 -->
+      <section v-if="relationshipView" class="panel fact-rel">
+        <div class="panel-head">
+          <h3 class="panel-title">How close you are</h3>
+          <span class="panel-note"
+            >Grows from what you actually talk about. Read-only — it is earned, not set.</span
+          >
+        </div>
+        <!-- 攒出东西了才铺三根条:全 0 时画三根空条不如说一句实话 -->
+        <template v-if="relationshipView.earned">
+          <p class="rel-overall">{{ relationshipView.overall }}</p>
+          <div class="rel-rows">
+            <div v-for="r in relationshipView.rows" :key="r.key" class="rel-row">
+              <span class="rel-k">{{ r.label }}</span>
+              <span
+                class="rel-meter"
+                role="img"
+                :aria-label="`${r.label}: ${r.stageName}`"
+              >
+                <span class="rel-fill" :style="{ width: r.fill + '%' }"></span>
+              </span>
+              <span class="rel-stage">{{ r.stageName }}</span>
+            </div>
+          </div>
+        </template>
+        <p v-else class="rel-empty">
+          You two have just started talking. Closeness builds over real conversations — it will
+          show up here as it grows.
+        </p>
+      </section>
 
       <!-- 三张资料表并排成一段"附录"(见 .dt-facts 的说明)。
            它们同等次要,所以每一张都得是个完整的卡:标题 + 一句话(说明它管哪一头) -->
@@ -3494,6 +3572,67 @@ textarea.wz-idea {
 }
 .spec-v.dim {
   color: var(--text-3);
+}
+
+/* —— 关系那一块(PRD §3.2-C)——
+   只读、不露数:一根细进度条 + 一个档位名。那条进度是**内部 0..100 的映像**,
+   但只以条宽出现,页面上任何地方都不打那个数 —— 用户看的是"走到哪一格",不是刻度。
+   熟悉 ≥ 信任 ≥ 亲近 那条结构约束,在条上自然显成"越靠下越短",
+   于是"亲近是最贵、最难攒的那一格"这件事不必解释也看得见 */
+.rel-overall {
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+.rel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.rel-row {
+  display: grid;
+  grid-template-columns: 84px 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+.rel-k {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.rel-meter {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.rel-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width var(--dur) var(--ease);
+}
+.rel-stage {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.rel-empty {
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--text-2);
+}
+/* 窄屏:进度条掉到自己一整行(标签与档位名仍并排在上)——
+   84px 的标签栏在 360px 屏上会把条挤成一截,而这条的宽度本身就是内容 */
+@media (max-width: 720px) {
+  .rel-row {
+    grid-template-columns: 1fr auto;
+  }
+  .rel-meter {
+    grid-column: 1 / -1;
+  }
 }
 
 /* —— 看大图 ——

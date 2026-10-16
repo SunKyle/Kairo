@@ -1,6 +1,9 @@
 import type { ApiConfig, GenParams, HistoryEntry, ResultItem, ReuseParams, Collection, Character, CharacterDraft, CharacterFields, CharacterPersona, CharacterView, CharacterViewKind, CharacterVoice, ChatMessage, FieldOrigin, FieldOriginMap, ImportedCharacter, ImportedChat, ImportedChatMessage, SpecFieldKey } from './types'
 import type { PruneResult, CharRefRecord } from './lib/idb'
 import { titleFromPrompt } from './lib/text'
+/* 关系状态那一域的收口住在 lib/relationship —— 载入时读回来的 relationship
+   也走同一份 coerce + 空判,免得"合法形状"与"什么算空"在入口和逻辑层各写一遍 */
+import { coerceRelationship, hasCloseness } from './lib/relationship'
 /* 角色设定那一份权威定义(键 / 顺序 / 标签 / 必填 / 枚举)住在服务端 ——
    那边拼起稿提示词用的就是它。前端在这里取用它的读法,
    于是"提示词里那几行"与"解析回填的那张表"不可能各走各的 */
@@ -2261,6 +2264,13 @@ export async function loadCharacters(): Promise<Character[]> {
     const stale = coerceStaleViews(c.staleViews)
     if (stale.length) c.staleViews = stale
     else delete c.staleViews
+    /* 关系状态同样逐项收口(见 coerceRelationship)。**没攒出东西就不写回** ——
+       与 origin / staleViews / pinned 同一条:让"从没评估过"与"评估过但没走动"
+       两种角色保持同一种形状,读法也就只有一条。additive 字段,不动 DB_VERSION,
+       导出 JSON 时它自然跟着角色走 */
+    const rel = coerceRelationship(c.relationship)
+    if (hasCloseness(rel)) c.relationship = rel
+    else delete c.relationship
     const ref = refs.get(c.id)
     if (ref) c.ref = ref
     // 底图另有 key,不是设定图之一(见 idb.ts 的 charSourceKey)
@@ -2447,6 +2457,55 @@ export async function extractMemories(
   return typeof data.prompt === 'string' ? data.prompt : ''
 }
 
+/**
+ * 把一段对话读成**关系三轴这几条上的变化量**(PRD §3.2-C)。
+ *
+ * 与 extractMemories 同一条形状:都走 /api/enhance、都产"固定前缀的行"、
+ * 都只把上游回的东西原样带回。为什么是两条独立调用而不是一次:
+ * 记忆抽的是"关于你的事实"(可编辑、可删、要标 inferred),
+ * 关系判的是"你俩这几条走近了多少"——输出形状、失败后果、要不要落到 UI 上给人改,
+ * 全都不一样,合并只会让两边的提示词互相牵制。
+ *
+ * **这里只摊输入、原样带回输出**:那三行 `familiarity|+2` 怎么读、
+ * 越界怎么夹、顺序怎么保证(affection≤trust≤familiarity)是纯逻辑,
+ * 在 lib/relationship 的 parseRelationshipDelta + applyEvaluation 里
+ * (可单测,且坏一行只当 0,绝不把一次评估整体作废)。
+ *
+ * standing 是"现在这三条各是多少"的一份人话摘要,喂进去只为让模型知道
+ * 从哪儿起 —— 一次平常的对话,对刚认识的人和已经很熟的人,该挪动的幅度不同。
+ * 真正的夹逼与顺序由上层纯逻辑兜底,模型给的数只是输入,不是结论。
+ */
+export async function evaluateRelationship(
+  cfg: ApiConfig,
+  messages: ReadonlyArray<{ role: string; content: string }>,
+  standing: string,
+  signal?: AbortSignal
+): Promise<string> {
+  const lines = messages.map(
+    (m) => `${m.role === 'user' ? 'User' : 'Character'}: ${m.content}`
+  )
+  const prompt =
+    (standing
+      ? `How close they already are (familiarity / trust / affection, each 0-100):\n${standing}\n\n`
+      : '') + `What was said in this stretch:\n${lines.join('\n')}`
+
+  const resp = await fetch('/api/enhance', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify({
+      prompt,
+      mode: 'relationship',
+      textModel: cfg.model,
+      baseUrl: cfg.baseUrl,
+      apiKey: cfg.apiKey
+    })
+  })
+  if (!resp.ok) throw new Error(await failureMessage(resp))
+  const data = (await resp.json()) as { prompt?: string }
+  return typeof data.prompt === 'string' ? data.prompt : ''
+}
+
 /** 把一个角色摊成对话要用的那份资料 */
 export function chatPayloadOf(c: Character): ChatCharacterPayload {
   const f = c.fields
@@ -2494,6 +2553,12 @@ export interface ChatStreamOpts {
      而解释它的那句边界话由服务端加。
      空数组 = 这个角色还什么都没记住,那一段整块不出现 */
   memories?: string[]
+  /* **你俩此刻走到哪一步了**(关系,见 lib/relationship 的 relationshipLines)。
+     与 memories 同一条分工:前端已经把三条轴摊成几行 "- …",服务端只负责加标签、
+     限长、插进 system —— 标签里那句"这只影响亲疏、不改你是谁、没挣来的亲密不许演"
+     是这条边界本身,所以留在服务端。
+     空串 = 从没评估过或三点全零,那一段整块不出现(与 memory、guidance 同一条退路) */
+  relationship?: string
   cfg: ApiConfig
   /** 每一块增量。调用方拿到就往气泡上追加 */
   onDelta: (delta: string) => void
@@ -2523,6 +2588,7 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
       mood: opts.mood,
       guidance: opts.guidance || undefined,
       memories: opts.memories?.length ? opts.memories : undefined,
+      relationship: opts.relationship || undefined,
       textModel: opts.cfg.model,
       baseUrl: opts.cfg.baseUrl,
       apiKey: opts.cfg.apiKey

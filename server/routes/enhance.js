@@ -51,7 +51,8 @@ app.post('/api/enhance', rateLimit, async (req, res) => {
      summary 是"把一批滑出窗口的消息压成一段长期记忆",
      memory 是"从一段对话里挑出值得长期记住的几条事实"(见 ENHANCE_PROMPTS.memory),
      photo 是"给一张对话里的图当摄影指导",
-     五者都不是在改写出图提示词 */
+     relationship 是"把一段对话读成关系三轴的变化量"(见 ENHANCE_PROMPTS.relationship),
+     六者都不是在改写出图提示词 */
   const enhanceMode =
     mode === 'creative'
       ? 'creative'
@@ -65,10 +66,12 @@ app.post('/api/enhance', rateLimit, async (req, res) => {
               ? 'memory'
               : mode === 'photo'
                 ? 'photo'
-                : 'quick'
+                : mode === 'relationship'
+                  ? 'relationship'
+                  : 'quick'
 
-  /* 拆角色、识图、压记忆、抽记忆、摄影指导这五档都不加图生图说明与目标模型偏好:
-     前四条与"改写出图提示词"无关,加上只会让它们顺手把画面信息也写进去;
+  /* 拆角色、识图、压记忆、抽记忆、摄影指导、读关系这六档都不加图生图说明与目标模型偏好:
+     前五条与"改写出图提示词"无关,加上只会让它们顺手把画面信息也写进去;
      摄影指导更相反 —— 它补的正是"怎么拍",而 REF_NOTE 那句
      "不要重新描述整个场景"与它的职责直接冲突 */
   const systemPrompt =
@@ -76,7 +79,8 @@ app.post('/api/enhance', rateLimit, async (req, res) => {
     enhanceMode === 'vision' ||
     enhanceMode === 'summary' ||
     enhanceMode === 'memory' ||
-    enhanceMode === 'photo'
+    enhanceMode === 'photo' ||
+    enhanceMode === 'relationship'
       ? ENHANCE_PROMPTS[enhanceMode]
       : ENHANCE_PROMPTS[enhanceMode] +
         (hasRef ? REF_NOTE : '') +

@@ -24,6 +24,9 @@ import { interactionGuidanceFor } from '../lib/prefs'
    走 selectMemories 而不是直接过滤 —— **隐私边界就在那个函数里**
    (角色专属记忆不跨角色、共享画像要用户授权),这一层不该有第二套判法 */
 import { memoryLines, selectMemories } from '../lib/memory'
+/* 关系:发这一轮时把"你俩此刻熟到什么程度"摊成几行 "- …"(见 lib/relationship)。
+   与偏好、记忆同一条:前端只摊行,加标签与那句边界由服务端做 */
+import { relationshipLinesFor } from '../lib/relationship'
 /* 对话左栏的顺序:进对话页替用户挑一个时,与 ChatPage 铺左栏时用的是同一份规则 */
 import { lastMessageLookup, orderConversations } from '../lib/chatOrder'
 /* 打字节奏:上游吐字是匀速的,而匀速正是机器感最直接的来源(见那份文件的四条纪律) */
@@ -377,6 +380,10 @@ async function runChat(id: string) {
          角色专属记忆只喂给本角色,共享画像要用户明确勾过才出现在这里。
          没记住任何东西时是空数组,服务端据此整段不出现 */
       memories: memoryLines(selectMemories(memories.value, id)),
+      /* **你俩走到哪一步了**(关系,见 lib/relationship)。与偏好、记忆同一条退路:
+         从没评估过时 relationshipLinesFor 回空串,服务端据此整段不出现。
+         它只改**亲疏与温度**,不碰角色是谁 —— 那句边界同样写在服务端的提示词里 */
+      relationship: relationshipLinesFor(c),
       images,
       lastAt,
       cfg: useCfg,

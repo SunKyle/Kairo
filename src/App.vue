@@ -1,17 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, defineAsyncComponent } from 'vue'
 import { PhSun, PhMoon, PhX } from '@phosphor-icons/vue'
 import ImagePreview from './components/ImagePreview.vue'
-import HistoryPage from './components/HistoryPage.vue'
 import HomePage from './components/HomePage.vue'
 import CharacterPage from './components/CharacterPage.vue'
-import ChatPage from './components/ChatPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
-import ApiSettingsPanel from './components/ApiSettingsPanel.vue'
 import AppearancePanel from './components/AppearancePanel.vue'
 import InteractionSettingsPanel from './components/InteractionSettingsPanel.vue'
 import MemoryPrivacyPanel from './components/MemoryPrivacyPanel.vue'
-import MemoryPage from './components/MemoryPage.vue'
 import NavSegment from './components/NavSegment.vue'
 import UndoToast from './components/UndoToast.vue'
 import {
@@ -58,8 +54,12 @@ import { useHistory } from './composables/useHistory'
 import { useCharacters } from './composables/useCharacters'
 import { useChat } from './composables/useChat'
 import { useMemories } from './composables/useMemories'
+import { useRelationship } from './composables/useRelationship'
 import { useChatFlow } from './composables/useChatFlow'
 import { useGeneration } from './composables/useGeneration'
+/* 外壳的两枚纯装饰开关(主题 / 顶栏滚动态)收在 composables/useAppShell.ts ——
+   它们与那上千行业务编排毫无关系,搬出去只是把"壳"和"编排"分开摆 */
+import { useAppShell } from './composables/useAppShell'
 /* 角色页交过来的那份载荷形状 —— 它是**产出**它的那一处(见 useCharacterDraft),
    主界面这里只按它落库,不再自己抄一份 */
 import type { CharacterSavePayload } from './composables/useCharacterDraft'
@@ -74,13 +74,6 @@ import {
 // 角色参考图的尺寸上限(角色发图、设定图两条路都从它取)
 import { REF_IMAGE_EDGE } from './lib/payload'
 import { sameStale, staleAfterGen, staleAfterSpecChange } from './lib/staleViews'
-import {
-  applyTheme,
-  currentTheme,
-  saveTheme,
-  watchSystemTheme,
-  type Theme
-} from './lib/theme'
 /* 界面偏好(不是数据)。与主题同一类:不跨标签页同步,丢了不影响任何东西 */
 import { saveImmersive, savedImmersive } from './lib/prefs'
 /* 对话背景图:沉浸页铺满屏幕的那一张。**单独一张表**(见 idb.ts 的 BACKDROP_STORE) */
@@ -91,6 +84,16 @@ import {
   type ChatBackdrop
 } from './lib/idb'
 import type { HistoryEntry, Character, CharacterViewKind, ChatMessage, ImportedCharacter } from './types'
+
+/* —— 路由级代码分割（P1-1）——
+   这几个页面都是「靠 v-if 条件挂载、且不是首屏」的重页,把它们改成异步组件:
+   动态 import 会让 Vite 把它们各自拆成独立 chunk,不再挤进初始包。
+   反过来,CharacterPage(被 charPageRef 命令式调用,异步会让 ref 在 chunk 到位前为 null)、
+   ImagePreview(常驻挂载,异步无收益还会打断退出过渡)、HomePage(落地首屏)都保持同步。 */
+const ChatPage = defineAsyncComponent(() => import('./components/ChatPage.vue'))
+const HistoryPage = defineAsyncComponent(() => import('./components/HistoryPage.vue'))
+const MemoryPage = defineAsyncComponent(() => import('./components/MemoryPage.vue'))
+const ApiSettingsPanel = defineAsyncComponent(() => import('./components/ApiSettingsPanel.vue'))
 
 // —— 状态 ——
 /* 反馈三通道(错误 / 中性提示 / 删除撤销)收在 composables/useFeedback.ts ——
@@ -222,11 +225,14 @@ const {
    composables/useChat.ts;**流式那一轮**（进对话页挑人 / 发一句 / 重生成 /
    停止 / 出图调度 / 单条删除的撤销）现在收在 composables/useChatFlow.ts */
 
-/* 压完记忆顺手抽记忆条目这一件事的接线口(见 useChat 的 onSummarized 与
-   useMemories 的 autoExtract)。useChat 先创建、useMemories 后创建,
-   而两者互不认识 —— 于是先摆一个"还没接上"的空实现,下面接上它。
-   它只在**调用时**被读,所以顺序不影响正确性 */
+/* 压完记忆顺手"抽记忆条目 + 判一次关系"这两件事的接线口(见 useChat 的 onSummarized、
+   useMemories 的 autoExtract、useRelationship 的 autoEvaluate)。useChat 先创建、
+   这两个 composable 后创建,而三者互不认识 —— 于是先摆两个"还没接上"的空实现,下面接上。
+   它们只在**调用时**被读,所以顺序不影响正确性。
+   同一刻驱动两件事,是因为"一段滑出窗口的对话被压成纪要"正是这两件后台整理共同的、
+   有意义的时间单位 —— 关系因此受"聊了什么"影响,而不是被"又发了一条"堆出来 */
 let autoExtractMemories: (charId: string, batch: ChatMessage[]) => Promise<void> = async () => {}
+let autoEvaluateRelationship: (charId: string, batch: ChatMessage[]) => Promise<void> = async () => {}
 
 const {
   chatCharId,
@@ -257,11 +263,14 @@ const {
   notice,
   announce,
   scheduleUndo,
-  /* 压完一段记忆顺手抽一次记忆条目(见 useMemories)。
-     两个 composable 互不认识,由主界面牵这一根线:先摆一个可替换的入口,
-     下面创建出 useMemories 之后再接上。它是**调用时才读**这个变量,
+  /* 压完一段记忆,顺手跑两件后台整理:抽记忆条目(见 useMemories)与判一次关系
+     (见 useRelationship)。两个 composable 都不认识 useChat,由主界面牵这两根线:
+     先摆两个可替换的入口,下面各自创建出来之后再接上。它们都是**调用时才读**这两个变量,
      所以先后顺序不影响 */
-  onSummarized: (charId, batch) => void autoExtractMemories(charId, batch)
+  onSummarized: (charId, batch) => {
+    void autoExtractMemories(charId, batch)
+    void autoEvaluateRelationship(charId, batch)
+  }
 })
 
 /* 记忆条目这一域(PRD §3.2-E / F):一条条独立的事实(可编辑/删除/标记/授权),
@@ -280,6 +289,16 @@ const {
 } = useMemories({ characters, chatConfig, notice, announce, scheduleUndo })
 // 接上上面那根线(见 useChat 的 onSummarized)
 autoExtractMemories = (charId, batch) => autoExtract(charId, batch)
+
+/* 关系这一域(PRD §3.2-C):读一段对话 → 判三轴这几条上的变化量 → 落到角色身上。
+   与 useMemories 平行、刻意不互引(抽的是事实,判的是亲疏)。它只写整份角色目录,
+   所以只需要 characters + chatConfig 两样,不需要 notice —— 自动那条路是静默后台整理 */
+const { autoEvaluate } = useRelationship({
+  characters,
+  chatConfig
+})
+// 接上上面那根线(见 useChat 的 onSummarized)
+autoEvaluateRelationship = (charId, batch) => autoEvaluate(charId, batch)
 
 /* 记忆中心那枚"整理一下"。抽到 0 条**也要说一声** ——
    什么都不说的话,用户分不清"这轮没找到值得记的"和"按钮坏了",
@@ -579,42 +598,15 @@ const { generateChatPhoto, generateChatBackdrop, recordFor } = useGeneration({
   compressImage
 })
 
-// —— 主题 ——
-/* 初值必须与 main.ts 同一套口径(存档优先、否则跟随系统)。
-   原来这里只认存档、没有就硬当浅色,于是系统是深色且用户没手动设过时:
-   页面已是深色,按钮却显示"切到深色",点一下毫无变化 —— 要连点两次才对 */
-const theme = ref<Theme>(currentTheme())
-/* 设定某一档。**顶栏那枚按钮与设置页的外观分区共用这一个入口** ——
-   两处都能改主题,落盘与套用必须只发生在这一个地方(两份写法迟早分叉) */
-function setTheme(t: Theme) {
-  if (theme.value === t) return
-  theme.value = t
-  applyTheme(t)
-  saveTheme(t)
-}
-function toggleTheme() {
-  setTheme(theme.value === 'dark' ? 'light' : 'dark')
-}
-/* 系统里切深浅色,页面要跟着走(用户手动设过就不再跟,见 watchSystemTheme) */
-let unwatchSystemTheme: (() => void) | null = null
-onMounted(() => {
-  unwatchSystemTheme = watchSystemTheme((t) => {
-    theme.value = t
-    applyTheme(t)
-  })
-})
-onBeforeUnmount(() => unwatchSystemTheme?.())
+// —— 外壳:主题 + 顶栏滚动态 ——
+/* 这两块纯装饰状态收在 composables/useAppShell.ts(主题档位/切换/跟随系统,
+   与页面滚没滚)。它们与业务编排无关,搬出去后这里只留一句解构:
+   theme/setTheme/toggleTheme 接回顶栏那枚按钮与设置页的外观分区,
+   scrolled 接回顶栏的毛玻璃类。onMounted/onBeforeUnmount 里的挂载与收尾都在
+   composable 内部完成,下面这三条 onBeforeUnmount 是**另外的**东西(跨标签页
+   重载 / hashchange / 同步通道),不属于外壳,留在这儿各收各的。 */
+const { theme, setTheme, toggleTheme, scrolled } = useAppShell()
 
-// —— 顶部导航滚动状态:页面一滑动就浮出毛玻璃底,避免与内容糊在一起 ——
-const scrolled = ref(false)
-function onScroll() {
-  scrolled.value = window.scrollY > 4
-}
-onMounted(() => {
-  onScroll()
-  window.addEventListener('scroll', onScroll, { passive: true })
-})
-onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
 onBeforeUnmount(() => window.removeEventListener('storage', onStorageSync))
 onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange))
 onBeforeUnmount(() => syncChannel?.close())
@@ -1962,12 +1954,6 @@ function createAssignCollection(title: string) {
      若改成 end 会退回右端,中间的滑块也就不再居中 */
   justify-self: start;
 }
-/* 居中的视图切换。justify-self 兜住 grid 的默认 stretch,避免被拉伸。
-   图标尺寸与齿轮标红那两条跟着组件走了(见 NavSegment)——
-   槽位里的图标是在那个组件的作用域里编译的,写在这里会匹配不上 */
-.nav-seg {
-  justify-self: center;
-}
 .icob {
   position: relative;
   /* 40px 对齐同一行的 .nav-seg(轨道加高后的实际外高),整条导航读作一个高度;
@@ -2050,605 +2036,6 @@ function createAssignCollection(title: string) {
   }
 }
 
-.panel {
-  background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  padding: var(--sp-6);
-  box-shadow: var(--sh-md);
-}
-.panel-head h2 {
-  font-family: var(--font-sans);
-  font-weight: 500;
-  font-size: var(--fs-2xl);
-}
-.lede {
-  margin-top: 4px;
-  color: var(--text-2);
-  font-size: var(--fs-base);
-}
-.composer textarea {
-  width: 100%;
-  padding: 11px 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--surface);
-  font-size: var(--fs-base);
-  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
-}
-.composer textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 6px 22px -8px color-mix(in oklch, var(--accent) 40%, transparent);
-}
-.panel-foot {
-  margin-top: var(--sp-6);
-  display: flex;
-  justify-content: flex-end;
-}
-.workbench {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-6);
-}
-.hero {
-  position: relative;
-  text-align: center;
-  /* 顶部留白收窄,让标题与输入框整体上移,首屏更快进入内容。
-     上一行加了微标签之后又收了一档:标签本身占掉一行的高度,
-     不补回来的话标题与输入框会被推低,首屏就挤了 */
-  padding: clamp(16px, 3vw, 34px) var(--sp-4) var(--sp-5);
-  overflow: hidden;
-}
-/* 分类微标签:先说"这是什么",再说"它有多好"。
-   全大写 + 拉开字距,和下面的大标题是两种读音,不会被当成同一句话的头 */
-.hero-eyebrow {
-  margin-bottom: var(--sp-3);
-  color: var(--text-3);
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  letter-spacing: var(--ls-eyebrow);
-  text-transform: uppercase;
-  position: relative;
-  z-index: 1;
-}
-.hero-title {
-  font-family: var(--font-sans);
-  font-weight: 700;
-  /* 英文行更长,字号上限与下限都比中文版收一档,避免窄屏被裁切 */
-  font-size: clamp(var(--fs-3xl), 5.2vw, 56px);
-  letter-spacing: var(--ls-hero);
-  line-height: 1.08;
-  position: relative;
-  z-index: 1;
-}
-.hero-sub {
-  margin-top: var(--sp-4);
-  color: var(--text-3);
-  font-size: var(--fs-md);
-  letter-spacing: var(--ls-wide);
-  position: relative;
-  z-index: 1;
-}
-.composer {
-  max-width: 840px;
-  width: 100%;
-  margin: 0 auto;
-}
-.prompt-box {
-  position: relative;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg); /* Prompt Composer: Large 24px */
-  padding: 16px;
-  box-shadow: var(--sh-float);
-  display: flex;
-  flex-direction: column;
-  /* 光晕用更长的时长淡入淡出,避免收放时显得突兀。
-     边框不参与过渡:这两态里它始终是那条 --line */
-  transition: box-shadow 340ms var(--ease);
-}
-/* 聚焦只亮光晕,不给边框上色:这一圈由内向外渗出的柔光已经说清了
-   "焦点在这儿",再把边框描深一道只是把同一件事说了两遍,
-   而且描深之后框里那层"可以随便写字"的感觉会收紧。
-   于是边框自始至终就是那一条 --line */
-.prompt-box:focus-within {
-  box-shadow:
-    var(--sh-float),
-    /* 漫反射:由内向外 4 层递减柔光,越往外越淡,层间无可见边界 */
-    0 0 8px -3px color-mix(in oklch, var(--accent) 16%, transparent),
-    0 0 18px -5px color-mix(in oklch, var(--accent) 20%, transparent),
-    0 0 34px -10px color-mix(in oklch, var(--accent) 24%, transparent),
-    0 0 58px -18px color-mix(in oklch, var(--accent) 26%, transparent),
-    /* 向下的柔和投影,把输入框轻轻托起来 */
-    0 14px 36px -22px color-mix(in oklch, var(--accent) 34%, transparent),
-    /* 内侧沿边框晕染的一层薄雾,像光从边缘渗进来 */
-    inset 0 0 14px -10px color-mix(in oklch, var(--accent) 26%, transparent);
-}
-/* 一、输入区(横线上方) */
-.compose-zone {
-  display: flex;
-  flex-direction: column;
-}
-.prompt-box textarea {
-  /* 高度由 fitPrompt() 按内容算(6 行封顶后转内部滚动),
-     所以既不要拖拽角,也不能让浏览器自己先冒出滚动条 */
-  resize: none;
-  overflow-y: hidden;
-  line-height: 1.6;
-  font-size: var(--fs-lg);
-  /* 一行(16px × 1.6 + 上下内边距 = 39.6)的兜底高度,JS 接管前先撑住;
-     同时是 JS 算高度时的下限 */
-  min-height: 40px;
-  padding: 6px 2px 8px;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  transition: opacity 220ms var(--ease);
-}
-.prompt-box textarea:focus,
-.prompt-box textarea:focus-visible {
-  border: none;
-  box-shadow: none;
-  outline: none;
-}
-/* 改写中的那几行旧字正被整段换掉:压暗它,一来明说"这会儿先别读这段",
-   二来给"换完了"一个可见的落点 —— 结果写回时它跟着亮回去。
-   只压暗不隐藏:输入框还是那个输入框,不该看成被禁用了 */
-.prompt-box.halo-breathe textarea {
-  opacity: 0.45;
-}
-/* AI 在写的时候那圈金光是主角。点改写键会把焦点留在框里,
-   于是聚焦那套墨色漫反射也亮着 —— 墨色垫在金底下会把它拖脏,
-   所以这段时间让它歇着,只留投影(边框照旧不动) */
-.prompt-box.halo-breathe:focus-within {
-  box-shadow: var(--sh-float);
-}
-/* 二、参数 icon 行(横线下方) */
-.param-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  padding: 12px 2px 0;
-  border-top: 1px solid var(--line);
-}
-/* 纯图标按钮:名称与当前值都放进 title,鼠标悬停才显示 */
-.param-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  color: var(--text-2);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface);
-  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease),
-    background var(--dur) var(--ease);
-}
-.param-btn svg {
-  width: 17px;
-  height: 17px;
-  flex-shrink: 0;
-}
-/* 角色有头像时胶囊里放头像:一张脸比一个通用的人形图标好认得多 */
-.param-avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  object-fit: cover;
-  display: block;
-}
-/* 角色胶囊外面这层只为给"移除"角标当定位基准 ——
-   角标要探出胶囊一点,不包一层就只能被胶囊自己的圆角框住 */
-.param-char {
-  position: relative;
-  display: inline-flex;
-}
-/* 已选中角色的胶囊:悬停时右上角冒出移除钮。
-   这里刻意不做悬停看正脸 —— 那张卡片是"挑人"时用的(见 .char-peek),
-   选完之后要回答的是另一个问题:怎么把它摘下来 */
-.param-char .char-drop {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  /* 压住:角标与胶囊有一小块重叠,得在上面才点得到 */
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 17px;
-  height: 17px;
-  border-radius: 50%;
-  color: var(--cta-text);
-  background: var(--cta);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
-  opacity: 0;
-  /* 收起时不挡点击:它压在胶囊角上,否则那一个角就点不开面板了 */
-  pointer-events: none;
-  transform: scale(0.6);
-  transition: opacity 140ms var(--ease), transform 160ms var(--ease);
-}
-/* 悬停胶囊(或鼠标已经移到角标上)与键盘聚焦时出现。
-   键盘这条路要走 :has(:focus-visible):角标自己拿到焦点时也要留着 */
-.param-char:hover .char-drop,
-.param-char:has(:focus-visible) .char-drop {
-  opacity: 1;
-  pointer-events: auto;
-  transform: scale(1);
-  /* 稍等一拍:鼠标扫过参数行时不该一路闪出摘除钮 */
-  transition-delay: 60ms;
-}
-.param-char .char-drop:hover {
-  background: var(--accent-strong);
-}
-.param-char .char-drop svg {
-  width: 11px;
-  height: 11px;
-}
-/* 头像悬停时展开的那张正脸 —— 只在角色面板里那排头像上用(见 showCharPeek)。
-   它 fixed 挂到最外层,坐标由 JS 按被悬停的头像现算(见 showCharPeek):
-   角色面板自己会滚、也会裁掉溢出,卡片放在头像里面只能看到一半。
-   节点常驻、只切 .on,收起时保留上一次的内容,收起动画才接得上 */
-.char-peek {
-  position: fixed;
-  z-index: 30;
-  width: 168px;
-  opacity: 0;
-  pointer-events: none;
-  /* 收起态:缩小一点、向下错开,像从这颗头像上"长"出来 */
-  transform: translateX(-50%) translateY(6px) scale(0.92);
-  transform-origin: 50% 0;
-  transition: opacity 160ms var(--ease), transform 260ms var(--ease);
-}
-.char-peek.on {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0) scale(1);
-  /* 稍等一下再出现:鼠标横扫过一排头像时不该一张张弹出来 */
-  transition-delay: 120ms;
-}
-/* 下面放不下时翻到头像上方(见 showCharPeek 的 up):原点与入场方向一起翻过来 */
-.char-peek.up {
-  transform: translateX(-50%) translateY(-6px) scale(0.92);
-  transform-origin: 50% 100%;
-}
-.char-peek.up.on {
-  transform: translateX(-50%) translateY(0) scale(1);
-}
-.char-peek-frame {
-  position: relative;
-  display: block;
-  border-radius: 14px;
-  overflow: hidden;
-  background: var(--bg-elev);
-  box-shadow: var(--sh-md);
-}
-.char-peek img {
-  display: block;
-  width: 100%;
-  /* 与角色卡片同一个 3:4 海报比例,同一张脸在两处裁切一致 */
-  aspect-ratio: 3 / 4;
-  object-fit: cover;
-  /* 出场时轻轻收一下:像从远处推近到眼前,而不是整块贴上来 */
-  transform: scale(1.06);
-  transition: transform 460ms var(--ease);
-}
-.char-peek.on img {
-  transform: scale(1);
-  transition-delay: 120ms;
-}
-/* 名字压在图上:一层自下而上的暗幕把它托住(与角色卡片同一套做法) */
-.char-peek b {
-  position: absolute;
-  inset: auto 0 0 0;
-  padding: 18px 10px 8px;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  line-height: 1.3;
-  color: #fff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-  background: linear-gradient(
-    to top,
-    rgba(24, 24, 22, 0.6) 0%,
-    rgba(24, 24, 22, 0.28) 60%,
-    transparent 100%
-  );
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.param-btn:hover {
-  color: var(--text);
-  border-color: var(--line-strong);
-}
-/* 展开态与"已改过"态都走中性灰:胶囊在这页只是参数的状态显示,
-   用紫色会跟页面里唯一该抢注意力的生成键争视线。
-   两者靠底色区分 —— 展开有底,仅改过只加重描边 */
-.param-btn.on {
-  color: var(--text);
-  border-color: var(--line-strong);
-  background: var(--bg-elev);
-}
-/* 多模型对比时张数入口被停用(每个模型只出一张)。停用不是"出错",
-   所以压暗但保留可读,悬停仍能拿到 tooltip 说明为什么不能改 */
-.param-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.param-btn:disabled:hover {
-  color: var(--text-2);
-  border-color: var(--line);
-}
-.param-btn.filled {
-  border-color: var(--line-strong);
-  color: var(--text);
-}
-/* 带数值的参数(尺寸/张数):图标右侧直接露出当前值,宽度随内容撑开 */
-.param-btn.has-val {
-  width: auto;
-  gap: 6px;
-  padding: 0 12px 0 10px;
-}
-.param-val {
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-/* 配置名可能很长,限宽后省略;行高继承自 body(1.6),不会切掉字的下缘 */
-.param-val-name {
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* 两个模型名之间的细竖线:少了它,两个名字会连读成一条 */
-.param-sep {
-  flex: none;
-  width: 1px;
-  height: 11px;
-  margin: 0 1px;
-  background: var(--line-strong);
-}
-/* 改写用的文本模型退一档:出图是主流程,它只在按 Enhance 时才起作用。
-   胶囊处于高亮/已填态时会被上面那条 color: inherit 接管,统一成一个颜色 */
-.param-val-sub {
-  color: var(--text-3);
-}
-.param-btn.on .param-val,
-.param-btn.filled .param-val {
-  color: inherit;
-}
-
-/* 折叠容器:高度用 grid-template-rows 0fr→1fr 连续过渡,
-   不靠 display 切换,避免"先淡出、再瞬间合拢"的两段跳变 */
-.fold {
-  display: grid;
-  grid-template-rows: 0fr;
-  min-height: 0;
-  transition: grid-template-rows var(--dur) var(--ease);
-}
-.fold.open {
-  grid-template-rows: 1fr;
-}
-.fold-inner {
-  min-height: 0;
-  overflow: hidden;
-}
-.param-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 10px;
-  padding: 12px;
-  border-radius: var(--r-sm);
-  background: var(--bg-elev);
-  /* 「更多」面板要一次容下尺寸/画质/背景/参考图四组,190px 会把它切成两屏;
-     用 vh 兜住矮视口,宁可在面板内滚动也不把整个输入区顶下去 */
-  max-height: min(46vh, 340px);
-  overflow-y: auto;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
-}
-.fold.open .param-panel {
-  opacity: 1;
-  transform: none;
-}
-.pp-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.pp-group {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-/* 参数名是每组选项的锚点:比选项更沉一点,扫读时才找得到自己要看的那一组。
-   但仍然小于选项本身 —— 它是标签,不是内容 */
-.pp-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--text-2);
-  margin-right: 2px;
-}
-/* 图标与文字同色同重,不再额外减淡 —— 一弱就白加了 */
-.pp-label-ico {
-  flex: none;
-  width: 14px;
-  height: 14px;
-}
-.pp-thumb {
-  width: 40px;
-  height: 40px;
-  object-fit: cover;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--line);
-}
-.pp-note {
-  font-size: var(--fs-sm);
-  color: var(--text-2);
-}
-/* 面板里的紧凑数字输入(自定义张数) */
-.num-input {
-  width: 76px;
-  padding: 6px 10px;
-  font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-  color: var(--text);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface);
-  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
-  /* 去掉数字框自带的上下箭头,和面板里的胶囊按钮保持同一套造型 */
-  appearance: textfield;
-  -moz-appearance: textfield;
-}
-.num-input::-webkit-outer-spin-button,
-.num-input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-.num-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 6px 18px -10px color-mix(in oklch, var(--accent) 60%, transparent);
-}
-/* 自定义尺寸:比纯数字输入更宽,容纳 1024x1024 这类字符串,左对齐便于对位读数 */
-.size-input {
-  width: 124px;
-  text-align: left;
-  padding-left: 12px;
-}
-/* 种子:比默认的 76px 宽,容得下 2147483647 这种十位数 */
-.seed-input {
-  width: 118px;
-}
-/* 面板里的文字动作用中性灰:它是个胶囊形状,和上面那排选项同处一个面板,
-   一个紫胶囊夹在灰胶囊中间会显得没做完 */
-.pp-action {
-  font-size: var(--fs-sm);
-  color: var(--text);
-  padding: 5px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  transition: background var(--dur) var(--ease);
-}
-.pp-action:hover {
-  background: var(--surface-hover);
-}
-
-.preset {
-  padding: 6px 12px;
-  font-size: var(--fs-sm);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--text-2);
-  background: var(--surface);
-  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease),
-    background var(--dur) var(--ease);
-}
-/* 面板里的选项胶囊同样去紫:它和外层胶囊是一组,外层转灰后里面还紫着会脱节 */
-.preset:hover {
-  border-color: var(--line-strong);
-  color: var(--text);
-}
-/* 选中态用墨色实心药丸:这是全站"当前项"的语言(生成键、导航滑块同一套)。
-   灰底那版压得太轻,一排白胶囊里几乎看不出选的是哪个。
-   借 --cta 而不是写死黑色:它在暗色主题会自动反相成白底黑字 */
-.preset.on {
-  background: var(--cta);
-  border-color: var(--cta);
-  color: var(--cta-text);
-}
-.preset.on:hover {
-  background: var(--cta-hover);
-  border-color: var(--cta-hover);
-  color: var(--cta-text);
-}
-/* 对比选满之后,没入选的芯片不能再加进来。置灰而不是静默忽略:
-   点了没反应会被当成坏了 */
-.preset:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.preset:disabled:hover {
-  border-color: var(--line);
-  color: var(--text-2);
-  background: var(--surface);
-}
-/* 参考图选择 */
-.ref-pick {
-  padding: 8px 14px;
-  font-size: var(--fs-sm);
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--r-sm);
-  color: var(--text-2);
-  cursor: pointer;
-  transition: all var(--dur) var(--ease);
-}
-.ref-pick:hover {
-  border-color: var(--line-strong);
-  color: var(--text);
-}
-
-/* —— 角色 ——
-   选谁在参数行的角色胶囊里(与模型并排),列表在它展开的面板里 */
-/* 角色选择:一圈一个头像,名字在 title 里。选中态用全站"当前项"那套墨色描边
-   (导航滑块、选中胶囊同一套语言),不是给头像换底色 —— 头像的底色是它自己。
-   这里是"选谁",不是"看谁":完整档案卡在角色页,不在这条参数行里 */
-.char-pick {
-  flex: none;
-  width: 40px;
-  height: 40px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  border: 2px solid var(--line);
-  border-radius: 50%;
-  background: var(--bg-elev);
-  color: var(--text-3);
-  cursor: pointer;
-  transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease);
-}
-.char-pick:hover {
-  border-color: var(--line-strong);
-  transform: translateY(-1px);
-}
-.char-pick.on {
-  border-color: var(--cta);
-}
-.char-pick-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.char-pick-ph {
-  width: 18px;
-  height: 18px;
-}
-.pp-action:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.err {
-  margin-top: var(--sp-2);
-  color: var(--danger);
-  font-size: var(--fs-sm);
-  padding: 8px 12px;
-  background: color-mix(in oklch, var(--danger) 10%, transparent);
-  border-radius: var(--r-sm);
-}
 /* 存储清理提示:提醒而非错误,用中性色,不与报错抢注意力。
    现在挂在全局层(所有页面共用),所以做成居中浮条而非流内一方块:
    触发点和当前页面无关,固定在最底部才保证任何页面都能看见 */
@@ -2702,385 +2089,6 @@ function createAssignCollection(title: string) {
 }
 
 /* 长报错默认一行截断:上游原文动辄上百字,整段铺开会把输入区顶得很高 */
-.err-msg {
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-  /* 上游原文里的换行是它自己的格式,留着;对比出图全军覆没时,
-     这里也是一行一家的错误 */
-  white-space: pre-wrap;
-}
-.err-msg.clipped {
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.err-ops {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  margin-top: 6px;
-}
-.err-btn {
-  padding: 3px 10px;
-  font-size: var(--fs-xs);
-  color: var(--danger);
-  border: 1px solid color-mix(in oklch, var(--danger) 32%, transparent);
-  border-radius: 999px;
-  transition: background var(--dur) var(--ease);
-}
-.err-btn:hover {
-  background: color-mix(in oklch, var(--danger) 12%, transparent);
-}
-
-/* 输入框图标簇:清除(次级) + 发送(主按钮),同尺寸、同造型、留白节奏一致 */
-.prompt-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  margin-left: auto;
-  padding-left: 4px;
-}
-.clear-icon,
-.gen-icon {
-  flex-shrink: 0;
-  width: 34px;
-  height: 34px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
-    border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform 120ms var(--ease);
-}
-.clear-icon svg,
-.gen-icon svg {
-  width: 16px;
-  height: 16px;
-}
-.clear-icon {
-  color: var(--text-3);
-  background: transparent;
-}
-.clear-icon:hover {
-  color: var(--danger);
-  border-color: color-mix(in oklch, var(--danger) 45%, var(--line));
-  background: color-mix(in oklch, var(--danger) 8%, transparent);
-}
-.gen-icon {
-  border-color: var(--cta);
-  background: var(--cta);
-  color: var(--cta-text);
-  box-shadow: 0 2px 8px color-mix(in oklch, var(--cta) 30%, transparent);
-}
-.gen-icon:hover:not(:disabled) {
-  background: var(--cta-hover);
-  border-color: var(--cta-hover);
-  box-shadow: 0 4px 12px color-mix(in oklch, var(--cta) 42%, transparent);
-}
-.clear-icon:active,
-.gen-icon:active:not(:disabled) {
-  transform: scale(0.94);
-}
-.gen-icon:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  box-shadow: none;
-}
-/* 提示词改写:与参数按钮同尺寸、同描边语言。
-   描边由外层 .enhance-split 提供 —— 按钮和档位切换要读成一个控件。
-   底色透明、高 34px:和旁边的清除键、生成键完全同规格,
-   否则这一排里会出现三个填色不同、差 2px 高的控件 */
-.enhance-split {
-  display: inline-flex;
-  align-items: stretch;
-  flex-shrink: 0;
-  height: 34px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: transparent;
-  overflow: hidden;
-  transition: border-color var(--dur) var(--ease);
-}
-.enhance-split:hover {
-  border-color: var(--line-strong);
-}
-/* 档位切换:竖线把它和改写按钮分开,复用它右边两个图标键的分隔语言 */
-.enhance-mode {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  padding: 0 9px 0 7px;
-  border: none;
-  border-left: 1px solid var(--line);
-  background: none;
-  color: var(--text-3);
-  cursor: pointer;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
-}
-.enhance-mode:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--bg-elev);
-}
-.enhance-mode svg {
-  width: 13px;
-  height: 13px;
-}
-.enhance-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  /* 高度交给外层:自己再定 34px 会把带描边的外层撑到 36px */
-  padding: 0 12px;
-  border: none;
-  background: none;
-  color: var(--text-2);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
-}
-/* 16px 与清除键、生成键的图标同档 */
-.enhance-btn svg {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-.enhance-btn:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--bg-elev);
-}
-.enhance-btn:disabled,
-.enhance-mode:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-/* 撤销态:同一个按钮,压轻一档表示"这是往回走"而不是再改写一次 */
-.enhance-btn.undo {
-  color: var(--text-3);
-}
-
-/* ===== 历史图墙(输入框下方的最近生成) ===== */
-.feed-zone {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-5);
-}
-.section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 2px;
-}
-.sec-title {
-  font-family: var(--font-sans);
-  font-size: var(--fs-xl);
-  font-weight: 600;
-  letter-spacing: var(--ls-tight);
-  color: var(--text);
-}
-/* 加载态复用 sec-title 的字族与配色,只有动词的字重是组件内写死的 500,
-   这里抬到 600,免得标题槽位在两种状态间来回变粗细 */
-.sec-title :deep(.lattice-loader__label) {
-  font-weight: 600;
-}
-.sec-tools {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-1);
-}
-.sec-more,
-.sec-fold {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: var(--fs-sm);
-  color: var(--text-3);
-  padding: 6px 10px;
-  border-radius: 999px;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
-}
-.sec-more:hover,
-.sec-fold:hover {
-  color: var(--text);
-  background: var(--bg-elev);
-}
-/* 全部停下:与 View all / Collapse 同一排,沿同一套文字按钮语言 */
-.sec-stop {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 10px;
-  font-size: var(--fs-sm);
-  color: var(--text-3);
-  border-radius: 999px;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
-}
-.sec-stop svg {
-  width: 11px;
-  height: 11px;
-}
-.sec-stop:hover {
-  color: var(--text);
-  background: var(--bg-elev);
-}
-.sec-more svg,
-.sec-fold svg {
-  width: 14px;
-  height: 14px;
-  transition: transform var(--dur) var(--ease);
-}
-.sec-more:hover svg {
-  transform: translateX(2px);
-}
-/* 展开时箭头翻上去,收起时朝下 */
-.sec-fold svg.up {
-  transform: rotate(180deg);
-}
-
-/* 图墙:多列瀑布流,图片按原始比例高低错落 */
-.feed-grid {
-  /* 定宽多列,和历史图墙同一套:列数只由容器宽度决定,不随图片数量变。
-     之前列数是 min(4, 图数 + 生成中张数) 算出来的,后果有两个 ——
-     第一次生成时只有 1 列,占位块会铺满整行(约 1000px 的正方块);
-     而且每多生成一张就换一次列数,已有的图全部重排、尺寸跟着变 */
-  column-width: 240px;
-  column-gap: var(--sp-3);
-  opacity: 0;
-  transition: opacity var(--dur) var(--ease);
-}
-.fold.open .feed-grid {
-  opacity: 1;
-}
-.tile {
-  position: relative;
-  display: block;
-  width: 100%;
-  margin: 0 0 var(--sp-3);
-  padding: 0;
-  border: none;
-  border-radius: var(--r);
-  overflow: hidden;
-  background: var(--image-bg);
-  break-inside: avoid;
-  cursor: zoom-in;
-  animation: rise 400ms var(--ease) both;
-  transition: box-shadow var(--dur) var(--ease);
-}
-.tile:hover {
-  box-shadow: var(--sh-md);
-}
-.tile img {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: cover;
-  transition: transform 600ms var(--ease);
-}
-.tile:hover img {
-  transform: scale(1.04);
-}
-/* 生成中的占位块:宽高比由当前尺寸决定,与出图尺寸一致 */
-.tile-skel {
-  cursor: default;
-  animation: none;
-}
-/* 角标:默认隐去,悬停/聚焦时浮出短标题与元信息。
-   不放完整提示词 —— 两行文字会把缩略图挡掉大半,读提示词交给预览卡 */
-.tile-veil {
-  position: absolute;
-  inset: auto 0 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 18px 12px 10px;
-  text-align: left;
-  color: #fff;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.62), transparent);
-  opacity: 0;
-  transition: opacity var(--dur) var(--ease);
-}
-.tile:hover .tile-veil,
-.tile:focus-visible .tile-veil {
-  opacity: 1;
-}
-/* 标题比元信息重一档:图砖先被"叫什么"抓住,时间尺寸是补注 */
-.tile-name {
-  font-size: var(--fs-base);
-  font-weight: 500;
-  letter-spacing: var(--ls-tight);
-  /* 只留一行。提示词长短不一,不裁的话长的会把图盖掉一半 —— 
-     这跟"不放完整提示词"是同一条理由 */
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tile-meta {
-  font-size: var(--fs-micro);
-  opacity: 0.75;
-  font-variant-numeric: tabular-nums;
-}
-
-/* 停止键:每格一个,只停它自己。
-   常驻而不是悬停才浮出 —— 触屏没有悬停,一个"看不见的停止键"等于没有;
-   这是用户唯一的停止入口(生成键不再兼任),更不该藏 */
-.skel-stop {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  z-index: 2;
-  width: 34px;
-  height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  /* 墨底白图标:骨架本身是浅灰的一整块,浅色按钮压上去看不出边界在哪 */
-  background: var(--cta);
-  color: var(--cta-text);
-  box-shadow: var(--sh-sm);
-  cursor: pointer;
-  transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
-}
-.skel-stop svg {
-  width: 13px;
-  height: 13px;
-}
-.skel-stop:hover {
-  transform: scale(1.06);
-  box-shadow: var(--sh-md);
-}
-/* 模型名:对比出图时几格长得一模一样,不写清哪格是哪家就只能靠猜。
-   右边界给停止键让位,不然长名字会钻到按钮底下 */
-.skel-label {
-  position: absolute;
-  left: 10px;
-  right: 52px;
-  bottom: 13px;
-  z-index: 2;
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.skel-shimmer {
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(
-    100deg,
-    transparent 30%,
-    color-mix(in oklch, var(--line) 60%, transparent) 50%,
-    transparent 70%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.4s infinite;
-}
 @keyframes shimmer {
   to {
     background-position: -200% 0;

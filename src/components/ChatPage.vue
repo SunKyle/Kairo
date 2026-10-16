@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   PhArrowDown,
   PhArrowUp,
@@ -38,7 +38,13 @@ import ChatRail from './ChatRail.vue'
 /* 显示层也要摘一次中段标签:**库里已有的老消息还带着它**
    (那一版服务端还没这道工序)。同一个纯函数,两端同一个判据 */
 import { parsePhotoIntent, stripStandaloneTags } from '../../server/chatTags.js'
+/* 一条回复按段落切成几气泡(见 lib/chatSplit)——**只改"画出来几格",不改存的是什么**:
+   库里仍是一条 ChatMessage,拆分只在渲染这一刻发生 */
+import { splitAssistantReply } from '../lib/chatSplit'
 import { speak, speechSupported, speakingId, speakingLoading, stopSpeaking, warmUpSpeech } from '../lib/speech'
+/* 对话流的滚动编排(自动跟随 / 往前读一档时稳住视口)抽到 composable ——
+   它是纯 DOM/滚动逻辑,不碰数据与网络,单拎出来既能测也好读 */
+import { useChatStream } from '../composables/useChatStream'
 
 /* 角色对话页。它是一个平级页面(见 lib/nav.ts),不是浮层 ——
    所以骨架是"左栏角色 + 右栏对话",与角色页/历史页同一套页面结构。
@@ -302,14 +308,17 @@ type Row =
      别的说"这条消息是什么时候发的",它说"这段对话放多久了" */
   | { kind: 'sep'; key: string; label: string; away?: boolean }
   /* first: 这是"新的一段"的第一条(换了人,或者上面刚插了一条时间分隔)。
-     间距据此分两档 —— 见下面 rows 的说明与 .msg.group-first */
-  | { kind: 'msg'; key: string; msg: ChatMessage; first: boolean }
+     间距据此分两档 —— 见下面 rows 的说明与 .msg.group-first。
+     pieces: 这一条消息在屏幕上占**几格气泡**。库里它是一条,画出来可以是一片
+     (整段说完)也可以是好几句(段落分隔把一段拆成几拍)。上层 v-for 它一次即可,
+     不必每条重算 —— 见 lib/chatSplit 与下面 bubblePieces */
+  | { kind: 'msg'; key: string; msg: ChatMessage; first: boolean; pieces: string[] }
 
 const rows = computed<Row[]>(() => {
   const out: Row[] = []
   let prev = 0
   /* 上一条是谁说的。换人(或前面插了一条时间分隔)就是"新的一段",
-     间距要多让一档 —— 见 .msg.group-first */
+     间距据此要多让一档 —— 见 .msg.group-first */
   let prevRole = ''
   for (const m of msgs.value) {
     const newDay = !prev || new Date(prev).toDateString() !== new Date(m.createdAt).toDateString()
@@ -329,7 +338,8 @@ const rows = computed<Row[]>(() => {
       /* 连着同一个人的第二句起算"同一段":它还挨着上一句,读起来是一段话。
          注意分隔线也要算进来 —— 隔了半小时之后的第一句,哪怕还是同一个人说,
          视觉上也是新的一段 */
-      first: brokeByTime || m.role !== prevRole
+      first: brokeByTime || m.role !== prevRole,
+      pieces: bubblePieces(m)
     })
     prev = m.createdAt
     prevRole = m.role
@@ -355,31 +365,36 @@ const rows = computed<Row[]>(() => {
   return out
 })
 
-/** 气泡里显示的正文。
+/** 一条消息在屏幕上占**哪几格气泡**(每个元素是一段正文)。
  *
- *  **三件事都只改"显示出来的样子"**,库里的正文一个字不动 ——
- *  正文是它说过的话,字节属于它;排版是我们的。
+ *  **只改"画成几格",库里的正文一个字不动** —— 正文是它说过的话,
+ *  字节属于它;分不分格、怎么分格是排版,是我们的。
  *
  *  ① 摘掉中段那几枚独占一行的标签。修在服务端之前生成的消息还带着它。
  *  ② 收掉末尾的空白。它不是它说的话,而是"标签前面那个换行"的遗留:
  *     模型把 `[mood:…]` / `[photo:…]` 写在单独一行,那个换行有时会先一步
- *     流到界面上(修在 `chatTags.js` 的 `tailHold` 里了),而**已经存在库里的
- *     老消息也带着它**。气泡是 `white-space: pre-wrap`,结尾的 `\n` 会被
- *     如实渲染成一行空行 —— 短回复底下因此总像空了一格。
- *  ③ 把**中段的空行**收成单个换行。
+ *     流到界面上,而**已经存在库里的老消息也带着它**。
  *
- *  ③ 的来历值得写下来:模型习惯用空行把一条回复分成"两拍"(先接住对方,
- *  再补一句自己的事 —— 见 chat 提示词里那条 carry it)。那是模型的排版习惯,
- *  不是它说的话;而在气泡里它渲染成一整行空白,看着像界面坏了。
- *  收成单个换行之后,那两拍仍然是两行,只是中间不再空一格。
- *  **只收空行,不动单换行**:它可能就是角色刻意的分行。
- *
- *  两个角色一视同仁 —— 自己打的字里出现空行同样不该显示。 */
-function shownText(m: ChatMessage): string {
-  return stripStandaloneTags(m.content)
-    .text
-    .replace(/\n[ \t]*\n(?:[ \t]*\n)*/g, '\n')
-    .trimEnd()
+ *  然后分两侧:
+ *  - **你自己打的那条永远是一格。**空行照旧收成单换行(延续旧 shownText 的
+ *    行为)—— 你贴过来的一段长文里那几个空行是原文的一部分,不该被拆成几句
+ *    气泡。分格要分的是"角色一句话里的几拍",不是你的输入。
+ *  - **角色的回复按空行分段落、逐段成格**(见 lib/chatSplit)。模型习惯用空行
+ *    把一条回复分成"先接住对方、再补一句自己的事"那两拍 —— 从前这被当成
+ *    排版噪声收成单换行;现在顺着它,一拍一格,让一段话说出来有呼吸的节奏。
+ *    单换行不拆(它可能就是角色刻意的分行),代码块里的空行也不拆。 */
+function bubblePieces(m: ChatMessage): string[] {
+  const stripped = stripStandaloneTags(m.content).text
+  if (m.role === 'user') {
+    const collapsed = stripped.replace(/\n[ \t]*\n(?:[ \t]*\n)*/g, '\n').trimEnd()
+    return collapsed ? [collapsed] : []
+  }
+  const pieces = splitAssistantReply(stripped)
+  if (pieces.length) return pieces
+  /* 角色的那条还没出字、但正在生成 —— 兜一格空格,好让光标有处落脚
+     (流式刚开始、模型第一个 token 还没落到的那一瞬)。不在生成的、又确实没字的
+     (比如只发来一张图),返回 [] —— 模板据此不画气泡,免得挂出个空壳 */
+  return m.id === cursorId.value ? [''] : []
 }
 
 /** 光标挂在正在说的那一条上。它同时说明"这会儿还在往下写" */
@@ -606,111 +621,34 @@ async function toggleSpeak(msg: ChatMessage) {
   if (said) emit('notice', said)
 }
 
-/* ===== 自动跟随 =====================================================
-   只在"用户本来就贴着底"时才跟着新消息走。正在往上翻历史时被拽回底部,
-   是聊天界面最烦人的一件事 */
-const streamEl = ref<HTMLElement | null>(null)
-const FOLLOW_GAP = 80
-
-/* 贴着底没有。这是"自动跟随"的开关 —— 只在贴底时把视口带下去,
-   用户往上翻的时候要让他安静地看。
-   做成响应式(原来是普通变量)是因为界面还要据此决定要不要给"回到最新" */
-const atBottom = ref(true)
-/* 翻上去之后又来了几条。说的不是"未读" —— 用户可能刚看过,
-   只是此刻不在底部,所以文案用"N new"而不是红点角标 */
-const pendingNew = ref(0)
-/* 正在做"回到最新"的平滑滚动。滚动过程会一路触发 scroll 事件、
-   把 atBottom 反复算成 false,那枚按钮就会自己闪一下 —— 用一个旗子按住 */
-let jumping = false
-
-function onStreamScroll() {
-  if (jumping) return
-  const el = streamEl.value
-  if (!el) return
-  atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_GAP
-  // 自己滚回底部就等于看过了
-  if (atBottom.value) pendingNew.value = 0
-}
-function toEnd(smooth = false) {
-  const el = streamEl.value
-  if (!el) return
-  if (smooth) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  else el.scrollTop = el.scrollHeight
-  atBottom.value = true
-  pendingNew.value = 0
-}
-/* 那枚"回到最新"。只在真有内容、而且不贴底时出现 */
-const showJump = computed(() => !atBottom.value && msgs.value.length > 0)
-function jumpToLatest() {
-  if (jumping) return
-  jumping = true
-  toEnd(true)
-  window.setTimeout(() => {
-    jumping = false
-  }, 400)
-}
-
-/* 放在 onUpdated 而不是 watch(messages):流式时改的是**同一条消息的内容**,
-   数组长度没变,watch 抓不到 */
-onUpdated(() => {
-  if (atBottom.value) toEnd()
+/* ===== 对话流的滚动编排 =================================================
+   自动跟随、往前读一档时稳住视口 —— 这套逻辑抽到 useChatStream
+   (见 composables/useChatStream.ts)。这里只把它接到当前这一场的消息数、
+   角色 id 与"往前读一档"的意图上;滚动落点的重置、贴底判断都在里面。 */
+const {
+  streamEl,
+  pendingNew,
+  showJump,
+  onStreamScroll,
+  toEnd,
+  jumpToLatest,
+  loadEarlier
+} = useChatStream({
+  messageCount: () => msgs.value.length,
+  active: () => props.active,
+  hasMore: () => props.hasMore,
+  streaming: () => streaming.value,
+  onLoadEarlier: () => emit('loadEarlier', props.active)
 })
 
-/* 不贴底的时候底下又长了东西 ⇒ 记一笔,好在那枚按钮上说出来。
-   往前读一档不算:那是用户自己点出来的,而且内容插在**上面** ——
-   那种情况下该做的是稳住视口(见下面的 earlierFrom) */
-watch(
-  () => msgs.value.length,
-  (n, prev) => {
-    if (!prev || earlierFrom) return
-    if (!atBottom.value && n > prev) pendingNew.value += n - prev
-  }
-)
-
+/* 换角色时顺带把浮层收掉:菜单、角色选择器不该跟着跳到新角色还开着。
+   (滚动落点的重置归 useChatStream 自己那条 active watcher,两件事各管各的) */
 watch(
   () => props.active,
-  async () => {
-    // 换角色 = 进到另一段对话,该落在最新那一句上
-    atBottom.value = true
-    pendingNew.value = 0
+  () => {
     closeMenu()
     pickerOpen.value = false
-    await nextTick()
-    toEnd()
   }
-)
-onMounted(async () => {
-  await nextTick()
-  toEnd()
-})
-
-/* ===== 往前读一档 ===================================================
-   库里装的是最近 CHAT_PAGE 条,更早的还在库里没读。
-   往上面插内容时浏览器不一定能自己稳住视口,所以读之前先记下高度,
-   回来后按"长高了多少"把滚动条往下推同样的距离 */
-let earlierFrom = 0
-
-function loadEarlier() {
-  if (!props.hasMore || streaming.value) return
-  const el = streamEl.value
-  earlierFrom = el ? el.scrollHeight : 0
-  /* 先把"贴着底"关掉:消息一回来组件就会重渲染,
-     这时若还贴着底,onUpdated 会把视口拽到底部去 —— 那是反方向 */
-  atBottom.value = false
-  emit('loadEarlier', props.active)
-}
-
-watch(
-  () => msgs.value.length,
-  () => {
-    if (!earlierFrom) return
-    const el = streamEl.value
-    const grew = el ? el.scrollHeight - earlierFrom : 0
-    earlierFrom = 0
-    if (el && grew > 0) el.scrollTop += grew
-  },
-  // post:要在 DOM 更新**之后**量,否则量到的还是插进来之前的高度
-  { flush: 'post' }
 )
 
 /* ===== 输入 ========================================================= */
@@ -1350,24 +1288,37 @@ onBeforeUnmount(() => {
                 >
                   <img class="msg-img" :src="imgUrl(r.msg.imageId)" alt="Attached image" />
                 </button>
-                <!-- 气泡。**只有图没有字时不渲染它** —— 否则那句话下面会挂出
-                     一个空的圆角小壳(发送时是允许"只发一张图"的),看着像坏了。
-                     流式中的那条必须留着:光标挂在它身上 -->
-                <div v-if="r.msg.content.trim() || r.msg.id === cursorId || !hasAttach(r.msg)" class="bubble">
+                <!-- 气泡。一条消息可以画成**好几格**(角色按段落分拍,见 bubblePieces):
+                     库里它是一条,屏幕上是一串连着的小气泡。归属话术只在第一格说一次,
+                     光标与动作药丸只挂在最后一格上。
+                     pieces 为空 = 这条不该有气泡(只有图没有字、或没在生成的空消息),
+                     v-for 一格都不画 —— 不会挂出个空的圆角小壳 -->
+                <div
+                  v-for="(piece, idx) in r.pieces"
+                  :key="r.key + '-b' + idx"
+                  class="bubble"
+                  :style="{ '--i': idx }"
+                >
                   <!-- 说了谁说的。左右对齐和底色是给眼睛的,
-                       读屏读不出这两种区别,不补一句就只剩一堆光秃秃的句子 -->
-                  <span class="sr-only">
+                       读屏读不出这两种区别,不补一句就只剩一堆光秃秃的句子。
+                       一条回复哪怕分成几格,也只在这一格补 —— 不然读屏会把
+                       同一个人的一段话念成好几条"某某说:" -->
+                  <span v-if="idx === 0" class="sr-only">
                     {{ r.msg.role === 'user' ? 'You said: ' : `${current.name} said: ` }}
                   </span>
-                  {{ shownText(r.msg) }}<span v-if="r.msg.id === cursorId" class="cursor" aria-hidden="true"></span>
-                  <!-- 这一条顺带能做的事(念 / 删 / 重来)。整排贴着气泡外侧下角,
-                       绝对定位 —— 它不该挤占气泡的宽度。放进流里(哪怕用
-                       opacity 藏起来)会实打实地把每个气泡压窄 80px。
+                  {{ piece }}<span
+                    v-if="r.msg.id === cursorId && idx === r.pieces.length - 1"
+                    class="cursor"
+                    aria-hidden="true"
+                  ></span>
+                  <!-- 这一条顺带能做的事(念 / 删 / 重来),挂在**最后一格**下角。
+                       整排贴着气泡外侧,绝对定位 —— 它不该挤占气泡的宽度。放进流里
+                       (哪怕用 opacity 藏起来)会实打实地把每个气泡压窄 80px。
                        只在悬停时浮出来(触屏没有 hover,那时让它常驻,见样式)。
                        正在生成的那条一个都不给:半句话念出来只会更难听,
                        而删一条正在长的消息会与收尾落盘打架 -->
                   <span
-                    v-if="hasMsgOps(r.msg)"
+                    v-if="hasMsgOps(r.msg) && idx === r.pieces.length - 1"
                     class="msg-ops"
                     :class="{ on: speakingId === r.msg.id }"
                   >
@@ -2272,6 +2223,39 @@ onBeforeUnmount(() => {
   color: var(--cta-text);
   border-bottom-right-radius: var(--r-sm);
 }
+/* 一条回复被分成好几拍时,格与格之间挨得比"换人"更近(比 --sp-2 窄一档)。
+   读起来仍是同一个人连着说的几口气,而不是几条各不相干的消息。
+   .msg 是纵向 flex,相邻气泡靠这条 margin 收缝 —— 图与气泡之间不吃它
+   (选择器只咬"紧跟在另一格后面"的那一格) */
+.msg > .bubble + .bubble {
+  margin-top: var(--sp-1);
+}
+/* 每一格轻轻浮出来。分拍的价值正在这儿:流式里新起的那一拍、以及一段说完
+   连着出现的几拍,各自淡入一次,一拍接一拍 —— 而不是"哗"地一起冒出来。
+   只在元素**创建**那刻跑;Vue 按 key 复用节点,历史消息滚动回来不会重播。
+   --i 是这一格在本条里的序号,给延迟错开用(见模板上的 :style)。
+   位移只有 4px、时长 200ms:它是节奏的提示,不是表演 */
+.bubble {
+  animation: bubble-in 200ms var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 120ms);
+}
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 要求减弱动效的人:动画整块关掉,不是"只去掉位移"。
+   分格与挨紧的间距照旧 —— 那是排版,不是动效 */
+@media (prefers-reduced-motion: reduce) {
+  .bubble {
+    animation: none;
+  }
+}
 /* 撞上长度上限的提示。压在气泡下面、跟气泡同一边 ——
    它说的是这一条消息,不是整段对话 */
 .cut {
@@ -2586,7 +2570,7 @@ onBeforeUnmount(() => {
   height: 14px;
 }
 .jump-btn:hover {
-  color: var(--text-1);
+  color: var(--text);
   background: var(--surface-hover);
 }
 /* —— 附图 —— */

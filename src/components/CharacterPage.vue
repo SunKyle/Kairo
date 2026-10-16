@@ -329,8 +329,13 @@ const {
 /* 主界面拿这个 ref 回调向导的两处收尾:存完推进、改完收尾
    (见 App 的 saveCharFromPage / charPageRef) */
 /* openDetail 也交出去:对话页头部的 Details 要直接落到**这个角色**的详情,
-   而不是把用户扔到角色列表让他自己再找一遍 */
-defineExpose({ onSaved, onUpdated, openDetail })
+   而不是把用户扔到角色列表让他自己再找一遍。
+   startCreate 是首页那颗「New character」的落点 —— 开向导要靠页内这个状态
+   (editing),主界面隔着 ref 只发一句意图(与 openDetail 同一套分工) */
+function startCreate() {
+  startEdit()
+}
+defineExpose({ onSaved, onUpdated, openDetail, startCreate })
 
 /* 卡头上摆几步。编辑态只走前两步(设定 / 嗓音)——
    出图那一步这一轮不做:五张设定图在详情页已经有整片网格(点开看大图、

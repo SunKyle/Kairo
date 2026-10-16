@@ -62,11 +62,14 @@ export function useCharacters(deps: CharacterDeps) {
   const charViewControllers = new Map<string, AbortController>()
   /** 角色页暴露出来的两个回调:向导靠它推进步数 */
   /* openDetail 也在这里:对话页头部的 Details 要从那一侧直接落到某个角色的详情,
-     而这个 ref 是主界面够得着角色页的唯一入口 */
+     而这个 ref 是主界面够得着角色页的唯一入口。
+     startCreate 是首页那颗「New character」的落点:开向导这件事只有角色页知道
+     挂在哪个状态上(editing),主界面隔着 ref 只能发一句意图 */
   const charPageRef = ref<{
     onSaved: (id: string) => void
     onUpdated: (id: string) => void
     openDetail: (id: string) => void
+    startCreate: () => void
   } | null>(
     null
   )

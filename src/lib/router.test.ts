@@ -2,10 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { formatHash, parseHash } from './router'
 
 describe('router · 轻量 Hash 路由与深链接', () => {
-  it('空 hash 或 #/ 默认回对话页', () => {
-    expect(parseHash('')).toEqual({ page: 'chat' })
-    expect(parseHash('#')).toEqual({ page: 'chat' })
-    expect(parseHash('#/')).toEqual({ page: 'chat' })
+  /* T7 改了默认落地址:`#/` 从前是对话页,现在是首页。
+     所以这几条断言跟着改 —— 不是"顺手改测试让它过",而是这条路由决定
+     用户进站落在哪一页(见 nav.ts 里那句"首页顶掉了对话页当落地位") */
+  it('空 hash 或 #/ 默认回首页', () => {
+    expect(parseHash('')).toEqual({ page: 'home' })
+    expect(parseHash('#')).toEqual({ page: 'home' })
+    expect(parseHash('#/')).toEqual({ page: 'home' })
+  })
+
+  it('#/home 与 #/ 是同一页', () => {
+    expect(parseHash('#/home')).toEqual({ page: 'home' })
+    expect(formatHash('home')).toBe('#/')
   })
 
   it('正确解析一级页面', () => {
@@ -38,21 +46,28 @@ describe('router · 轻量 Hash 路由与深链接', () => {
     expect(parseHash('#/chat/by/x')).toEqual({ page: 'chat', id: 'by' })
   })
 
-  it('未知页面安全降级回对话页', () => {
-    expect(parseHash('#/unknown_route')).toEqual({ page: 'chat' })
-    expect(parseHash('#/invalid/123')).toEqual({ page: 'chat' })
+  it('未知页面安全降级回**首页**(落地址)', () => {
+    expect(parseHash('#/unknown_route')).toEqual({ page: 'home' })
+    expect(parseHash('#/invalid/123')).toEqual({ page: 'home' })
     /* KImage 那三页(Studio 工作台 / 画布 / 提示词库)没有带过来:
-       地址栏里还留着旧书签或旧链接时,一律回对话页,而不是整页空白 */
-    expect(parseHash('#/home')).toEqual({ page: 'chat' })
-    expect(parseHash('#/canvas')).toEqual({ page: 'chat' })
-    expect(parseHash('#/lib')).toEqual({ page: 'chat' })
+       地址栏里还留着旧书签或旧链接时,一律回首页,而不是整页空白 */
+    expect(parseHash('#/home')).toEqual({ page: 'home' })
+    expect(parseHash('#/canvas')).toEqual({ page: 'home' })
+    expect(parseHash('#/lib')).toEqual({ page: 'home' })
   })
 
   it('formatHash 生成正确的 hash 路径', () => {
-    expect(formatHash('chat')).toBe('#/')
+    expect(formatHash('home')).toBe('#/')
     expect(formatHash('chars')).toBe('#/chars')
     expect(formatHash('chat', 'char_456')).toBe('#/chat/char_456')
     expect(formatHash('history')).toBe('#/history')
+  })
+
+  /* 对话页不再占 `#/`:它自己改写做 #/chat。
+     往返一趟不走样,否则用户看到地址栏与自己所在的那一页不是同一个地方 */
+  it('chat 无 id 时写 #/chat(不是 #/)', () => {
+    expect(formatHash('chat')).toBe('#/chat')
+    expect(parseHash(formatHash('chat'))).toEqual({ page: 'chat' })
   })
 
   it('formatHash 与 parseHash 在历史页那两种形态上来回一趟不走样', () => {

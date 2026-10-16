@@ -3,6 +3,7 @@ import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import { PhSun, PhMoon, PhX } from '@phosphor-icons/vue'
 import ImagePreview from './components/ImagePreview.vue'
 import HistoryPage from './components/HistoryPage.vue'
+import HomePage from './components/HomePage.vue'
 import CharacterPage from './components/CharacterPage.vue'
 import ChatPage from './components/ChatPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
@@ -1441,6 +1442,22 @@ function openCharWorks(charId: string) {
   page.value = 'history'
 }
 
+/** 首页那颗「New character」:切到角色页、把向导开起来。
+ *  与 openCharacterDetail 同一个形状 —— 先落页再 nextTick 叫页内那个入口,
+ *  反过来的话那一帧页还没挂上,调用会落在 null 上(点了一下什么也没发生)。
+ *  **不直接 startEdit**:editing 是角色页私有的状态,主界面碰不到 */
+function createCharacter() {
+  page.value = 'chars'
+  nextTick(() => charPageRef.value?.startCreate())
+}
+
+/** 首页次区要的「某个角色最后一句」。读的是 chatLast 那一份(不是 chatMessages):
+ *  消息按角色懒加载,没打开过的角色在 chatMessages 里没有键,而这一页开屏就要
+ *  列全 —— 用 chatMessages 的话,没点开过的角色会被当成从没聊过。
+ *  **传函数**:这一份随时会被整份换掉(见 useChat 的 setChatLast),捕获住旧的那
+ *  一份,排出来的就是过期快照(与 lib/homeList 的 lastOf 同一条理由) */
+const homeLastOf = (id: string) => chatLast.value[id]
+
 // 在创作区选中某个角色时顺手取一次;角色页那边由 @open 触发
 watch(activeCharId, (id) => loadCharViews(id))
 
@@ -1571,9 +1588,21 @@ function createAssignCollection(title: string) {
            原来只做了"新页淡入",旧页瞬间消失,那一下硬切就是生硬的来源 -->
       <Transition name="page">
 
+      <!-- 首页(T7)。它接手了 `#/` 这个落地址 —— 原来打开应用先看到的是对话页,
+           而对话页要有个"当前角色"才有内容,一个角色都没有时那是一屏空态。
+           首页的两个动作(Chat / Details)都只是发意图,跳转仍走下面这些入口 -->
+      <HomePage
+        v-if="page === 'home'"
+        :characters="characters"
+        :last-of="homeLastOf"
+        @chat="openChat"
+        @detail="openCharacterDetail"
+        @create="createCharacter"
+      />
+
       <!-- 角色。它是这条链的头一个分支,所以是 v-if(其余各页接着 v-else-if) -->
       <CharacterPage
-        v-if="page === 'chars'"
+        v-else-if="page === 'chars'"
         ref="charPageRef"
         :characters="characters"
         :views="charViews"

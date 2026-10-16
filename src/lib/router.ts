@@ -4,7 +4,8 @@ import type { Page } from './nav'
    没有引入 vue-router 是这个项目的既有决定(保持单页、无多余依赖)。
    但刷新强制回首页、无法把某个角色或某段对话发给人是一个明显痛点。
    这里用 window.location.hash 提供极简的深链接支持:
-   - '#/' 或空 -> chat(Kairo 的主页就是对话)
+   - '#/' 或空   -> home(本站的落地址,T7)
+   - '#/home'
    - '#/chat' / '#/chat/:id'
    - '#/chars' / '#/chars/:id'
    - '#/memory' / '#/history' / '#/settings'
@@ -24,6 +25,7 @@ export interface RouteState {
 }
 
 export const VALID_PAGES: readonly Page[] = [
+  'home',
   'chat',
   'chars',
   'memory',
@@ -31,13 +33,15 @@ export const VALID_PAGES: readonly Page[] = [
   'settings'
 ] as const
 
-/** 解析当前的 hash 字符串。认不出的段落一律回对话页 */
+/** 解析当前的 hash 字符串。认不出的段落一律回**首页** */
 export function parseHash(hash: string): RouteState {
   const clean = hash.replace(/^#\/?/, '').trim()
-  if (!clean) return { page: 'chat' }
+  if (!clean) return { page: 'home' }
   const [segment, second, third] = clean.split('/')
   if (!VALID_PAGES.includes(segment as Page)) {
-    return { page: 'chat' }
+    /* 兜底回首页而不是对话页(T7 改了这里):落地址是首页,一个坏书签该落在
+       用户进站时看到的同一页面上,而不是跳到一段它没要求打开的对话里 */
+    return { page: 'home' }
   }
   const page = segment as Page
   /* `#/history/by/<charId>` 要在认 `id` 之前拦下:否则 `by` 会被当成某条记录的 id,
@@ -54,6 +58,10 @@ export function formatHash(page: Page, id?: string, byChar?: string): string {
   /* byChar 先判:它在 history 页上的优先级高于 id,而两者本来就互斥
      (一处是"只看谁",一处是"看哪一条") */
   if (page === 'history' && byChar) return `#/history/by/${byChar}`
-  if (page === 'chat' && !id) return '#/'
+  /* 首页是落地址,所以它就等于 `#/`。**对话页不再占这一格** ——
+     空 `#/` 从前是对话页,现在给了首页;对话页自己改写做 `#/chat`。
+     这一改对老书签是有意的:`#/` 进首页正是 PRD §5.1 要的那个入口 */
+  if (page === 'home') return '#/'
+  if (page === 'chat' && !id) return '#/chat'
   return id ? `#/${page}/${id}` : `#/${page}`
 }

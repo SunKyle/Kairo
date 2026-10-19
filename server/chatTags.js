@@ -266,7 +266,7 @@ export function parsePhotoIntent(raw, charName = '') {
 }
 
 /**
- * 把**独占一行的**标签摘出来（不限于末尾）。
+ * 把**顶在行首的**标签摘出来（不限于末尾）。
  *
  * —— 为什么还需要它 ——
  *
@@ -275,11 +275,16 @@ export function parsePhotoIntent(raw, charName = '') {
  * 收尾的话 —— 于是那枚 `[photo:…]` 落在**中间**，`splitTags` 够不着，
  * 它会原样流给用户看（用户的原话是"为什么会有这种生成对话记录"）。
  *
- * 判据很窄，所以不会误伤：**这一行除了这枚标签什么都没有**。
- * 夹在句子中间、或者行里还有别的话的方括号，一律不碰（那是正文）。
+ * 判据仍然窄——**标签必须顶到行首**（前面只能是空白），后面**允许**挂一句收尾话:
+ * - 「正文在前、标签在后」一律不碰 —— 那是散句里的方括号,
+ *   `我说[photo:x]这个词,你别多想` 靠这一条挡住;
+ * - 「标签在前、正文在后」**要摘**,把标签剪掉、收尾那句原样留回气泡 ——
+ *   这是 2026-10-17 用户报的走形：`[photo:selfie:medium:me sitting …bulb]这回应该能看见了`
+ *   整段流出、既没被 splitTags（`$` 锚不上）也没被这一层（当时只认整行独占）吃下,
+ *   于是原样上屏、photo 意图为空、出图不触发。
  *
- * 与末尾那条路的分工：末尾的标签尾巴会被 `tailHold` 扣住、由 `splitTags` 收走，
- * 走不到这里；能走到这里的就是"被正文顶到中间去"的那几枚。
+ * 与末尾那条路的分工：末尾的标签尾巴会被 `tailHold` 扣住、由 `splitTags` 收走,
+ * 走不到这里；能走到这里的就是"被正文顶到中间去 / 黏在正文前面"的那几枚。
  *
  * @returns text 摘干净之后的正文；photo / mood 是顺手取出来的意图（没有就是空串）。
  *          同一类标签出现多次时**取第一枚** —— 它就是这一轮想说的事。
@@ -294,7 +299,9 @@ export function stripStandaloneTags(s, charName = '') {
   let mood = ''
   let removed = false
   for (const line of lines) {
-    const m = /^\[\s*(photo|mood)\s*[:=]\s*([^[\]]*?)\s*\]\s*[.!?]?$/i.exec(line.trim())
+    /* 第 3 个捕获组 = 尾随正文：空/仅空白 → 整行吞掉（旧行为）,
+       非空 → 把那段留回气泡（模型写完标签又补了一句收尾话的情形） */
+    const m = /^\[\s*(photo|mood)\s*[:=]\s*([^[\]]*?)\s*\]\s*[.!?]?(.*)$/i.exec(line.trim())
     if (!m) {
       kept.push(line)
       continue
@@ -311,7 +318,9 @@ export function stripStandaloneTags(s, charName = '') {
     } else if (!mood) {
       mood = m[2].trim().toLowerCase()
     }
-    /* 这一行整个吃掉 —— 连它那个换行一起（不然正文里会多出一行空白） */
+    /* 标签连它前面那个换行一起收走;但标签**后面**挂的话是它说的话,原样留回 */
+    const rest = m[3]
+    if (rest.trim()) kept.push(rest)
     removed = true
   }
   /* 标签常常是**空行包着**写的。抽掉那一行之后剩下连着的空行要收一收,

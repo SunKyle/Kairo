@@ -12,8 +12,9 @@ export declare function parsePhotoIntent(
   raw: unknown,
   charName?: string
 ): { scene: string; self: boolean; shot: string; frame: string }
-/** 把**独占一行的**标签摘出来(不限于末尾)。末尾那些由 splitTags 收走,
- *  这里管的是"被正文顶到中间去"的那几枚 */
+/** 把**顶在行首的**标签摘出来(不限于末尾)。末尾那些由 splitTags 收走,
+ *  这里管的是"被正文顶到中间去 / 标签后面还黏了句收尾话"的那几枚。
+ *  判据仍是「标签必须以行首锚定」—— 前面有正文的方括号(`我说[photo:x]这个词`)一律不碰 */
 export declare function stripStandaloneTags(
   s: unknown,
   charName?: string

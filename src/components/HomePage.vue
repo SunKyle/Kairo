@@ -233,10 +233,15 @@ function coverOf(c: Character): string {
 /* —— 主区那一墙卡 ——
    等宽自动排:放得下几列就几列,不再手调"一行三张"那种数
    (与详情页 .sheet 同一条理由 —— 手调的格数排法加一次格子就废一次)。
-   最小宽度给到 168px:再窄一档,卡里那行身份文字就会被折成三行 */
+   最小宽度给到 168px:再窄一档,卡里那行身份文字就会被折成三行。
+   **最大宽度封顶 240px**:这里上一档写的是 1fr,而 auto-fit 会把空列塌缩掉,
+   于是仅剩的那一列会长满整行 —— 只有一个角色时正视图撑满整屏(3:4 取景下
+   宽度即高度),两三个时同样过大。海报该有尺寸上限,不是商品(PRD §11.2);
+   封顶 240px 后配 justify-content: center 把这一墙居中,而不是左贴边拉满。 */
 .home-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(168px, 240px));
+  justify-content: center;
   gap: var(--sp-4);
   margin-top: var(--sp-5);
 }
@@ -459,7 +464,8 @@ function coverOf(c: Character): string {
 }
 @media (max-width: 640px) {
   .home-grid {
-    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    /* 上限与桌面同一档 240px:手机上只有一个角色时,1fr 同样会把那一列拉满整屏 */
+    grid-template-columns: repeat(auto-fit, minmax(132px, 240px));
     gap: var(--sp-3);
   }
 }

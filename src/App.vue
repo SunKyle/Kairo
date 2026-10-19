@@ -44,6 +44,8 @@ import {
   putChatImage
 } from './lib/idb'
 import { abortCharImages } from './lib/imageJobs'
+/* 未发送的草稿按角色存在内存(见 lib/chatDraft)—— 角色被真正删除时那格也要收走 */
+import { clearDraft } from './lib/chatDraft'
 import { migrateSummariesOnce } from './lib/memoryMigrate'
 import { NAV_ITEMS, type Page } from './lib/nav'
 import { DEFAULT_SETTINGS_SECTION, type SettingsSection } from './lib/settingsNav'
@@ -84,6 +86,10 @@ import {
   type ChatBackdrop
 } from './lib/idb'
 import type { HistoryEntry, Character, CharacterViewKind, ChatMessage, ImportedCharacter } from './types'
+/* 页面切换的"标题先行、内容跟上"镜头用 GSAP timeline 编排(见下面 onPageEnter/onPageLeave)。
+   只用核心,不引插件——CSS 交叉淡入做不到多元素分步,这正是它补的那块;
+   其余微交互与循环动画仍归 CSS/motion-v,不动。 */
+import { gsap } from 'gsap'
 
 /* —— 路由级代码分割（P1-1）——
    这几个页面都是「靠 v-if 条件挂载、且不是首屏」的重页,把它们改成异步组件:
@@ -611,6 +617,69 @@ onBeforeUnmount(() => window.removeEventListener('storage', onStorageSync))
 onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange))
 onBeforeUnmount(() => syncChannel?.close())
 
+/* —— 页面切换镜头（GSAP，P1b）——
+   原来是 <Transition name="page"> 的纯 CSS 交叉淡入(整块一起淡)。这里升级成
+   受控的多元素镜头:新页的**顶栏先落、其余区块紧接着 stagger 跟上**,读起来像
+   "这一页在铺陈",而不是"一整块浮现"。CSS transition 分不出这两组,GSAP timeline 天生就是干这个的。
+   铁律照旧:只动 transform/opacity(autoAlpha/y),绝不碰 width/height/top/left;
+   离场页脱离文档流那件事由原来的 .page-leave-active 搬进 onPageLeave 里做(见注释)。 */
+
+/* 每次调用现读,不缓存:系统"减弱动效"是运行期可切的,原来靠 CSS @media 反应式生效,
+   这里也得跟着即时降级(缓存成常量就漏掉用户中途改设置这一路)。 */
+const prefersReduced = () =>
+  typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+
+function onPageEnter(el: Element, done: () => void) {
+  if (prefersReduced()) {
+    done()
+    return
+  }
+  /* 满屏工作台页(聊天)自带固定背景层 + 两个撑满视口的高面板,对它们做位移/缩放
+     会把整块背景一起拽动、高面板缩放又硬弹,看着就"硬"。这类页只淡入,不搬。
+     页面用 data-page-motion="fade" 声明自己走这条路。 */
+  if ((el as HTMLElement).dataset.pageMotion === 'fade') {
+    gsap.from(el, { autoAlpha: 0, duration: 0.26, ease: 'power1.out', onComplete: done })
+    return
+  }
+  const kids = Array.from(el.children) as HTMLElement[]
+  const tl = gsap.timeline({ onComplete: done })
+  if (kids.length >= 2) {
+    // 页头先落地(位移更大、单独成拍),正文再逐块错峰跟上——两组在时间上拉开,
+    // 才看得出"这一页在铺陈";之前压得太重叠、位移太小,肉眼几乎分辨不出。
+    tl.from(kids[0], { autoAlpha: 0, y: 24, duration: 0.3, ease: 'power3.out' }).from(
+      kids.slice(1),
+      { autoAlpha: 0, y: 18, scale: 0.985, duration: 0.32, ease: 'power2.out', stagger: 0.07 },
+      '-=0.1'
+    )
+  } else {
+    // 只有一块(或空)时退回整块淡入,别硬拆
+    tl.from(el, { autoAlpha: 0, y: 18, duration: 0.34, ease: 'power3.out' })
+  }
+}
+
+function onPageLeave(el: Element, done: () => void) {
+  if (prefersReduced()) {
+    done()
+    return
+  }
+  const e = el as HTMLElement
+  /* 离场页脱离文档流、钉在 .frame(position:relative)顶部:
+     高度让给入场页,滚动条不会中途缩一下又弹回来。这正是原 .page-leave-active 干的活。 */
+  e.style.position = 'absolute'
+  e.style.top = '0'
+  e.style.left = '0'
+  e.style.right = '0'
+  // 满屏工作台页(聊天)离场也只淡出、不整体上移,和入场对称,免得高面板滑一下显得硬
+  const fadeOnly = e.dataset.pageMotion === 'fade'
+  gsap.to(e, {
+    autoAlpha: 0,
+    y: fadeOnly ? 0 : -6,
+    duration: 0.15,
+    ease: 'power1.in',
+    onComplete: done
+  })
+}
+
 /* —— 顶部导航(分段控件) ——
    条目清单在 lib/nav.ts(导航与字标共用那一份)。这里只留状态:
    视图状态只有 page 一份,navView 只是把它的类型收紧回联合类型
@@ -1007,6 +1076,9 @@ function deleteChar(id: string) {
          角色没了还把它留在库里,既没人认领也不该留。同样放这一步:
          撤销回来时它还得在 */
       if (gone.voice?.sampleId) void deleteVoiceSample(gone.voice.sampleId)
+      /* 那半句没发出去的草稿也一起收 —— 人没了,话不该留着。
+         放在这一步而不是删除那一刻:撤销窗口内反悔了,它还在 */
+      clearDraft(id)
       const rest = { ...charViews.value }
       delete rest[id]
       charViews.value = rest
@@ -1576,9 +1648,10 @@ function createAssignCollection(title: string) {
 
     <!-- 视图切换:平级视图同时只挂载一个 -->
     <main class="frame">
-      <!-- 外面这层 Transition 让新旧两页交叉过渡 ——
-           原来只做了"新页淡入",旧页瞬间消失,那一下硬切就是生硬的来源 -->
-      <Transition name="page">
+      <!-- 外面这层 Transition 让新旧两页交叉过渡。:css="false" 把动画整个交给
+           下面的 @enter/@leave(GSAP timeline):新页顶栏先落、内容块 stagger 跟上,
+           旧页淡出并脱离文档流。不再是原来那种"整块一起淡"的 CSS 交叉淡入。 -->
+      <Transition :css="false" @enter="onPageEnter" @leave="onPageLeave">
 
       <!-- 首页(T7)。它接手了 `#/` 这个落地址 —— 原来打开应用先看到的是对话页,
            而对话页要有个"当前角色"才有内容,一个角色都没有时那是一屏空态。
@@ -1631,7 +1704,6 @@ function createAssignCollection(title: string) {
         :redrawing="chatPhotoBusy"
         :active="chatCharId"
         :has-more="!!chatHasMore[chatCharId]"
-        :summary="chatSummary[chatCharId]"
         :chat-config="chatConfig || undefined"
         :chat-borrowed="chatBorrowed"
         :vision-config="visionConfig || undefined"
@@ -1648,8 +1720,6 @@ function createAssignCollection(title: string) {
         @retry-photo="retryChatPhoto"
         @delete-message="deleteChatMessageFromPage"
         @pin="togglePinChar"
-        @edit-summary="editChatSummary"
-        @forget-summary="forgetChatSummary"
         @notice="notice = $event"
         @clear="clearChat"
         @load-earlier="loadEarlierChat"
@@ -1658,11 +1728,13 @@ function createAssignCollection(title: string) {
         @configure-chat-model="openChatConfig"
       />
 
-      <!-- 记忆中心(PRD §5.5)。与对话页是同一个对象的两个面:
-           一个把话说出来,一个把"它记得什么"摊开给用户管 -->
+      <!-- 记忆中心(PRD §5.5)。唯一的记忆管理入口:一条条事实(MemoryItem)
+           加上每个角色的对话简报(chat_summary)都在这一页查看/编辑/忘掉。
+           整份 chatSummary 透传进去,各角色组认领自己那一份 -->
       <MemoryPage
         v-else-if="page === 'memory'"
         :memories="memories"
+        :summaries="chatSummary"
         :characters="characters"
         :extracting="extracting"
         :can-extract="canExtractMemories"
@@ -1672,6 +1744,8 @@ function createAssignCollection(title: string) {
         @important="setImportant"
         @shared="setShared"
         @extract="extractMemoriesFromPage"
+        @edit-summary="editChatSummary"
+        @forget-summary="forgetChatSummary"
       />
 
       <!-- 历史记录 -->
@@ -1985,7 +2059,7 @@ function createAssignCollection(title: string) {
   display: flex;
   flex-direction: column;
   gap: var(--sp-7);
-  /* 离场的那一页会脱离文档流(见 .page-leave-active),这里得是它的定位基准 */
+  /* 离场的那一页会被 JS 设成脱离文档流(见 onPageLeave),这里得是它的定位基准 */
   position: relative;
 }
 
@@ -2001,40 +2075,9 @@ function createAssignCollection(title: string) {
 }
 
 /* ===== 页面切换 =====
-   旧页原地淡出并微微上移,新页从下方浮起来接住它 —— 两页在同一段时间里交叉,
-   不是"旧页消失、新页另起一段"。离场期间旧页脱离文档流,高度交给新页,
-   所以滚动条不会在中途缩一下又弹回来 */
-.page-leave-active {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  /* 离场只是让位,所以比入场短:两段叠起来刚好是一次呼吸的长度 */
-  transition: opacity 150ms ease-out, transform 150ms ease-out;
-}
-.page-leave-to {
-  opacity: 0;
-  /* 往上走一点,与入场的方向对上:读起来像两页纸交错滑过 */
-  transform: translateY(-6px);
-}
-.page-enter-active {
-  transition: opacity 320ms var(--ease), transform 320ms var(--ease);
-}
-.page-enter-from {
-  opacity: 0;
-  transform: translateY(14px);
-}
-/* 位移对前庭敏感的人不友好,那种情况下只留淡入淡出 */
-@media (prefers-reduced-motion: reduce) {
-  .page-enter-active,
-  .page-leave-active {
-    transition-duration: 160ms;
-  }
-  .page-enter-from,
-  .page-leave-to {
-    transform: none;
-  }
-}
+   原来这里是 .page-enter/leave 一套 CSS 交叉淡入。现已换成 <Transition :css="false">
+   交给 GSAP(onPageEnter/onPageLeave)编排"顶栏先落、内容跟上",离场页脱离文档流也在
+   JS 里做。CSS 类不再被添加,故整块删除。 */
 
 /* 存储清理提示:提醒而非错误,用中性色,不与报错抢注意力。
    现在挂在全局层(所有页面共用),所以做成居中浮条而非流内一方块:

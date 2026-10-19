@@ -519,8 +519,9 @@ describe('tailHold · 放到哪才不漏半截标签', () => {
 
 /* 中段那枚标签:模型先说一句、再决定给你看张图、然后又补一句收尾的话 ——
    于是 `[photo:…]` 落在正文中间,而 splitTags 只认末尾(那是为了不误吃
-   正文里的方括号)。用户看到的就是聊天框里明晃晃一行 `[photo:self:…]`。 */
-describe('stripStandaloneTags · 摘掉"独占一行的"标签(不限于末尾)', () => {
+   正文里的方括号)。用户看到的就是聊天框里明晃晃一行 `[photo:self:…]`。
+   2026-10-17 又补上「标签顶在行首、后面还黏了一句收尾话」这一种走形。 */
+describe('stripStandaloneTags · 摘掉"顶在行首的"标签(不限于末尾)', () => {
   it('正文中间那枚被摘掉,意图照样取出来', () => {
     const r = stripStandaloneTags(
       '等下等下,我这个状态你也想看呀?\n\n[photo:self:me in the car, tired but grinning]\n\n怎么样,值不值得你等这么久诶?',
@@ -569,5 +570,46 @@ describe('stripStandaloneTags · 摘掉"独占一行的"标签(不限于末尾)'
     const r = stripStandaloneTags('你好。\n[photo:me on the balcony].\n再见。')
     expect(r.text).toBe('你好。\n再见。')
     expect(r.photo).toBe('me on the balcony')
+  })
+
+  /* —— 2026-10-17:标签顶在行首、后面黏了句收尾话 ——
+     这一类以前三条路(splitTags 末尾 / stripStandaloneTags 整行独占 / tailHold 扣尾)
+     全都不认,于是原样上屏、photo 意图为空、出图不触发。窄修复把它接住:
+     判据仍然窄 —— 只有「标签必须以行首锚定」才吃;「正文在前、标签在后」不动。 */
+  it('标签顶在行首、后面黏了句收尾话 —— 摘掉标签、把那句留回气泡', () => {
+    const r = stripStandaloneTags(
+      '[photo:selfie:medium:me sitting on a small plastic stool at the roadside wonton stall in the evening, coat still dusty, a bowl of wontons steaming on the low table in front of me, the vendor working behind the big pot under a warm bulb]这回应该能看见了',
+      'Me'
+    )
+    expect(r.photo).toBe(
+      'me sitting on a small plastic stool at the roadside wonton stall in the evening, coat still dusty, a bowl of wontons steaming on the low table in front of me, the vendor working behind the big pot under a warm bulb'
+    )
+    expect(r.photoSelf).toBe(true)
+    expect(r.photoShot).toBe('selfie')
+    expect(r.photoFrame).toBe('medium')
+    expect(r.text).toBe('这回应该能看见了')
+  })
+
+  it('多行里有一枚「行首标签 + 尾随正文」也一样摘掉', () => {
+    const r = stripStandaloneTags('好,稍等。\n[photo:close:my eyes]别看太久。\n就一秒钟。')
+    expect(r.photo).toBe('my eyes')
+    expect(r.photoShot).toBe('')
+    expect(r.photoFrame).toBe('close')
+    expect(r.text).toBe('好,稍等。\n别看太久。\n就一秒钟。')
+  })
+
+  it('mood 也一样:行首 mood + 尾随正文 → 摘掉、把话留下', () => {
+    const r = stripStandaloneTags('[mood:amused]你猜怎么着?')
+    expect(r.mood).toBe('amused')
+    expect(r.text).toBe('你猜怎么着?')
+  })
+
+  it('**反向护栏**:同一行里正文在前、标签在后 → 一律不碰', () => {
+    /* 这是"我说[photo:x]这个词"那条护栏在多行里的等价形态。
+       只有以行首锚定的标签才被认定为标签;前面挂着正文的方括号 = 正文。 */
+    const t = '好,先看这张 [photo:me on the balcony] 怎么样?'
+    const r = stripStandaloneTags(t)
+    expect(r.photo).toBe('')
+    expect(r.text).toBe(t)
   })
 })

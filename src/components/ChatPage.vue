@@ -6,14 +6,11 @@ import {
   PhArrowsInSimple,
   PhArrowsOutSimple,
   PhArrowsClockwise,
-  PhBrain,
   PhChatCircleDots,
   PhDotsThree,
-  PhEraser,
   PhImage,
   PhImageBroken,
   PhMaskHappy,
-  PhPencilSimple,
   PhSlidersHorizontal,
   PhSmiley,
   PhSpeakerHigh,
@@ -22,7 +19,7 @@ import {
   PhUser,
   PhX
 } from '@phosphor-icons/vue'
-import type { ApiConfig, Character, ChatMessage, ChatSummary } from '../types'
+import type { ApiConfig, Character, ChatMessage } from '../types'
 import { CHAT_MAX_CHARS, coverSrc, hasPersona } from '../api'
 import { getChatImage } from '../lib/idb'
 // 喂给模型的图长边上限(与首页、画布、角色识图共用同一个数)
@@ -30,11 +27,16 @@ import { REF_IMAGE_EDGE } from '../lib/payload'
 // 浮层的公共行为(Tab 圈定 / 点外收起 / Esc 逐层退)
 import { isInside, layerOnEscape, trapTab } from '../lib/ui'
 import { growTextarea, vGrow } from '../lib/grow'
+/* 未发送的半句话按角色各自留存(见 lib/chatDraft)—— 输入框只是"当前角色那一格"的现场 */
+import { clearDraft, getDraft, saveDraft } from '../lib/chatDraft'
 /* "多久以前"那句话与服务端拼给角色的那句**同源**(见那份文件的 agoLabel) */
 import { agoLabel } from '../../server/chatTime.js'
 /* 左栏的目录与搜索收在 ChatRail 里 —— 它与窄屏那个"换角色"浮层是同一个组件,
    两份内容一字不差的重复因此消掉。排序口径(lib/chatOrder)也随它一起走 */
 import ChatRail from './ChatRail.vue'
+/* 此刻情绪那枚胶囊：判据（en→中文/色桶/表情、没配到回显原词）全在 lib/moodDisplay，
+   这里只负责在名字旁摆出来 */
+import MoodPill from './MoodPill.vue'
 /* 显示层也要摘一次中段标签:**库里已有的老消息还带着它**
    (那一版服务端还没这道工序)。同一个纯函数,两端同一个判据 */
 import { parsePhotoIntent, stripStandaloneTags } from '../../server/chatTags.js'
@@ -72,10 +74,9 @@ const props = defineProps<{
   /* 前面还有更早的消息没读。库里装的是这个角色**最近一档** ——
      没有这一项就分不清"这是第一句"和"只读到这里" */
   hasMore: boolean
-  /* 长期记忆:滑出窗口的消息压成的那段简报。
-     有它就得让用户看得见 —— 它是模型"记得什么"的全部依据,
-     藏起来就没法解释"它为什么会突然提起那件很久以前的事" */
-  summary?: ChatSummary
+  /* 长期简报(chat_summary)**不再从这里经过**(2026-10-17)——
+     查看、编辑、忘掉全部收进记忆中心的 Briefing 区块,一处管理一处口径;
+     对话页只负责把话说出去、把记忆喂给下一轮(见 useChatFlow) */
   /** 对话要用的模型配置(kind = 'chat',或没专配时借来的改写那条)。
    *  没配就走不了,但历史照常能看 */
   chatConfig?: ApiConfig
@@ -119,12 +120,6 @@ const emit = defineEmits<{
   /* 置顶 / 取消置顶。落在角色自己身上(Character.pinned),由主界面写盘 ——
      左栏与角色页两处都从这里出去,两个入口不该各写一套 */
   (e: 'pin', charId: string): void
-  /* 用户把那段记忆改成了别的。只换正文,覆盖进度(upToAt/covered)不动 ——
-     那些消息本来就已经进去过了,改了正文不等于要重压一遍 */
-  (e: 'editSummary', charId: string, text: string): void
-  /* 忘掉这段记忆。**消息一条都不动** —— "角色不再记得"与"这事发生过"
-     是两回事(见 App 的 forgetChatSummary) */
-  (e: 'forgetSummary', charId: string): void
   (e: 'clear', charId: string): void
   // 往前再读一档。只影响显示,库里一条都不会少
   (e: 'loadEarlier', charId: string): void
@@ -473,108 +468,19 @@ const mood = computed(() => {
   return last && last.role === 'assistant' ? last.mood || '' : ''
 })
 
-/* ===== 长期记忆 =====
-   记忆以前是消息流最上面那一块,折起来的一块虚线框。那个位置有个死结:
-   它代表"比这些消息更早的那些",顺序上确实该在最前面 —— 而一进来视口是
-   贴在**底部**的,聊得越久它离得越远。想改一处措辞要先往上翻几百条。
-
-   所以它改成两件事:
-   - 一枚常驻在头部的入口(记忆非空时才出现),写着它多久没动过;
-   - 一张悬浮卡片,点开就看、就能改 —— 位置固定,与对话多长无关。
-
-   记忆是**有损**的,用户得能亲眼看到损掉了什么才谈得上信它;
-   还得改得动 —— 否则唯一的办法是清空整段对话,而那把历史也一起扔了。 */
-const memoryOpen = ref(false)
-const memoryCard = ref<HTMLElement | null>(null)
-const memoryChip = ref<HTMLElement | null>(null)
-
-/** 相对时间。只到"天"这一档就够 —— 记忆本来就是隔一阵才更新一次的 */
-function ago(ts: number): string {
-  const m = Math.round((Date.now() - ts) / 60000)
-  if (m < 1) return 'just now'
-  if (m < 60) return `${m}m ago`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.round(h / 24)}d ago`
-}
-/* 有东西可看的记忆。看的是**正文非空**,不是记录在不在 ——
-   忘掉之后库里会留一条正文为空的记录(那个"从哪之后不再记得"的游标
-   总得有地方待),那种记录不该在界面上显出一枚空的入口。
-   直接把记录本身交出去,模板里 v-if="memory" 一过就能接着取正文 */
-const memory = computed(() => (props.summary?.text ? props.summary : undefined))
-const memoryWhen = computed(() => (memory.value ? ago(memory.value.updatedAt) : ''))
-
-/* 编辑态是"这张卡片临时在做什么",归组件自己管;写回库里的动作交给主界面 */
-const memoryEditing = ref(false)
-const memoryDraft = ref('')
-
-/* 上限就用消息那一档:服务端对记忆收的正是 CHAT_MAX_CHARS,
-   这里跟着同一个数,用户改到多少会被下游截断是可以预期的 */
-const memoryTooLong = computed(() => memoryDraft.value.trim().length > CHAT_MAX_CHARS)
-
-/** 开卡片。editing = 直接进编辑态(⋮ 菜单里那条"Edit memory"走它) */
-async function openMemory(editing = false) {
-  /* 菜单与卡片都从头部那一块展开,同时开着会叠在一起。
-     开卡片就先把菜单收掉 —— 菜单那条 Edit memory 也是从这里进来的 */
-  closeMenu()
-  memoryDraft.value = editing ? props.summary?.text || '' : ''
-  memoryEditing.value = editing
-  memoryOpen.value = true
-  /* 焦点收进卡片:Tab 从这里开始走,读屏也会念出它是什么。
-     不这么做的话焦点还在背后那枚入口上,键盘用户 Tab 一路穿到消息流里 */
-  await nextTick()
-  memoryCard.value?.focus()
-}
-function closeMemory() {
-  memoryOpen.value = false
-  cancelEditMemory()
-}
-/** 头部那枚药丸:开着就收,关着就开。模板里直接写这个,不写三元表达式 */
-function toggleMemoryCard() {
-  if (memoryOpen.value) closeMemory()
-  else void openMemory()
-}
-function startEditMemory() {
-  memoryDraft.value = props.summary?.text || ''
-  memoryEditing.value = true
-}
-function cancelEditMemory() {
-  memoryEditing.value = false
-  memoryDraft.value = ''
-}
-function saveMemory() {
-  const t = memoryDraft.value.trim()
-  /* 存空的没有意义:那等于"忘掉这段",而记忆与对话是绑在一起的 ——
-     清空记忆该走"清空对话",不该在这里留下一个空壳 */
-  if (!t || memoryTooLong.value) return
-  emit('editSummary', props.active, t)
-  /* 存完退回查看态而不是关掉卡片:让用户看见自己刚写的那版**已经生效**
-     (主界面写回后 props 会跟着更新),比"啪一下收起来"可信 */
-  memoryEditing.value = false
-  memoryDraft.value = ''
-}
-/* 卡片里的 Tab 也要圈住 —— 与角色浮层、向导共用一份实现(见 lib/ui) */
-function onMemoryKey(e: KeyboardEvent) {
-  if (e.key === 'Tab') trapTab(memoryCard.value, e)
-}
-/* 换角色时把卡片收掉:那块记忆已经属于另一个人了,留着草稿会让人
-   以为改的是当前这个。
-   正念着的那句也一起停 —— 换了人就换了一段对话,上一个人的声音不该还在响 */
-watch(
-  () => props.active,
-  () => {
-    closeMemory()
-    stopSpeaking()
-  }
-)
+/* 长期记忆那一块(药丸入口 + 悬浮卡片 + 编辑/忘掉)**整段迁走了**(2026-10-17):
+   查看、编辑、忘掉收进记忆中心的 Briefing 区块 —— 记忆中心管"它记得你什么",
+   一处管理一处口径,对话页不再留第二个入口。这里只剩一条老规矩:
+   换了人就换了一段对话,正念着的那句得闭嘴 */
+watch(() => props.active, () => stopSpeaking())
 
 /* ===== 进 / 出沉浸 ==================================================
    一个动作配一次焦点搬运(与"打开浮层把焦点收进去、关掉再还回去"同一条规矩):
    - 进来把焦点交给输入框 —— 你切到沉浸就是为了说话,不该再点一下;
    - 出去还给那枚按钮 —— 焦点掉在文档开头是这家仓库一直在修的那类问题。
 
-   顺带:进入时**不收菜单也不收记忆卡片**。它们是浮层,压在沉浸态之上;
-   用户点开的那张卡片不该因为换了个骨架就自己合上。 */
+   顺带:进入时**不收菜单**。它是浮层,压在沉浸态之上;
+   用户点开的那张菜单不该因为换了个骨架就自己合上。 */
 const immBtnEl = ref<HTMLButtonElement | null>(null)
 watch(
   () => props.immersive,
@@ -652,7 +558,22 @@ watch(
 )
 
 /* ===== 输入 ========================================================= */
-const text = ref('')
+/* 草稿本体存在 lib/chatDraft 的模块级 Map 里(按角色一格),这里这份只是
+   当前角色那一格的现场。首挂即取回,防的是 ChatPage 被 async 卸载重建后
+   那半句凭空消失 */
+const text = ref(getDraft(props.active))
+
+/* 换角色:先把走的人那半句存回它自己的格子,再铺来的人那份。
+   不这么做的话草稿跟着输入框跑 —— 给 A 打了一半,切到 B 还看得见,
+   发出去就成了"对着 B 说 A 的话" */
+watch(
+  () => props.active,
+  (now, before) => {
+    if (before) saveDraft(before, text.value)
+    text.value = now ? getDraft(now) : ''
+    nextTick(grow)
+  }
+)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 /** 输入框最高长到六行,再多内部滚 —— 与角色向导的起稿块同一套 */
 /* 长高那件事由 v-grow 指令负责(见 lib/grow.ts)。这里只在清空之后
@@ -757,6 +678,9 @@ function send() {
   if ((!t && !pic) || !id || streaming.value || !chatReady.value || tooLong.value) return
   const blob = pic?.blob
   text.value = ''
+  /* 输入框与仓库一起清 —— 只清现场的话,切走再切回,那句刚发出去的话
+     会从旧草稿里复活一遍(在 useChatFlow 把它写进消息之前,还可能被当成草稿发第二次) */
+  clearDraft(id)
   clearAttach()
   nextTick(grow)
   /* 自己开口了就跟下去。不这么做的话,往上翻着忽然发一句会留在原地,
@@ -862,15 +786,6 @@ function onPickerKey(e: KeyboardEvent) {
 }
 
 function onDocPointerDown(e: PointerEvent) {
-  /* 记忆卡片与菜单都是"点外面就收起"的浮层。两件事分开判:
-     卡片里可能正写着草稿,不该因为顺手点掉了菜单把它一起带走 */
-  if (
-    memoryOpen.value &&
-    !isInside(e.target, memoryCard.value) &&
-    !isInside(e.target, memoryChip.value)
-  ) {
-    closeMemory()
-  }
   /* emoji 面板在输入栏那一头,与菜单互不相干:各自判各自的 */
   if (emojiOpen.value && !isInside(e.target, emojiWrap.value)) closeEmoji()
   if (!menuOpen.value) return
@@ -878,14 +793,13 @@ function onDocPointerDown(e: PointerEvent) {
   closeMenu()
 }
 
-/** Esc 是逐层退:先关角色浮层(并把焦点还回去),再关记忆卡片,最后关菜单 ——
+/** Esc 是逐层退:先关角色浮层(并把焦点还回去),再关菜单 ——
  *  与角色页的查看器同一套规矩 */
 function onKey(e: KeyboardEvent) {
   layerOnEscape(e.key, [
     // 大图压在最上面:它在时先收它,别让一次 Esc 把下面的菜单也带走
     { open: !!zoom.value, close: () => (zoom.value = null) },
     { open: pickerOpen.value, close: () => void closePicker() },
-    { open: memoryOpen.value, close: closeMemory },
     { open: menuOpen.value, close: closeMenu },
     /* emoji 面板是这一页**最轻**的一层浮层:它压在最下面(输入栏),
        所以排在菜单后面 —— 上层的东西先收 */
@@ -926,31 +840,12 @@ function openChatModel() {
 
 function clearChat() {
   closeMenu()
-  /* 卡片一起收:这段对话(连同记忆)马上就没了,留着一张写着旧记忆的卡片
-     会让人以为它还在。不收还有一处更隐蔽的后果 —— memoryOpen 仍是 true,
-     而这个角色将来重新攒出记忆时,卡片会自己弹开 */
-  closeMemory()
-  if (props.active) emit('clear', props.active)
-}
-
-/* ⋮ 菜单里那条 "Edit memory":打开卡片并直接进编辑态。
-   主入口是头部那枚常驻的 Memory 药丸(一眼看得见),菜单这条是给
-   "手已经在菜单里了"的人留的近路 —— 两条路通向同一张卡片 */
-function editMemoryFromMenu() {
-  closeMenu()
-  void openMemory(true)
-}
-
-/* 忘掉这段记忆。**一条消息都不删** —— 它只是"角色不再记得",
-   而这段对话确实发生过,想回看随时能往上翻。
-   真正的难处在主界面:不能只把正文清空,还得把游标推到最新,
-   否则下一轮压缩会把刚忘掉的那段重新压回来(见 App 的 forgetChatSummary) */
-function forgetMemory() {
-  closeMenu()
-  /* 卡片一起收掉:忘完之后头部那枚入口自己也会消失(记忆正文空了),
-     留着一张写着旧内容的卡片会让人以为没忘成 */
-  closeMemory()
-  if (props.active) emit('forgetSummary', props.active)
+  if (props.active) {
+    /* 整场对话都不要了,那半句没说出口的也一起走 ——
+       留着它,切出去再切回来会凭空冒出一句"没头没尾的话" */
+    clearDraft(props.active)
+    emit('clear', props.active)
+  }
 }
 
 onMounted(() => {
@@ -964,6 +859,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
   /* 离开这一页就把嘴闭上:语音不属于"后台也该继续"的那类东西 */
   stopSpeaking()
+  /* 这一页要散了:先把还留在输入框里的那半句存回它自己的格子,
+     别跟着组件一起被回收(async 卸载重建后它该还在) */
+  if (props.active) saveDraft(props.active, text.value)
   /* 附图的 objectURL 是这一层开的,就由这一层收回 —— 不收回的话
      它们会一直扣着那份 Blob,直到整页刷新 */
   clearAttach()
@@ -972,7 +870,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="chat" :class="{ 'is-immersive': immersive }">
+  <div class="chat" :class="{ 'is-immersive': immersive }" data-page-motion="fade">
     <!-- 背景层:它所在的地方。**固定定位、铺满视口** —— 它不该被 .shell 的
          栏宽与内边距裁住,沉浸要的正是"整屏都是它那儿"。
          正脸的字节本来就为头像取过一次(coverSrc 按 Blob 缓存),这里不新增请求、
@@ -1032,7 +930,7 @@ onBeforeUnmount(() => {
             <span class="head-text">
               <span class="head-top">
                 <span class="head-name">{{ current.name }}</span>
-                <span v-if="mood" :key="mood" class="mood">{{ mood }}</span>
+                <MoodPill v-if="mood" :key="mood" :mood="mood" />
               </span>
             </span>
           </button>
@@ -1044,7 +942,7 @@ onBeforeUnmount(() => {
             <span class="head-text">
               <span class="head-top">
                 <span class="head-name">{{ current.name }}</span>
-                <span v-if="mood" :key="mood" class="mood">{{ mood }}</span>
+                <MoodPill v-if="mood" :key="mood" :mood="mood" />
               </span>
               <!-- 沉浸态的第二行是**场景 · 时间**,不是那串长相清单。
                    场景取自它自己最后一张照片意图里写的描述(reply.photo)——
@@ -1056,37 +954,19 @@ onBeforeUnmount(() => {
             </span>
           </span>
 
-          <!-- 头部右侧:记忆入口 + ⋮ 菜单。
-               两者一起靠右收在 head-acts 里,窄屏把名字挤省略号时才不会错位。
-               **两枚常驻药丸都收进了 ⋮ 菜单**:
-               - `Open in Characters`(2026-10-06)——"离开这一段对话",
+          <!-- 头部右侧:⋮ 菜单 + 沉浸开关。
+               一起靠右收在 head-acts 里,窄屏把名字挤省略号时才不会错位。
+               **两枚常驻药丸都收进了 ⋮ 菜单**(2026-10-06):
+               - `Open in Characters`——"离开这一段对话",
                  点击频次远低于"调这一段对话"的那几件;
-               - **模型的入口**(同日更晚)——它曾经是这一排最宽的一枚
+               - **模型的入口**——它曾经是这一排最宽的一枚
                  (名字长的中转别名能吃掉 18ch),也正是窄屏上先被挤掉的那枚;
                  更要紧的是**沉浸态**:那一排药丸在沉浸态一律不显示
                  (见 .chat.is-immersive .head-chip),想换模型得先退出沉浸 ——
                  收进菜单之后,那条路上它才够得着。
-               于是头部只剩两枚常驻入口,一宽一窄都不会先坏掉 -->
+               记忆的常驻入口(那枚 Memory 药丸)**也删掉了**(2026-10-17):
+               查看/编辑/忘掉整体迁到记忆中心的 Briefing 区块,这里不留第二个入口 -->
           <div class="head-acts">
-            <!-- 记忆的常驻入口。它在头部而不再在消息流顶上 ——
-                 那是"它为什么还记得那件事"的解释,却要往上翻几百条才够得着。
-                 只在真有记忆时出现:空着的一枚药丸点开是一片空。
-                 药丸里**只留图标与 Memory**:"多久没动过"那句在卡片头里已经写过一遍,
-                 同一个数不再在头部重复第二次(悬停短语里仍带着) -->
-            <button
-              v-if="memory"
-              ref="memoryChip"
-              class="head-chip mem-chip"
-              :class="{ on: memoryOpen }"
-              :title="`Long-term memory — updated ${memoryWhen}`"
-              aria-haspopup="dialog"
-              :aria-expanded="memoryOpen"
-              @click="toggleMemoryCard"
-            >
-              <PhBrain aria-hidden="true" />
-              <span class="chip-label">Memory</span>
-            </button>
-
             <div ref="menuWrap" class="chat-menu-wrap">
               <button
                 class="icob"
@@ -1118,17 +998,6 @@ onBeforeUnmount(() => {
                   <PhUser aria-hidden="true" />
                   Open in Characters
                 </button>
-                <!-- 没有记忆就没东西可改也没东西可忘 ——
-                     点了打开的卡片是空的,不如不给。
-                     忘记忆排在清空对话前面,三档是"忘一点 / 忘干净"的递进 -->
-                <button v-if="memory" @click="editMemoryFromMenu">
-                  <PhPencilSimple aria-hidden="true" />
-                  Edit memory
-                </button>
-                <button v-if="memory" @click="forgetMemory">
-                  <PhEraser aria-hidden="true" />
-                  Forget memory
-                </button>
                 <!-- 这一场戏的背景图。**只在沉浸态给** —— 它服务的就是那一页 -->
                 <button v-if="immersive" :disabled="backdropBusy" @click="askBackdrop">
                   <PhImage aria-hidden="true" />
@@ -1153,72 +1022,6 @@ onBeforeUnmount(() => {
               <PhArrowsInSimple v-if="immersive" aria-hidden="true" />
               <PhArrowsOutSimple v-else aria-hidden="true" />
             </button>
-          </div>
-
-          <!-- 记忆卡片。**悬浮在头部下方**,位置固定,与对话多长无关 ——
-               它取代的正是"消息流最上面那一块":内容一样,只是在也够得着 -->
-          <div
-            v-if="memoryOpen && memory"
-            ref="memoryCard"
-            class="mem-card"
-            role="dialog"
-            aria-label="Long-term memory"
-            tabindex="-1"
-            @keydown="onMemoryKey"
-          >
-            <div class="mem-card-head">
-              <PhBrain aria-hidden="true" />
-              <span class="mem-card-title">Memory</span>
-              <span class="mem-card-when">updated {{ memoryWhen }}</span>
-              <button class="mem-x" aria-label="Close memory" @click="closeMemory">
-                <PhX aria-hidden="true" />
-              </button>
-            </div>
-
-            <!-- 改这里的字,不是改历史 —— 那段对话已经压成这几十个字了,
-                 改它等于给模型换一份"我记得的版本"。改得动,这功能才谈得上可信 -->
-            <template v-if="memoryEditing">
-              <textarea
-                v-model="memoryDraft"
-                class="mem-input"
-                rows="5"
-                aria-label="Edit memory"
-              ></textarea>
-              <p v-if="memoryTooLong" class="mem-warn" role="alert">
-                Over {{ CHAT_MAX_CHARS }} characters. Trim it before saving.
-              </p>
-              <div class="mem-actions">
-                <button
-                  class="save-btn"
-                  :disabled="!memoryDraft.trim() || memoryTooLong"
-                  @click="saveMemory"
-                >
-                  Save
-                </button>
-                <button class="quiet-btn" @click="cancelEditMemory">Cancel</button>
-              </div>
-            </template>
-
-            <template v-else>
-              <p class="mem-text">{{ memory.text }}</p>
-              <p class="mem-note">
-                Written by the model from the older part of this conversation — the messages above
-                the last few. Edit it if it got something wrong; forget it to make
-                {{ current.name }} start over from here.
-              </p>
-              <!-- 改是主操作,忘是次操作 —— 所以忘了的那枚悬停才染成危险色,
-                   平时与"改一改"长得一样安静 -->
-              <div class="mem-actions">
-                <button class="quiet-btn" @click="startEditMemory">
-                  <PhPencilSimple aria-hidden="true" />
-                  Edit memory
-                </button>
-                <button class="quiet-btn danger" @click="forgetMemory">
-                  <PhEraser aria-hidden="true" />
-                  Forget memory
-                </button>
-              </div>
-            </template>
           </div>
         </header>
 
@@ -1260,10 +1063,10 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else class="chat-inner">
-            <!-- 记忆**不在这儿**了。它曾经是这上面的一块虚线框 ——
-                 摆在这儿是讲顺序(它代表比这些消息更早的那些),代价是
-                 一进来视口贴着底,聊得越久离它越远,想改一句要往上翻几百条。
-                 现在它是头部那枚 Memory 药丸点开的悬浮卡片(见 chat-head 里那张 mem-card) -->
+            <!-- 记忆**不在这儿**了。它曾经是这上面的一块虚线框,后来是
+                 头部药丸点开的一张悬浮卡片 —— 两处都撤了(2026-10-17):
+                 查看/编辑/忘掉整体迁到记忆中心的 Briefing 区块,
+                 这一页只管说话,不再兼管"它记得什么"。 -->
             <!-- 更早的还在库里,只是没读。这是一枚"往前翻"的入口,
                  不是"加载中" —— 所以措辞里不带任何等待或危险的意味 -->
             <div v-if="hasMore" class="earlier">
@@ -1794,11 +1597,6 @@ onBeforeUnmount(() => {
 .emoji-cell:hover {
   background: var(--accent-soft);
 }
-@media (max-width: 560px) {
-  .mem-chip .chip-label {
-    display: none;
-  }
-}
 /* 宽屏用不可点的 head-solo,窄屏才换成可点的 head-pick ——
    宽屏下左栏就在旁边,再给一个"换角色"的入口是多余的 */
 .head-solo {
@@ -1862,32 +1660,7 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 这一轮的情绪。做成一枚小药丸而不是一行字 ——
-   实心边界说明"这不是它说的话",它是关于这段话的元数据。
-   刻意不上色:与站内克制的灰度一致,情绪由词本身表达 */
-.mood {
-  flex: none;
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: var(--bg-elev);
-  color: var(--text-3);
-  font-size: var(--fs-micro);
-  font-weight: 600;
-  /* key 绑在词上:词一变就换一个节点,这段入场动画于是重播一次 ——
-     情绪变了该被看见,而不是悄无声息地换个字 */
-  animation: mood-in 280ms var(--ease) both;
-}
-@keyframes mood-in {
-  from {
-    opacity: 0;
-    transform: translateY(-3px) scale(0.92);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .mood {
-    animation: none;
-  }
-}
+/* 此刻情绪的胶囊已迁进 MoodPill.vue（判据在 lib/moodDisplay），这里不再自带 .mood 样式 */
 .chat-menu-wrap {
   position: relative;
   flex: none;
@@ -2003,7 +1776,7 @@ onBeforeUnmount(() => {
   /* **内容用 --text-3,不用 --text-4**。--text-4 是"禁用态"那一档:
      浅色主题里它在白底上只有 1.65:1、深色 2.01:1 —— 那意味着读不出来。
      从前背景几乎是一片纯色时它还勉强看得见,沉浸页把剧照铺上来之后
-     就彻底不行了(这条规矩同一份文件里早写过一次,见 .mem-note)。
+     就彻底不行了(小字要读得出来这条规矩,文件里处处都是同一口径)。
      真正的禁用态(菜单项、发送键)仍留在 --text-4 */
   color: var(--text-3);
 }
@@ -2132,7 +1905,7 @@ onBeforeUnmount(() => {
   color: var(--text-2);
 }
 /* 删除只在悬停时染成危险色:静止时它与"念一下"同等分量,
-   染红了就会把一次轻声的清理变成整页最抢眼的东西(与 Forget memory 同一分寸) */
+   染红了就会把一次轻声的清理变成整页最抢眼的东西 */
 .del-btn:hover {
   background: var(--accent-soft);
   color: var(--danger);
@@ -2262,159 +2035,6 @@ onBeforeUnmount(() => {
   margin: 3px 0 0;
   font-size: var(--fs-micro);
   color: var(--text-3);
-}
-/* ===== 记忆卡片 =====
-   它是"关于这段对话"的一段派生文本,不是一条消息 —— 所以它不排在消息流里,
-   而是从头部挂下来的一张卡片。位置固定,与对话多长无关 */
-.mem-card {
-  position: absolute;
-  /* 挂在头部下沿。头部自己量高度,卡片跟着走 ——
-     写死像素的话,窄屏名字换行时它会盖住第一条消息 */
-  top: calc(100% + 6px);
-  right: var(--sp-4);
-  z-index: 30;
-  width: min(420px, calc(100% - var(--sp-4) * 2));
-  max-height: min(60vh, 460px);
-  overflow-y: auto;
-  padding: var(--sp-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  background: var(--surface);
-  box-shadow: var(--sh-md);
-  /* 入场很轻(6px + 淡入):它挂在一个点下去的位置上,动得太远会像弹窗;
-     而完全不动又会让"卡片出现了"这件事被漏掉 */
-  animation: mem-card-in 160ms var(--ease) both;
-}
-@keyframes mem-card-in {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .mem-card {
-    animation: none;
-  }
-}
-.mem-card:focus {
-  outline: none;
-}
-.mem-card-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: var(--sp-2);
-  color: var(--text-3);
-  font-size: var(--fs-micro);
-}
-.mem-card-head > svg {
-  font-size: 14px;
-}
-.mem-card-title {
-  font-weight: 600;
-  letter-spacing: var(--ls-eyebrow);
-  text-transform: uppercase;
-}
-.mem-card-when {
-  color: var(--text-3);
-  text-transform: none;
-  letter-spacing: 0;
-}
-.mem-x {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  margin-left: auto;
-  margin-right: -6px;
-  border: 0;
-  border-radius: 999px;
-  background: none;
-  color: var(--text-3);
-  cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.mem-x:hover {
-  background: var(--accent-soft);
-  color: var(--text-2);
-}
-.mem-text {
-  margin: 0;
-  font-size: var(--fs-sm);
-  line-height: 1.6;
-  color: var(--text-2);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-/* 这一句回答的是"这是什么、改了会怎样"。记忆是有损的,不写清来处,
-   用户看到一段陌生的小传只会更困惑。
-   用 --text-2 而不是更淡的那两档:它是**要读的一句话**,不是装饰 ——
-   --text-4 在白底上只有约 1.9:1,那是禁用档 */
-.mem-note {
-  margin: var(--sp-2) 0 0;
-  font-size: var(--fs-micro);
-  line-height: 1.55;
-  color: var(--text-2);
-}
-/* 编辑态:卡片里就地换成一只可写的框,不另起浮层 */
-.mem-input {
-  display: block;
-  width: 100%;
-  padding: 9px 11px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: var(--bg-elev);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--fs-sm);
-  line-height: 1.6;
-  /* 只放纵向:横向拉伸会顶破这张卡片 */
-  resize: vertical;
-  transition: box-shadow var(--dur) var(--ease);
-}
-.mem-input:focus {
-  outline: none;
-  box-shadow: 0 0 0 1px var(--line-strong);
-}
-/* 超长只在按下保存的那一刻拦。就贴在按钮上方 ——
-   眼睛从框里出来,先撞到的是它 */
-.mem-warn {
-  margin: 6px 0 0;
-  font-size: var(--fs-xs);
-  color: var(--danger);
-}
-/* 动作行。左右留 2px 是补出来的:里头那两枚键各自有 10px 内边距,
-   2 + 10 正好让按钮上的字与上面的正文对齐在同一条竖线上 */
-.mem-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-1);
-  margin-top: var(--sp-2);
-  padding: 0 2px;
-}
-/* 保存是这段编辑里唯一的主操作,给它实心。高度与 quiet-btn 齐平,
-   两枚并排时下沿在同一条线上 */
-.save-btn {
-  min-height: 40px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: var(--cta);
-  color: var(--cta-text);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--dur) var(--ease);
-}
-.save-btn:hover:not(:disabled) {
-  background: var(--cta-hover);
-}
-/* 与发送键同一条规矩:不可用时用同族淡底,不用半透明黑(叠色会发脏) */
-.save-btn:disabled {
-  background: var(--accent-soft);
-  color: var(--text-4);
-  cursor: default;
 }
 /* 往前翻的入口。同样做成一条细字:它是一次翻页,不是一个动作按钮 */
 .earlier {

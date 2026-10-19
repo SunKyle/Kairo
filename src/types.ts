@@ -240,7 +240,7 @@ export interface CharacterFields {
    每一张出图的提示词;把性格混进去,等于让"它是什么人"去污染"它长什么样"
    的像素级约束。
 
-   五个字段而不是一整段自由文本:traits 与 voice 必须分开 ——
+   拆成几个字段而不是一整段自由文本:traits 与 voice 必须分开 ——
    "是个什么样的人"和"话怎么说出来"是两件事,写在同一段里会被模型平均掉,
    结果是性格写了、说话方式被稀释成通用口吻。而"像人"主要靠后者 */
 export interface CharacterPersona {
@@ -259,6 +259,17 @@ export interface CharacterPersona {
   address: string
   // 禁区:这个角色绝不会做的事。如 "never breaks character, never mentions AI"
   boundaries: string
+  /* —— 驱动量那三栏:此刻正在发生什么、推着他开口的是什么、你们之间沉淀了什么。
+     traits/voice 那一组回答"他是什么样"(形容词,模型只能模仿),这三栏回答
+     "此刻是什么状态、他要什么、你们有过什么" —— 状态与动因会**生成**话,形容词不会。
+     三栏都允许留空:处境(Situation)可由设定推,想要什么(Want)与有过什么(History)
+     是用户的历史与意图,不编。见 server/charSpec.js 那三段说明。 */
+  // 此刻处境:他一般在做什么、正经历什么 —— 给"我现在正在干嘛"那句规则一个落点
+  present: string
+  // 驱动:是什么推着他开口、他此刻想从用户这里得到什么(一个想要、一个担忧、一个图谋)
+  drive: string
+  // 默契与沉淀:你们之间已经有的具体东西 —— 一个惯用的梗、一句欠着的、一段旧账、一个约定
+  shared: string
   /* 说话样本:两三组"用户说 X → 它会怎么回 Y",一行写完(形状见 charSpec 的 desc)。
      它与 voice 是两件事:那一栏定义"怎么说话",这一栏是**照着说**的例子 ——
      给扮演它的模型一组可模仿的样本,比再写一栏形容词有效得多 */
@@ -284,7 +295,7 @@ export type FieldOrigin = 'user' | 'ai' | 'pending'
 
 /* 这张表的键是长相与人格两套字段的并集。两套的键不重合(有单测兜住),
    所以合成一张表不会打架 —— 而界面上那枚来源徽标本来就该把两套一起算:
-   人格那六栏同样是起稿填的,只标长相等于把最容易被编的那一半漏掉 */
+   人格那一组同样是起稿填的,只标长相等于把最容易被编的那一半漏掉 */
 export type SpecFieldKey = keyof CharacterFields | keyof CharacterPersona
 
 /** 键 → 来源。**只记有值的那些项** —— 空着的一栏没有来源可言

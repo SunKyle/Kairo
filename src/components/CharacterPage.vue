@@ -850,7 +850,7 @@ function originBadge(key: SpecFieldKey): string {
                   <label v-for="f in PERSONA_FIELDS" :key="f.key" class="wz-field">
                     <span class="wz-label">
                       {{ f.label }}
-                      <!-- 起稿也会填这六栏,所以这里的徽标规矩与前两组一致 -->
+                      <!-- 起稿也会填人格这一组,所以这里的徽标规矩与前两组一致 -->
                       <template v-if="originBadge(f.key)">
                         <span class="src-badge" aria-hidden="true">{{ originBadge(f.key) }}</span>
                         <span class="sr-only">this line came from the model</span>

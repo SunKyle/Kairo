@@ -64,18 +64,18 @@ ${charSpecOriginRule('character')}
 - Facial hair must always be stated explicitly, including when the answer is none. Leaving it blank makes the model guess differently in every image.
 - Write "Face marks:" or "Marks:" with nothing after the colon — and no tag — when the idea gives no reason for them. Do not invent scars, tattoos or implants.
 - Leave Language empty unless the idea actually says what language this character speaks. Never infer a language from a name, a nationality or how someone looks.
-- Every appearance value (Style through Marks) is a short comma-separated phrase in English, under 12 words — except Style, which is a single word from its own list. The last six lines are not appearance — see below.
+- Every appearance value (Style through Marks) is a short comma-separated phrase in English, under 12 words — except Style, which is a single word from its own list. Everything from Language on is not appearance — see below.
 - Describe only the character itself. Never mention background, lighting, camera, lens or composition — the user supplies the scene separately.
-- The last six lines describe how this character behaves in conversation, not how they look. Keep the two halves apart: never put behaviour into an appearance line, and never put appearance into a behaviour line.
-- Those six are read by the model that will play this character, so write them as instructions it can follow. Language and Voice carry the most weight: get the language right, and make the way they talk concrete — a word they use for themselves, how long their sentences run — rather than a pile of adjectives.
+- The persona lines (everything from Language on) describe how this character behaves in conversation, not how they look. Keep the two halves apart: never put behaviour into an appearance line, and never put appearance into a behaviour line.
+- Those persona lines are read by the model that will play this character, so write them as instructions it can follow. Language and Voice carry the most weight: get the language right, and make the way they talk concrete — a word they use for themselves, how long their sentences run — rather than a pile of adjectives. The Situation, Want and History lines are the exception: they are a standing state, not a description, and two of them should stay empty unless the idea plainly gives them.
 - The last of them is not a description but two or three literal example exchanges, written on that one line in the format its outline gives. They are what the model imitates, so make them sound like the voice above — the manner matters far more than the topics.
-- Unlike the appearance lines, the last six may quote words in the character's own language.
+- Unlike the appearance lines, the persona lines may quote words in the character's own language.
 - No preamble, no explanation, no markdown, no quotes.`,
   /* 识图:输入是一张参考图,输出与 character 同一份行清单 ——
      解析侧(前端 parseCharacterDraft)因此完全不用改。
      与 character 的关键差别是"只写看得见的":文字起稿允许把没提到的东西编具体,
      而看图时凭空给一张脸上添疤、加义体,等于把用户上传的人改成另一个人。
-     人格那几行(最后六行)是唯一的例外:图片里读不出一个人怎么说话,
+     人格那几行(Language 往下)是唯一的例外:图片里读不出一个人怎么说话,
      只能从穿着、站姿、神情去推 —— 所以那一段在提示里明确标成"推断",
      并要求写得平实,而不是替这个人编一段身世。
 
@@ -106,11 +106,11 @@ ${charSpecOriginRule('vision')}
 - The name must read as a name, not a description. Invent one that fits the person when the image carries no name.
 - Every appearance value (Style through Marks) is a short comma-separated phrase in English, under 12 words — except Style, which is a single word from its own list.
 - Describe only the character itself. Never mention the background, the lighting, the camera, the lens or the composition of the reference image.
-- The last six lines describe how this person behaves in conversation, and a still image cannot show that. Anything you write there is a guess read off how they look, dress and stand — so tag every one of those six [pending]. Keep the guess to manner alone: how they would talk, how they would address the user, what they would never do. Never invent a past, a relationship, a job or an event — that is a life story, and the picture does not contain one.
+- The persona lines (everything from Language on) describe how this person behaves in conversation, and a still image cannot show that. Anything you write there is a guess read off how they look, dress and stand — so tag any persona line you fill in [pending]. Keep the guess to manner alone: how they would talk, how they would address the user, what they would never do. Never invent a past, a relationship, a job or an event — that is a life story, and the picture does not contain one. Want and History especially must stay empty here — a photograph shows neither what someone wants nor what already sits between them; read Situation only when the setting actually visible in the image carries it.
 - Language is the exception even there: a still image rarely carries it. Write it only when the image itself shows it — a sign, a badge, a uniform or lettering — and leave it empty rather than guess from how someone looks.
 - Never let behaviour leak into an appearance line, or appearance into a behaviour line.
 - The last of them is not a description but two or three literal example exchanges, written on that one line in the format its outline gives — invented to match the voice you just inferred, and tagged [pending] like the rest of that group.
-- Unlike the appearance lines, the last six may quote words in the character's own language.
+- Unlike the appearance lines, the persona lines may quote words in the character's own language.
 - No preamble, no explanation, no markdown, no quotes.`,
   /* 长期记忆的压缩:把一批滑出窗口的消息并进一段越来越短的简报。
      与上面几档都不同 —— 它产出的不是给人看的文本,而是之后会被塞回

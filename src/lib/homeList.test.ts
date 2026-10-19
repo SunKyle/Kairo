@@ -34,7 +34,17 @@ function blankFields(): CharacterFields {
   }
 }
 function blankPersona(): CharacterPersona {
-  return { language: '', traits: '', voice: '', address: '', boundaries: '', samples: '' }
+  return {
+    language: '',
+    traits: '',
+    voice: '',
+    address: '',
+    boundaries: '',
+    present: '',
+    drive: '',
+    shared: '',
+    samples: ''
+  }
 }
 function char(id: string, createdAt: number, pinned = false): Character {
   return {

@@ -72,6 +72,9 @@ const PERSONA_KEYS_TYPED: Record<keyof CharacterPersona, true> = {
   voice: true,
   address: true,
   boundaries: true,
+  present: true,
+  drive: true,
+  shared: true,
   samples: true
 }
 
@@ -237,7 +240,7 @@ describe('来源标记 · 协议', () => {
     // "不应仅凭图片擅自推断角色的身份、职业、人格或人生经历"
     expect(ENHANCE_PROMPTS.vision).toContain('Never read a trade, a role or a life story')
     // 人格那一段保留推断,但必须逐栏标 pending,并且不许编人生经历
-    expect(ENHANCE_PROMPTS.vision).toContain('tag every one of those six [pending]')
+    expect(ENHANCE_PROMPTS.vision).toContain('tag any persona line you fill in [pending]')
     expect(ENHANCE_PROMPTS.vision).toContain('Never invent a past, a relationship, a job or an event')
   })
 })

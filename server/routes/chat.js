@@ -107,6 +107,17 @@ function chatOneLine(v, max = CHAT_FIELD_CHARS) {
  * 它与记忆同属"你们之间发生过什么、现在什么状态"这一层,所以排在记忆条目之后;
  * 而它排在相处偏好之前 —— 先讲"熟到哪了"(一个既定状态),再讲"希望被怎么对待"(一个意愿)。
  * 它同样过逐行白名单,而"这只改温度、不改你是谁"那句边界留在服务端。
+ *
+ * **驱动量那三栏(persona 里的 present / drive / shared)** 与上面那些"描述"不是一类。
+ * traits / voice 是形容词,模型读它只能模仿一个性格,回出来是"这个性格的 AI";
+ * 而"此刻在干嘛、想要什么、你们之间有过什么"是**会生成这句话**的状态。
+ * 所以 present + drive 摊成一段"你现在正发生什么",排在人格描述**之前** ——
+ * 让当下这句先从处境与想要出发,再去查"我是什么样的人";
+ * shared 摊成"你们之间已经有的东西",排在关系数值**之前** —— 先给它有得可指的过去,
+ * 再给温度档,才不至于把"很熟"演成对谁都暖的通用腔。三栏都可留空:
+ * 没填就那两段整段不出现 —— 一个从没用过这几栏的角色,prompt 里不会多出任何新东西。
+ * (另:traits 那一行的措辞本次按 05 的"只改话术"改了,那是对所有角色都生效的
+ * 一处有意改动,不属于这三栏的开关,见上面 `how` 里那行)
  */
 function chatSystemPrompt(character, memory, time, mood, guidance, memories, relationship) {
   const char = character && typeof character === 'object' ? character : {}
@@ -119,6 +130,17 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
   if (chatOneLine(char.outfit)) who.push(`- Wearing: ${chatOneLine(char.outfit)}`)
   if (chatOneLine(char.marks)) who.push(`- ${chatOneLine(char.marks)}`)
 
+  /* 驱动量那两栏(present / drive)单独成一段,而且**排在人格描述之前**。
+     理由是整个改动的核心:traits / voice 那一组是形容词,模型读它只能"模仿"一个性格,
+     于是回出来是"这个性格的 AI";而此刻正在发生什么、推着他开口的是什么,是**会生成话**的状态。
+     把它摆在描述前面,是让模型先从"我现在在干嘛、我要什么"出发,再去查"我是什么样的人",
+     顺序本身就在提示它哪一份才是当下这句的来处。空的整段丢掉,老角色不受任何影响 */
+  const state = []
+  if (chatOneLine(p.present))
+    state.push(`- Where you are and what you are doing: ${chatOneLine(p.present)}`)
+  if (chatOneLine(p.drive))
+    state.push(`- What you want from them right now: ${chatOneLine(p.drive)}`)
+
   const how = []
   /* 语言排在最前,而且写成一条**指令**而不是一个标签:这一栏的值是
      "English" / "简体中文" 这种短语,直接摆出来模型很可能只当成一条背景资料。
@@ -129,13 +151,23 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
       `- Speak only ${chatOneLine(p.language)}, whatever language the user writes in.`
     )
   }
-  if (chatOneLine(p.traits)) how.push(`- Personality: ${chatOneLine(p.traits)}`)
+  if (chatOneLine(p.traits))
+    how.push(`- What you are made of — be this from the inside, do not act it out: ${chatOneLine(p.traits)}`)
   if (chatOneLine(p.voice)) how.push(`- How you talk: ${chatOneLine(p.voice)}`)
   if (chatOneLine(p.address)) how.push(`- How you address the user: ${chatOneLine(p.address)}`)
   if (chatOneLine(p.boundaries)) how.push(`- You never do this: ${chatOneLine(p.boundaries)}`)
 
   const parts = [CHAT_OPENING]
   if (who.length) parts.push(`Who you are:\n${who.join('\n')}`)
+  /* 这段排在"你是谁"之后、人格描述之前:先给出当下这个状态,再谈他是什么样的人。
+     标题那句"start from this"是整件事的落点 —— 让当下的处境与想要,成为这句话的来处,
+     而不是让模型去复述一遍形容词 */
+  if (state.length)
+    parts.push(
+      `What's going on with you right now — start from this, not from the description below:\n${state.join(
+        '\n'
+      )}`
+    )
   if (how.length) parts.push(`How you behave:\n${how.join('\n')}`)
   /* 说话样本(2026-10-08):它与上面的规则不是一类 —— 规则是"要求",这几句是
      **照着抄口吻的样本**。所以单独成段,而且读法要写成命令式的"跟着语气、
@@ -183,6 +215,15 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
      与记忆同属"你们之间现在是什么状态"这一层(先记得什么、再熟到什么程度),
      而它排在偏好之前:先铺一个既定状态,最后才是"希望被怎么对待"这类意愿。
      同样过一遍逐行白名单:它也是外部输入 */
+  /* 默契与沉淀(shared)压在关系数值之前。关系那段是"熟到哪了"的**刻度**,
+     这里是那刻度背后的**具体东西** —— 一个梗、一句欠着的、一段旧账。
+     先给它有得可指,再给温度档,模型才不至于把"很熟"演成对谁都暖的通用腔。
+     写成"别说破",是要它像真有过去那样**顺手引用**,而不是介绍一遍 */
+  const between = chatOneLine(p.shared)
+  if (between)
+    parts.push(
+      `What's already between you two — allude to it like someone who has history, never explain it:\n${between}`
+    )
   const closeness = relationshipSection(relationship)
   if (closeness) parts.push(closeness)
   /* 相处偏好压在规则之前:它是最后一条软指令,离硬规则最近。

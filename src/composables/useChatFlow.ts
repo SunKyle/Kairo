@@ -17,9 +17,14 @@ import {
   putChatMessage
 } from '../lib/idb'
 import { stopSpeaking } from '../lib/speech'
-import { contextText } from '../lib/chatContext'
+import { contextText, withLayerMarkers } from '../lib/chatContext'
+import { effectiveLayer } from '../lib/messageLayers'
 /* 相处偏好:按角色读出来摊成 system 里那几行"希望被怎么对待"(见 lib/prefs) */
-import { interactionGuidanceFor } from '../lib/prefs'
+import { interactionGuidanceFor, sceneModeFor } from '../lib/prefs'
+/* 心理层次扇出:把带 `[think]`/`[act]` 区域标记的一轮拆成多条带 layer 的消息
+   (见 lib/messageLayers 与 doc/消息表达形态-心理层次设计.md,脊柱 A/B)。
+   hasLayerMarkers 是那道"普通一轮一个字节都不动"的闸。 */
+import { hasLayerMarkers, parseLayers } from '../lib/messageLayers'
 /* 记忆条目:发这一轮时把"它记得的、且这个角色看得到的"摊成几行事实(见 lib/memory)。
    走 selectMemories 而不是直接过滤 —— **隐私边界就在那个函数里**
    (角色专属记忆不跨角色、共享画像要用户授权),这一层不该有第二套判法 */
@@ -244,12 +249,15 @@ async function runChat(id: string) {
   /* 上文现场从内存里取:最近 CHAT_WINDOW 条。
      被截掉的旧消息**不从库里删** —— 它们还在,只是这一轮不带。
 
-     正文过一道 contextText:空正文的消息(典型是"只发了一张图、一个字没打")
-     不能以空串发出去 —— 上游会按内容为空拒掉整轮,而这条消息在历史里
-     就是一条普通消息(见 lib/chatContext 的说明) */
+     正文过两道处理:
+     ① contextText —— 空正文的消息(典型是"只发了一张图、一个字没打")不能以空串
+        发出去,上游会按内容为空拒掉整轮(见 lib/chatContext);
+     ② withLayerMarkers —— 把"想/做"那几条重新裹上 `[think]`/`[act]` 区域标记再发。
+        库里它们已按层次分成一条条,若不回裹,下一轮模型看到的是一串**都说出口的话**,
+        会把心里话当台词接、把旁白当台词接。say 原样通过,普通一轮一个字节都不动。 */
   const context = (chatMessages.value[id] || [])
     .slice(-CHAT_WINDOW)
-    .map((m) => ({ role: m.role, content: contextText(m) }))
+    .map((m) => ({ role: m.role, content: withLayerMarkers(contextText(m), effectiveLayer(m)) }))
   // 最后一句必须是用户说的,否则这一轮本来就不该发
   if (!context.length || context[context.length - 1].role !== 'user') return
 
@@ -384,6 +392,10 @@ async function runChat(id: string) {
          从没评估过时 relationshipLinesFor 回空串,服务端据此整段不出现。
          它只改**亲疏与温度**,不碰角色是谁 —— 那句边界同样写在服务端的提示词里 */
       relationship: relationshipLinesFor(c),
+      /* **这一条对话此刻在不在场景里**(见 lib/prefs 的 sceneModeFor)。发请求这一刻现读——
+         用户刚从选项菜单开了场景模式,下一句就该带上 `[act]`。它只 gate 服务端**产不产出**
+         act,与"界面上显不显示"是另一根杆(见 ChatPage 的 showAct)。未设 = 关(保守) */
+      sceneMode: sceneModeFor(id),
       images,
       lastAt,
       cfg: useCfg,
@@ -457,7 +469,62 @@ async function runChat(id: string) {
      与 stopped 分开记:那个是人按的,这个是模型的额度用完了。
      不记的话前端看到的和"正常说完"一模一样,用户会以为角色话说一半是它自己的风格 */
   else if (finish === 'length') reply.truncated = true
-  /* 情绪挂在这一条上。收在半截上时多半没有(标签本来就在末尾),
+
+  /* ===== 扇出:把带区域标记的一轮拆成多条带 layer 的消息(脊柱 A)=====
+     服务端只认 `[photo:]`/`[mood:]` 两枚值标签,`[think]`/`[act]` 是**普通文字**一路流到
+     这里、还留在 reply.content 上。绝大多数回复根本没有标记 —— hasLayerMarkers 为假就
+     **一个字节都不动**,走原来那条单条落盘的路(窄修先落、别惊动常态)。
+     有标记时才拆:
+     - spine(承接 photo/mood/cursor/出图回调的那一条)= 第一个 say 段,没有 say 就用第 0 段;
+       spine **复用 reply 这个对象与 id**,所以下面挂在 reply 上的一切(药丸、出图的
+       drawChatPhoto 回调、stillMsg 扫描)全都还指得到它,不必改那一整条链;
+     - 其余段各成一条新消息,带自己的 layer,createdAt 用 base+i 排开(避免同毫秒在重载时乱序);
+     - say 段不设 layer(缺省即 say),只有 think/act 才显式打标。 */
+  // 这一轮产出的消息;默认就是 reply 自己那一条(常态)
+  let turn: ChatMessage[] = [reply]
+  if (hasLayerMarkers(reply.content)) {
+    const segs = parseLayers(reply.content)
+    let spineIdx = segs.findIndex((s) => s.layer === 'say')
+    if (spineIdx < 0) spineIdx = 0
+    if (segs.length === 0) {
+      // 通篇是标记、没剩任何实文:当空回复,交给下面 empty 分支摘掉空气泡
+      reply.content = ''
+    } else if (segs.length === 1 && segs[0].layer === 'say') {
+      // 只有一句被包进 [say]:剪掉标记即可,仍是单条,无需扇出
+      reply.content = segs[0].text
+    } else {
+      const base = reply.createdAt
+      reply.content = segs[spineIdx].text
+      reply.layer = segs[spineIdx].layer === 'say' ? undefined : segs[spineIdx].layer
+      reply.createdAt = base + spineIdx
+      const fan: ChatMessage[] = segs.map((seg, i) =>
+        i === spineIdx
+          ? reply
+          : {
+              id: uid(),
+              charId: id,
+              role: 'assistant' as const,
+              content: seg.text,
+              layer: seg.layer === 'say' ? undefined : seg.layer,
+              createdAt: base + i
+            }
+      )
+      // 在原位置把 reply 那一格换成这一轮的多条,保持相对顺序
+      const list = chatMessages.value[id] || []
+      const at = list.findIndex((m) => m.id === reply.id)
+      if (at >= 0) {
+        chatMessages.value = {
+          ...chatMessages.value,
+          [id]: [...list.slice(0, at), ...fan, ...list.slice(at + 1)]
+        }
+        turn = fan
+      }
+      // at < 0 只可能发生在"生成途中这段对话被清空":reply 已不在列表里,
+      // 兄弟消息也就无处可插 —— 与原来对这一边缘的处理一致(照样落 reply)
+    }
+  }
+
+  /* 情绪挂在这一条上(spine)。收在半截上时多半没有(标签本来就在末尾),
      没有就不写 —— 界面上那枚小药丸宁可不出,也不要显示一个错的 */
   if (mood) {
     reply.mood = mood
@@ -468,8 +535,8 @@ async function runChat(id: string) {
        不 await:它不该拖慢紧接着的那次出图,而写不进去也不影响这一轮 */
     void setChatMood(id, mood, Date.now(), seq)
   }
-  /* 它想发一张图:**先挂上场景描述**(界面据此立刻占一个骨架位),
-     再交给 drawChatPhoto 后台画。正文照旧 —— 图失败不该拖住它说的话 */
+  /* 它想发一张图:**挂在 spine 上**(它是那一轮"说出口的话"的注解,不属于内心/旁白)。
+     先挂场景描述让界面占一个骨架位,再交给 drawChatPhoto 后台画。 */
   if (photo && !stopped) {
     reply.photo = photo
     /* 意图一起落在这条消息上:导出这段对话时,对方若想重画这一张,
@@ -481,14 +548,16 @@ async function runChat(id: string) {
     }
     drawChatPhoto(id, reply)
   }
-  if (!reply.content.trim() && !stopped) {
+  // 整轮到底有没有留下可见文字(扇出后要看这一轮的全部消息,不能只看 spine)
+  if (!turn.some((m) => m.content.trim()) && !stopped) {
     /* 一个字都没收到(上游出错,或它真的什么都没说):
-       把这条空壳摘掉,免得消息流里留一个空气泡。
+       把这轮的空壳摘掉,免得消息流里留一个空气泡。
        摘掉之后最后一条又回到用户那句 —— 界面上因此会给出"重试",
        它走的就是 regenerateChat(见那边的注释) */
+    const gone = new Set(turn.map((m) => m.id))
     chatMessages.value = {
       ...chatMessages.value,
-      [id]: (chatMessages.value[id] || []).filter((m) => m.id !== reply.id)
+      [id]: (chatMessages.value[id] || []).filter((m) => !gone.has(m.id))
     }
     // 左栏那行还停在上一次的回复上,说明这一轮没留下东西:让它退回去
     dropChatLast(id)
@@ -498,9 +567,11 @@ async function runChat(id: string) {
        **这一笔会失败**(另一页此刻升级库、配额满),而它从前是裸 await ——
        一失败整轮变成未处理的拒绝:回复只在内存里,连一句交代都没有。
        于是分两条:写进去了才广播(没写进去就广播,对面重读会把这一句当成没有),
-       左栏那行照旧更(它只是本页内存里的一面镜子,与落盘无关) */
+       左栏那行照旧更(它只是本页内存里的一面镜子,与落盘无关)。
+       扇出的多条**逐条落库**、写完一次性广播 —— 兄弟消息与 spine 是一轮的整体,
+       不该只落 spine 而把内心/旁白丢在内存里(重载就没了) */
     try {
-      await putChatMessage({ ...toRaw(reply) })
+      for (const m of turn) await putChatMessage({ ...toRaw(m) })
       // 另一页的左栏与消息流都要跟上(它可能正开着这个角色)
       announce('chat', id)
     } catch (e) {
@@ -508,6 +579,7 @@ async function runChat(id: string) {
       notice.value =
         'This reply is on screen but could not be saved — it will be lost on refresh.'
     }
+    // 左栏摘要用 spine(那一轮"说出口的话"),不是可能落在末尾的内心/旁白
     setChatLast(id, { ...toRaw(reply) })
   }
   if (stopped) notice.value = 'Stopped.'
@@ -759,22 +831,28 @@ async function regenerateChat(id: string) {
   const list = chatMessages.value[id] || []
   const last = list[list.length - 1]
   if (!last) return
-  /* 最后一条是助手消息 ⇒ 说了一半想重来,先把它删掉(用户那句留着)。
-     是用户消息 ⇒ 上一轮压根没答上来(runChat 失败时会把空壳删掉),
-     那就什么都不用删,直接重发。两种情况共用这一个入口,
+  /* 最后一条是助手消息 ⇒ 说了一半想重来,先把**这一轮的助手消息整段**删掉(用户那句留着)。
+     扇出之后一轮可能是一条 say + 若干 think/act 兄弟(都是 assistant、连在一起),
+     重新生成要重来的是"它这一轮的整段表达",不是末尾那单独一条 —— 只删一条会把内心/旁白
+     留下、只重发那句话,于是旧层次和新回复混在一起。是用户消息 ⇒ 上一轮压根没答上来
+     (runChat 失败时会把空壳删掉),那就什么都不用删,直接重发。两种情况共用这一个入口,
      所以"报错之后重试"不需要另写一条链路 */
   if (last.role === 'assistant') {
+    /* cut = 末尾那段连续 assistant 的起点。往回走,直到撞上不是助手消息的那一条为止 */
+    let cut = list.length
+    while (cut > 0 && list[cut - 1].role === 'assistant') cut--
     /* 删掉之后底下得有一条用户消息接着问 —— 没有的话这一轮本来就没得重发
        (runChat 也会直接返回),那就一条都别删。正常对话里走不到这里,
        但导入的包可以以助手消息开头 */
-    if (list.length < 2 || list[list.length - 2].role !== 'user') return
-    /* 这条正要被删掉,它可能还在念 —— 念着一条已经不存在的消息没有道理。
+    if (cut === 0 || list[cut - 1].role !== 'user') return
+    const run = list.slice(cut)
+    /* 这几条正要被删掉,它们可能还在念 —— 念着已经不存在的消息没有道理。
        (不在这里停也不算错:新的回复开始念时会掐掉它,但那中间有几秒) */
     stopSpeaking()
-    await deleteChatMessage(last.id)
-    chatMessages.value = { ...chatMessages.value, [id]: list.slice(0, -1) }
-    /* 左栏那行摘要可能就是这一条,得跟着回退到上一条 */
-    const prev = list[list.length - 2]
+    for (const m of run) await deleteChatMessage(m.id)
+    chatMessages.value = { ...chatMessages.value, [id]: list.slice(0, cut) }
+    /* 左栏那行摘要可能就是这一轮的某一条,得跟着回退到删掉之前的那一条 */
+    const prev = list[cut - 1]
     if (prev) setChatLast(id, prev)
     else dropChatLast(id)
   }

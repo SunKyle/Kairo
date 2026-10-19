@@ -4,6 +4,9 @@ import { titleFromPrompt } from './lib/text'
 /* 关系状态那一域的收口住在 lib/relationship —— 载入时读回来的 relationship
    也走同一份 coerce + 空判,免得"合法形状"与"什么算空"在入口和逻辑层各写一遍 */
 import { coerceRelationship, hasCloseness } from './lib/relationship'
+/* 长期记忆的"留不留"判据:心理层次里**想的那一层永不进简报**,旁白按保守策略处理
+   (见 lib/messageLayers 与 doc/消息表达形态-心理层次设计.md §5"三根杆独立") */
+import { keepInSummary } from './lib/messageLayers'
 /* 角色设定那一份权威定义(键 / 顺序 / 标签 / 必填 / 枚举)住在服务端 ——
    那边拼起稿提示词用的就是它。前端在这里取用它的读法,
    于是"提示词里那几行"与"解析回填的那张表"不可能各走各的 */
@@ -2389,10 +2392,13 @@ export async function summarizeChat(
   signal?: AbortSignal
 ): Promise<string> {
   /* 逐条带上说话人。不带的话模型只看到一堆交错的话,
-     分不清承诺是谁许的、又被谁拒绝了 —— 而那正是简报最该留下的东西 */
-  const lines = messages.map(
-    (m) => `${m.role === 'user' ? 'User' : 'Character'}: ${m.content}`
-  )
+     分不清承诺是谁许的、又被谁拒绝了 —— 而那正是简报最该留下的东西。
+
+     进简报之前先按层次筛一道:**想的那一层不参与长期记忆**(设计 §5 那条"想只留短期")。
+     它可以被显示、可以在这一轮原样回喂模型,但不该被写进"它长期记得的你" ——
+     心里话被记成事实,是把一个人没打算说的话当成了他说过的话。 */
+  const keep = messages.filter((m) => keepInSummary(m))
+  const lines = keep.map((m) => `${m.role === 'user' ? 'User' : 'Character'}: ${m.content}`)
   const prompt =
     (previous ? `What you already remember:\n${previous}\n\n` : '') +
     `What was said since:\n${lines.join('\n')}`
@@ -2559,6 +2565,11 @@ export interface ChatStreamOpts {
      是这条边界本身,所以留在服务端。
      空串 = 从没评估过或三点全零,那一段整块不出现(与 memory、guidance 同一条退路) */
   relationship?: string
+  /* **这一条对话此刻在不在"场景"里**（见 lib/prefs 的 sceneModeFor）。
+     它只喂给服务端的分层产出纪律那一段：开着才邀请 `[act]` 旁白（见 server/chatLayers.js）。
+     与 nowLocal 不同，它是**这一条对话的状态**、只有前端知道，所以由调用方传。
+     不给 / false = 日常模式，那段会明确禁 act、只留 think。 */
+  sceneMode?: boolean
   cfg: ApiConfig
   /** 每一块增量。调用方拿到就往气泡上追加 */
   onDelta: (delta: string) => void
@@ -2589,6 +2600,7 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
       guidance: opts.guidance || undefined,
       memories: opts.memories?.length ? opts.memories : undefined,
       relationship: opts.relationship || undefined,
+      sceneMode: opts.sceneMode ? true : undefined,
       textModel: opts.cfg.model,
       baseUrl: opts.cfg.baseUrl,
       apiKey: opts.cfg.apiKey

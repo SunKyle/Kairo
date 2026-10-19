@@ -76,6 +76,15 @@ describe('同步范围 · 与源码里的写入点保持一致', () => {
        这个人喜欢怎么看界面",丢了不影响任何数据的完整性;另一个标签页切了
        沉浸跟着一起变,反而突兀 */
     IMMERSIVE_KEY: { key: 'kimage.immersive', synced: false },
+    /* 心理层次的展示开关(见 lib/prefs.ts 的 savedShowThink/savedShowAct)。与沉浸/主题
+       同一类:这台设备上这个人想看/不想看心里话、看不看旁白,是界面口味,不是数据目录 ——
+       另一个标签页拨了跟着一起变反而突兀,所以不同步 */
+    SHOW_THINK_KEY: { key: 'kimage.showThink', synced: false },
+    SHOW_ACT_KEY: { key: 'kimage.showAct', synced: false },
+    /* 场景位(见 lib/prefs.ts 的 sceneModeFor)。它是"这一段对话此刻在不在场景里"的
+       状态位,按 charId 分条存在同一把键里。每次保存先重读盘上那份再合并单个角色,
+       两个标签页各切各的不会互相覆盖 —— 与相处偏好同一条理由,不进 SYNC_KEYS */
+    SCENE_KEY: { key: 'kimage.sceneMode', synced: false },
     /* 相处偏好(见 lib/prefs.ts)。同上一条:它是"这个人希望被怎么对待"的
        界面偏好,不是覆盖写的数据目录 —— 每次保存都先把盘上那份重读一遍再合并
        单个角色,所以两个标签页各改各的不会互相覆盖,也就不需要同步 */

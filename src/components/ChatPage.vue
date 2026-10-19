@@ -8,6 +8,9 @@ import {
   PhArrowsClockwise,
   PhChatCircleDots,
   PhDotsThree,
+  PhEye,
+  PhEyeSlash,
+  PhFilmSlate,
   PhImage,
   PhImageBroken,
   PhMaskHappy,
@@ -43,6 +46,9 @@ import { parsePhotoIntent, stripStandaloneTags } from '../../server/chatTags.js'
 /* 一条回复按段落切成几气泡(见 lib/chatSplit)——**只改"画出来几格",不改存的是什么**:
    库里仍是一条 ChatMessage,拆分只在渲染这一刻发生 */
 import { splitAssistantReply } from '../lib/chatSplit'
+/* 心理层次(说/想/做)的显示侧判据:剪掉流式里还没扇开的区域标记、按开关过滤行、
+   给每行认一个生效层(见 lib/messageLayers 与 doc/消息表达形态-心理层次设计.md) */
+import { effectiveLayer, hasLayerMarkers, isVisibleForUI, parseLayers } from '../lib/messageLayers'
 import { speak, speechSupported, speakingId, speakingLoading, stopSpeaking, warmUpSpeech } from '../lib/speech'
 /* 对话流的滚动编排(自动跟随 / 往前读一档时稳住视口)抽到 composable ——
    它是纯 DOM/滚动逻辑,不碰数据与网络,单拎出来既能测也好读 */
@@ -100,6 +106,16 @@ const props = defineProps<{
   backdrop?: string
   /** 正在画这一场的背景。界面据它说一句"正在画"(它是一次真调用,用户该知道) */
   backdropBusy?: boolean
+  /* ===== 心理层次(说/想/做)的显示与场景位 =====
+     三根杆里"展示"这一根的两个开关(见 lib/prefs 的 savedShowThink/savedShowAct)。
+     它们**只管这一页给不给看**,不回写记忆、也不回写喂模型的下一轮 —— 关掉展示 ≠ 删了事件。
+     主界面按偏好传进来(初值取自 localStorage,切换时同步更新它自己的 ref)。缺省都当真(默认给看)。 */
+  showThink?: boolean
+  showAct?: boolean
+  /* 这一条对话此刻在不在场景里(选项菜单那枚开关的状态位)。
+     **真正的产出闸在主界面**(发请求时现读 sceneModeFor),这里只是把那盏灯画出来、
+     并把用户的开关意图交回去。缺省按关 */
+  sceneMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -139,6 +155,11 @@ const emit = defineEmits<{
   (e: 'toggleImmersive'): void
   /** 用户手动要一张新的背景图(这一场戏重画)。**只交意图** —— 生成与落盘归主界面 */
   (e: 'newBackdrop'): void
+  /* 心理层次三枚开关。**只交意图** —— 存盘与产出闸都归主界面(它才发请求、才知道 sceneMode
+     此刻喂不喂给服务端)。这里只负责把状态画出来、把用户拨的这一下交回去。 */
+  (e: 'toggleScene'): void
+  (e: 'toggleShowThink'): void
+  (e: 'toggleShowAct'): void
 }>()
 
 /* ===== 取用的那一份 =================================================
@@ -315,7 +336,11 @@ const rows = computed<Row[]>(() => {
   /* 上一条是谁说的。换人(或前面插了一条时间分隔)就是"新的一段",
      间距据此要多让一档 —— 见 .msg.group-first */
   let prevRole = ''
+  /* 展示开关:关掉的那一层不画(缺省 = 给看)。这一根杆只管界面 ——
+     事件照样在库里、照样喂下一轮、该进记忆的还进(见 doc 那条"三根杆独立") */
+  const layerVis = { showThink: props.showThink !== false, showAct: props.showAct !== false }
   for (const m of msgs.value) {
+    if (!isVisibleForUI(m, layerVis)) continue
     const newDay = !prev || new Date(prev).toDateString() !== new Date(m.createdAt).toDateString()
     const brokeByTime = !prev || newDay || m.createdAt - prev > SEP_GAP
     if (brokeByTime) {
@@ -384,12 +409,35 @@ function bubblePieces(m: ChatMessage): string[] {
     const collapsed = stripped.replace(/\n[ \t]*\n(?:[ \t]*\n)*/g, '\n').trimEnd()
     return collapsed ? [collapsed] : []
   }
-  const pieces = splitAssistantReply(stripped)
+  /* 剪掉还没扇开的区域标记。落盘收尾那一步会把它拆成多条带 layer 的消息,但**流式期间**
+     它仍是一整条、`[think]`/`[act]` 还挂在正文上 —— 这些标记绝不该给用户看见。
+     普通回复根本没有标记:hasLayerMarkers 为假就原样往下走,splitAssistantReply 看到的
+     字节与改之前完全一致(与主界面那条"常态一个字节都不动"同一个闸)。
+     有标记时把各段的干净文字并回来先连着显示(整段说完后会被扇成几条分别成行)。 */
+  const clean = hasLayerMarkers(stripped)
+    ? parseLayers(stripped)
+        .map((s) => s.text)
+        .join('\n')
+    : stripped
+  const pieces = splitAssistantReply(clean)
   if (pieces.length) return pieces
   /* 角色的那条还没出字、但正在生成 —— 兜一格空格,好让光标有处落脚
      (流式刚开始、模型第一个 token 还没落到的那一瞬)。不在生成的、又确实没字的
      (比如只发来一张图),返回 [] —— 模板据此不画气泡,免得挂出个空壳 */
   return m.id === cursorId.value ? [''] : []
+}
+
+/* 读屏归属那半句。左右对齐和底色是给眼睛认层的,读屏一样认不出 ——
+   光有"某某说:"会把**想的那句**也念成说出口的话,把**做的动作**也念成台词。
+   三个层次各给一个动词,才与屏幕上那点缩进/居中/竖线**同一套口径**:
+   眼睛看形状,耳朵带动词,两边说的得是同一件事。用户那条永远是"你说:"。 */
+function srAttribution(m: ChatMessage): string {
+  if (m.role === 'user') return 'You said: '
+  const who = current.value?.name || 'They'
+  const layer = effectiveLayer(m)
+  if (layer === 'think') return `${who} thought (not spoken): `
+  if (layer === 'act') return `${who} did (narration): `
+  return `${who} said: `
 }
 
 /** 光标挂在正在说的那一条上。它同时说明"这会儿还在往下写" */
@@ -440,9 +488,11 @@ const tailBubble = computed(() => {
 /* ===== 每一条消息的悬停动作 ========================================
    念 / 删 / 重来。四条判据分开写,是因为它们各自有各自的理由,合成一个大
    布尔表达式之后"为什么这条没有那枚按钮"就读不出来了 */
-/** 正在生成的那条不给朗读:半句话念出来只会更难听 */
+/** 正在生成的那条不给朗读:半句话念出来只会更难听。
+ *  **内心独白与动作旁白也不给朗读**:念出来的是"说出口的话",把 ta 没说出口的
+ *  念头、把第三人称的舞台提示用嗓子念给用户 —— 恰恰破坏这两层存在的意义(私密泄露 / 无声旁白) */
 function canSpeakMsg(m: ChatMessage): boolean {
-  return canSpeak && m.role === 'assistant' && m.id !== cursorId.value
+  return canSpeak && m.role === 'assistant' && effectiveLayer(m) === 'say' && m.id !== cursorId.value
 }
 /** 正在生成的那条不给删:它还没落盘,删了会与收尾那一步打架(见主界面) */
 function canDeleteMsg(m: ChatMessage): boolean {
@@ -1003,6 +1053,44 @@ onBeforeUnmount(() => {
                   <PhImage aria-hidden="true" />
                   {{ backdropBusy ? 'Drawing the background…' : 'New background' }}
                 </button>
+                <!-- 心理层次(说/想/做)这三枚开关。它们与上面那些"离开这段对话"的入口不同类:
+                     这里改的是**这一段对话怎么被说出来、怎么被看见**,所以收在同一张菜单里、自成一组。
+                     第一枚是**产出闸**(sceneMode) —— 它决定服务端那套提示词里 [act] 让不让用,
+                     拨动只交意图给主界面(它才发请求)。后两枚是**显示杆**(showThink/showAct) ——
+                     关掉只是这一页不画,事件还在库里、照样喂下一轮、该记的还记(见 lib/messageLayers 三根杆独立)。
+                     状态一律写在 .mm-state 那块字上,不靠图标或颜色单独表意(色盲与读屏都读得出)。 -->
+                <div class="menu-layers">
+                  <span class="mm-label">Inner life</span>
+                  <button
+                    class="menu-layer"
+                    :aria-pressed="!!sceneMode"
+                    @click="emit('toggleScene')"
+                  >
+                    <PhFilmSlate aria-hidden="true" />
+                    <span class="mm-name">Roleplay a scene</span>
+                    <span class="mm-state">{{ sceneMode ? 'On' : 'Off' }}</span>
+                  </button>
+                  <button
+                    class="menu-layer"
+                    :aria-pressed="showThink !== false"
+                    @click="emit('toggleShowThink')"
+                  >
+                    <PhEyeSlash v-if="showThink === false" aria-hidden="true" />
+                    <PhEye v-else aria-hidden="true" />
+                    <span class="mm-name">Show inner thoughts</span>
+                    <span class="mm-state">{{ showThink !== false ? 'On' : 'Off' }}</span>
+                  </button>
+                  <button
+                    class="menu-layer"
+                    :aria-pressed="showAct !== false"
+                    @click="emit('toggleShowAct')"
+                  >
+                    <PhEyeSlash v-if="showAct === false" aria-hidden="true" />
+                    <PhEye v-else aria-hidden="true" />
+                    <span class="mm-name">Show actions</span>
+                    <span class="mm-state">{{ showAct !== false ? 'On' : 'Off' }}</span>
+                  </button>
+                </div>
                 <button :disabled="!msgs.length" @click="clearChat">
                   <PhTrash aria-hidden="true" />
                   Clear conversation
@@ -1078,7 +1166,15 @@ onBeforeUnmount(() => {
               <div
                 v-else
                 class="msg"
-                :class="[r.msg.role, { 'group-first': r.first, 'has-ops': hasMsgOps(r.msg) }]"
+                :class="[
+                  r.msg.role,
+                  {
+                    'group-first': r.first,
+                    'has-ops': hasMsgOps(r.msg),
+                    'is-think': effectiveLayer(r.msg) === 'think',
+                    'is-act': effectiveLayer(r.msg) === 'act'
+                  }
+                ]"
               >
                 <!-- 用户附的图。**独立一块,不放进气泡**(文字有文字的框,图有图的位置)。
                      压在文字上面是因为它是那句话的前提:先看图,再读字 -->
@@ -1106,9 +1202,7 @@ onBeforeUnmount(() => {
                        读屏读不出这两种区别,不补一句就只剩一堆光秃秃的句子。
                        一条回复哪怕分成几格,也只在这一格补 —— 不然读屏会把
                        同一个人的一段话念成好几条"某某说:" -->
-                  <span v-if="idx === 0" class="sr-only">
-                    {{ r.msg.role === 'user' ? 'You said: ' : `${current.name} said: ` }}
-                  </span>
+                  <span v-if="idx === 0" class="sr-only">{{ srAttribution(r.msg) }}</span>
                   {{ piece }}<span
                     v-if="r.msg.id === cursorId && idx === r.pieces.length - 1"
                     class="cursor"
@@ -1732,6 +1826,31 @@ onBeforeUnmount(() => {
   color: var(--text-3);
   font-size: var(--fs-micro);
 }
+/* 心理层次那一组:菜单里自成一格。顶上那道线把它与"离开这段对话"那几枚隔开 ——
+   这一组改的是"这段对话怎么说、怎么看",不是换个地方。
+   状态那块 On/Off 靠右、压到 --text-3;开着的那一枚提一档到 --text-2,
+   让"拨没拨"不用只靠图标或颜色说(色盲、读屏都读得出这行字)。 */
+.menu-layers {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--line);
+}
+.chat-menu .mm-label {
+  display: block;
+  padding: 2px 10px 4px;
+  color: var(--text-3);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.02em;
+}
+.chat-menu .menu-layer .mm-state {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: var(--fs-micro);
+}
+.chat-menu .menu-layer[aria-pressed='true'] .mm-state {
+  color: var(--text-2);
+}
 
 /* ===== 消息流 ===== */
 .chat-stream {
@@ -1995,6 +2114,49 @@ onBeforeUnmount(() => {
   background: var(--cta);
   color: var(--cta-text);
   border-bottom-right-radius: var(--r-sm);
+}
+/* ===== 心理层次的两种非台词 ==================================================
+   设计 §8 那条硬警告:think 与 act **不能都靠"斜体 + 弱化色"**,同屏必糊。拉开靠
+   "人称 + 对齐 + 包裹"三重信号,斜体只是其中一环、不能两个都占:
+   - think(第一人称·内心独白):**正体**、贴在角色这一侧、一整块极淡底色把它归拢成
+     "没说出口的那一段",左边一道柔竖线点出层次 —— 它是"一句被收起来的话",不是旁白。
+   - act(第三人称·舞台动作):才用**斜体**,整条居中、压到最弱一档字,像剧本里浮在台词
+     之间的一行动作线 —— 它退到背景里,靠居中和最弱与内心独白分家。
+   两者都从实心气泡里摘出来(不给整圈边),但一个"正体+淡底左块"、一个"斜体+居中旁白",
+   一眼分得出。颜色只走 --text-2/--text-3 两档 token,color-mix 在两套主题都自适应,
+   不写死颜色;position、落入场动画仍来自 .msg.assistant .bubble 与 .bubble。 */
+.msg.is-think .bubble {
+  /* 一句心里话:正体、贴左、给一层几乎看不出的底色把它归成一个块 */
+  max-width: min(82%, calc(100% - var(--ops-lane)));
+  padding: 7px 14px;
+  background: color-mix(in srgb, var(--text-2) 7%, transparent);
+  border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--text-2) 34%, transparent);
+  border-radius: var(--r-sm);
+  /* 左端那两个角收成直角,让竖线看着像"从这条引出来的",不是个孤立圆角块 */
+  border-top-left-radius: 2px;
+  border-bottom-left-radius: 2px;
+  color: var(--text-2);
+  font-style: normal;
+}
+/* 动作是第三人称旁白:整条居中浮在台词之间,斜体 + 最弱一档,退到背景 */
+.msg.is-act {
+  align-items: center;
+}
+.msg.is-act .bubble {
+  max-width: min(88%, calc(100% - var(--ops-lane)));
+  /* 上下各让一点,使这一行像夹在两句台词之间的舞台提示,而不是又一条消息 */
+  margin-top: 2px;
+  margin-bottom: 2px;
+  padding: 3px 14px;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-3);
+  font-style: italic;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  text-align: center;
 }
 /* 一条回复被分成好几拍时,格与格之间挨得比"换人"更近(比 --sp-2 窄一档)。
    读起来仍是同一个人连着说的几口气,而不是几条各不相干的消息。

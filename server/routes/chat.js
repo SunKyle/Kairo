@@ -18,6 +18,7 @@ import { moodContext } from '../chatMood.js'
 import { guidanceSection } from '../chatGuidance.js'
 import { memorySection } from '../chatMemory.js'
 import { relationshipSection } from '../relationship.js'
+import { layerRules } from '../chatLayers.js'
 
 /* ===== 角色对话的人格提示词 ==========================================
    几条规则不是装饰,每一条都冲着模型的具体通病去:
@@ -118,8 +119,13 @@ function chatOneLine(v, max = CHAT_FIELD_CHARS) {
  * 没填就那两段整段不出现 —— 一个从没用过这几栏的角色,prompt 里不会多出任何新东西。
  * (另:traits 那一行的措辞本次按 05 的"只改话术"改了,那是对所有角色都生效的
  * 一处有意改动,不属于这三栏的开关,见上面 `how` 里那行)
+ *
+ * sceneMode 是**这一条对话此刻在不在"场景"里**(由前端带上,见 lib/prefs 的 sceneModeFor)。
+ * 它只喂给分层产出纪律那一段(见 chatLayers.js):**开着才邀请 `[act]` 旁白**,关着时那段
+ * 明确禁 act、只留 `[think]`。它是"信号灯跟着状态走、不跟着标签频率闪"的那个状态位 ——
+ * 服务端不因此改变任何别的东西,也不解析标记本身(脊柱 A:扇出在前端)。
  */
-function chatSystemPrompt(character, memory, time, mood, guidance, memories, relationship) {
+function chatSystemPrompt(character, memory, time, mood, guidance, memories, relationship, sceneMode) {
   const char = character && typeof character === 'object' ? character : {}
   const p = char.persona && typeof char.persona === 'object' ? char.persona : {}
 
@@ -230,7 +236,15 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
      与上面几段一样,空串时整段不出现 —— 用户一项都没表态,就不该有任何指导 */
   const guide = guidanceSection(guidance)
   if (guide) parts.push(guide)
+  /* 分层产出纪律**紧跟在 CHAT_RULES 之后**是有意的:CHAT_RULES 里那句
+     "Write only what the character would say out loud. No narration..." 会挡掉
+     `[act]` 旁白(它正是 narration),而 layerRules 要在这条之上开一个受控的例外。
+     排在后面 = 后说的覆盖先说的,模型读到的是"通用禁止 + 这一条具体豁免",而不是两条互相打脸。
+     sceneMode 由前端带上来(见 src/lib/prefs 的 sceneModeFor):关着时这段会明确禁 act。
+     think 与 photo/mood 的标记在这里都只作为**提示文字**写进 system,
+     服务端不解析它们 —— 把一轮扇成多条是前端 parseLayers 的活(脊柱 A)。 */
   parts.push(CHAT_RULES)
+  parts.push(layerRules(sceneMode))
   return parts.join('\n\n')
 }
 
@@ -272,7 +286,7 @@ const CHAT_IMAGE_CHARS = 4 * 1024 * 1024
 
 export function registerChatRoute(app) {
 app.post('/api/chat', rateLimit, async (req, res) => {
-  const { character, messages, memory, memories, images, nowLocal, lastAt, mood, guidance, relationship, textModel, baseUrl, apiKey } =
+  const { character, messages, memory, memories, images, nowLocal, lastAt, mood, guidance, relationship, sceneMode, textModel, baseUrl, apiKey } =
     req.body || {}
 
   if (!baseUrl) {
@@ -360,7 +374,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
      这里没这个问题,所以可以算好一份直接用 */
   const body = JSON.stringify({
     model: textModel,
-    messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood, guidance, memories, relationship) }, ...history],
+    messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood, guidance, memories, relationship, !!sceneMode) }, ...history],
     temperature: CHAT_TEMPERATURE,
     max_tokens: CHAT_MAX_TOKENS,
     stream: true

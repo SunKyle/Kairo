@@ -31,6 +31,102 @@ export function saveImmersive(on: boolean): void {
   }
 }
 
+/* ===== 心理层次的展示开关与场景闸(见 doc/消息表达形态-心理层次设计.md)====
+   三根杆里"展示"这一根:think / act 各一个**全局**开关,只管界面上给不给看,
+   **不回写记忆、也不回写喂模型的下一轮**(关掉展示 ≠ 删了事件 —— 设计 §5 那条硬规矩)。
+   say 恒可见,没有开关。
+
+   与主题/沉浸同一条:界面偏好,存 localStorage 的 '1' / '0',**不跨标签页同步**
+   (别人切了、你这边跟着变,突兀),所有函数不抛异常。
+
+   默认都开:think 是这套交互最招牌的亲密特征(设计 §11 决策 4),藏起来等于没做;
+   嫌出戏的人一键关。sceneMode(下面)则**默认关** —— 满屏旁白会滑向三流同人文
+   (设计 §7),它更该被显式打开而不是白送。 */
+
+const SHOW_THINK_KEY = 'kimage.showThink'
+const SHOW_ACT_KEY = 'kimage.showAct'
+
+/** 没设过 = 开(读不到 '0' 就算 true,与 immersive 反过来:默认是最强表达,这里默认给看) */
+export function savedShowThink(): boolean {
+  try {
+    return localStorage.getItem(SHOW_THINK_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+export function saveShowThink(on: boolean): void {
+  try {
+    localStorage.setItem(SHOW_THINK_KEY, on ? '1' : '0')
+  } catch {
+    /* 见上 */
+  }
+}
+export function savedShowAct(): boolean {
+  try {
+    return localStorage.getItem(SHOW_ACT_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+export function saveShowAct(on: boolean): void {
+  try {
+    localStorage.setItem(SHOW_ACT_KEY, on ? '1' : '0')
+  } catch {
+    /* 见上 */
+  }
+}
+
+/* 场景模式:**按角色存的一张 bool 表**(设计 §6:它是这条对话此刻在不在"场景"里的显式状态,
+   由它 gate 服务端产不产出 `[act]`)。做成角色级而非全局,是因为"进没进场景"是**一段关系当前
+   的处境**,不是这台设备上永久的界面口味 —— 跟互动偏好一样按 charId 分条。
+
+   迟滞(auto「首个 act 点亮、不因后续没旁白就灭」)那半属于产出侧的反馈环,留待后续;
+   这里先落**用户可钉住的 override + 持久位**。默认关:未设过的角色不产出 act(保守)。 */
+
+const SCENE_KEY = 'kimage.sceneMode'
+
+function loadSceneMap(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(SCENE_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    const out: Record<string, boolean> = {}
+    for (const [id, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (id && v === true) out[id] = true // 只存 true,关 = 删键
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** 这个角色的对话此刻在不在场景里。未设 = 关 */
+export function sceneModeFor(charId: string): boolean {
+  if (!charId) return false
+  return loadSceneMap()[charId] === true
+}
+
+/** 全部角色的场景位。界面用它起一份**自己的响应式镜像**(界面偏好不跨标签页同步,
+ *  与主题/沉浸同一条)—— 拨一下同时写这份镜像与 saveSceneMode,读的时候用镜像、
+ *  发请求那一刻仍由 useChatFlow 现读 sceneModeFor,两边落的是同一把键、同一套逻辑。 */
+export function loadSceneModes(): Record<string, boolean> {
+  return loadSceneMap()
+}
+
+/** 开关某个角色的场景模式。**先重读盘上那份再合并这一个角色**(跨标签页覆盖,同互动偏好) */
+export function saveSceneMode(charId: string, on: boolean): void {
+  if (!charId) return
+  try {
+    const all = loadSceneMap()
+    if (on) all[charId] = true
+    else delete all[charId]
+    localStorage.setItem(SCENE_KEY, JSON.stringify(all))
+  } catch {
+    /* 见上 */
+  }
+}
+
 /* ===== 相处偏好(PRD §3.2-D) ==========================================
    与上面两项的差别:主题/沉浸是"这台设备上这个人怎么看界面",而这一份是
    "这个人希望被角色怎么对待" —— 它会被拼进对话的 system 提示词。

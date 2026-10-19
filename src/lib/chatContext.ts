@@ -45,3 +45,23 @@ export function contextText(m: {
   if (text.trim()) return text
   return hasImage(m) ? EMPTY_WITH_IMAGE : EMPTY_WITHOUT_IMAGE
 }
+
+/** 发回模型这一条属于哪个心理层次。say(或没标)= 说出口的话,原样发。 */
+export type ContextLayer = 'say' | 'think' | 'act'
+
+/**
+ * 把非台词的层次重新裹上区域标记,再拼进喂模型的 history。
+ *
+ * 落盘收尾那一步会把一轮回复按层次**扇成一条条带 layer 的消息**,而存下来的
+ * content 是剪掉 `[think]`/`[act]` 之后的干净正文。若不回裹就发回去,下一轮模型
+ * 看到的是一串**都说出口的话** —— 于是把心里话当台词接、把旁白当台词接,层次全糊。
+ * 这里按生效层把它们各归各位:think 裹 `[think]…[/think]`,act 裹 `[act]…[/act]`。
+ *
+ * say / 未知层 / 空正文一律**原样返回** —— 常态的一轮一个字节都不动(与那两道
+ * "普通路径不变"的闸同一条):这条函数只在真有层次时才改变形状。
+ */
+export function withLayerMarkers(content: string, layer?: ContextLayer): string {
+  if (!content) return content
+  if (layer !== 'think' && layer !== 'act') return content
+  return `[${layer}]\n${content}\n[/${layer}]`
+}

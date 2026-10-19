@@ -373,7 +373,17 @@ export interface ChatMessage {
      "让角色拍特写图,总是变成自拍"。
      存下来,重画与导出才对得起当时那个意图 */
   photoFrame?: ChatFrameTag
+  /* 这一条是角色的**哪一层**：说出口的话(say) / 没说出口的内心(think) / 动作旁白(act)。
+     模型一轮回复会被 lib/messageLayers 的 parseLayers 按区域标记**扇出**成多条带这个
+     字段的独立消息（见 doc/消息表达形态-心理层次设计.md，脊柱 A/B）。
+     可选是为了兼容加它之前存下来的老消息 —— 读出来没有就是 say，**不升 DB_VERSION**、
+     也**不进导出包**（同 origin/pinned 的加法纪律）。只对助手消息有意义，用户消息恒为 say */
+  layer?: MessageLayer
 }
+
+/** 一条助手消息的**心理层次**：说出口(say) / 内心独白(think) / 动作旁白(act)。
+    判据全在 lib/messageLayers（与 photo 那套 ChatLayer 提示词分层无关）。 */
+export type MessageLayer = 'say' | 'think' | 'act'
 
 /** 聊天里那一张图**谁拿的相机**。与 lib/chatPhoto 的 ChatShot 同名同值 ——
     'scene' 不进这里:画面里没有人时,它由 photoSelf 定死 */

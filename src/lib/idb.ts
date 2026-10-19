@@ -8,6 +8,7 @@ import type {
   MemoryItem,
   MemoryOrigin
 } from '../types'
+import { normalizeMessageLayer } from './messageLayers'
 
 // 极简 IndexedDB 封装:用来持久化历史记录与提示词封面(比 localStorage 容量大得多)
 const DB_NAME = 'kimage.db'
@@ -542,10 +543,18 @@ export async function putChatMessage(msg: ChatMessage): Promise<void> {
 export function chatMessageFromRow(row: unknown): ChatMessage {
   const m = row as ChatMessage
   if (!m || typeof m !== 'object') return m
-  if (typeof m.photoError !== 'string') {
-    return m.photoError === undefined ? m : { ...m, photoError: undefined }
+  let out = m
+  if (typeof out.photoError !== 'string') {
+    if (out.photoError !== undefined) out = { ...out, photoError: undefined }
+  } else if (out.photoError.length > 300) {
+    out = { ...out, photoError: out.photoError.slice(0, 300) }
   }
-  return m.photoError.length > 300 ? { ...m, photoError: m.photoError.slice(0, 300) } : m
+  /* layer 脏值(被改坏的导入包 / 未来非法枚举)不当层用 —— 收 undefined，
+     读侧 effectiveLayer 自然兜回 say;合法/缺省原样留 */
+  if (out.layer !== undefined && normalizeMessageLayer(out.layer) === undefined) {
+    out = { ...out, layer: undefined }
+  }
+  return out
 }
 
 /** 删一条。重新生成时删掉最后那条助手消息用 */

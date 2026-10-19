@@ -77,7 +77,17 @@ import {
 import { REF_IMAGE_EDGE } from './lib/payload'
 import { sameStale, staleAfterGen, staleAfterSpecChange } from './lib/staleViews'
 /* 界面偏好(不是数据)。与主题同一类:不跨标签页同步,丢了不影响任何东西 */
-import { saveImmersive, savedImmersive } from './lib/prefs'
+import {
+  loadSceneModes,
+  saveImmersive,
+  saveSceneMode,
+  saveShowAct,
+  saveShowThink,
+  savedImmersive,
+  savedShowAct,
+  savedShowThink
+} from './lib/prefs'
+import { keepInSummary } from './lib/messageLayers'
 /* 对话背景图:沉浸页铺满屏幕的那一张。**单独一张表**(见 idb.ts 的 BACKDROP_STORE) */
 import {
   deleteChatBackdrop,
@@ -274,7 +284,13 @@ const {
      先摆两个可替换的入口,下面各自创建出来之后再接上。它们都是**调用时才读**这两个变量,
      所以先后顺序不影响 */
   onSummarized: (charId, batch) => {
-    void autoExtractMemories(charId, batch)
+    /* 抽事实这一路:先摘掉"想"那一层。心里话没打算说出口,不该被当成"关于你的事实"
+       永久记进记忆中心(与 summarizeChat 内部同一道 keepInSummary,同一口径)。
+       关系评估这一路**照旧看整批** —— 想的那一层恰恰透露亲疏,它是第三根杆,不受这条限制。 */
+    void autoExtractMemories(
+      charId,
+      batch.filter((m) => keepInSummary(m))
+    )
     void autoEvaluateRelationship(charId, batch)
   }
 })
@@ -450,6 +466,39 @@ function setImmersive(on: boolean) {
 }
 function toggleImmersive() {
   setImmersive(!immersive.value)
+}
+
+/* —— 心理层次(说/想/做)的三枚开关 ——
+   与主题/沉浸同一类:界面偏好,存 localStorage,**不跨标签页同步**,这里持一份响应式镜像。
+
+   两根"展示杆"(showThink/showAct)是**全局**的:一个人想看/不想看心里话,是口味,
+   不该每个角色再各设一遍。关掉只影响这一页给不给画 —— 事件还在库里、照样喂下一轮、
+   该进记忆的还进(三根杆彼此独立,见 doc/消息表达形态-心理层次设计.md §5)。
+
+   那根"产出闸"(sceneMode)是**角色级**的:"此刻在不在场景里"是一段关系当前的处境,
+   不是永久的界面口味,所以按 charId 分条(与互动偏好同一层)。这里只维护界面镜像;
+   真正 gate 服务端产不产 `[act]` 的是发请求那一刻 useChatFlow 现读的 sceneModeFor ——
+   两边落的是同一把键、同一套逻辑,不会各说各话。 */
+const showThink = ref(savedShowThink())
+const showAct = ref(savedShowAct())
+const sceneModes = ref<Record<string, boolean>>(loadSceneModes())
+const sceneMode = computed(() => sceneModes.value[chatCharId.value] === true)
+
+function toggleShowThink() {
+  showThink.value = !showThink.value
+  saveShowThink(showThink.value)
+}
+function toggleShowAct() {
+  showAct.value = !showAct.value
+  saveShowAct(showAct.value)
+}
+function toggleScene() {
+  const id = chatCharId.value
+  if (!id) return
+  const next = sceneModes.value[id] !== true
+  // 换整份对象再赋值:直接改旧对象上的那一个键,Vue 不一定重算依赖它的 computed
+  sceneModes.value = { ...sceneModes.value, [id]: next }
+  saveSceneMode(id, next)
 }
 
 /* —— 对话背景图 ——
@@ -1711,7 +1760,13 @@ function createAssignCollection(title: string) {
         :immersive="immersiveOn"
         :backdrop="backdropSrc"
         :backdrop-busy="!!backdropBusy[chatCharId]"
+        :show-think="showThink"
+        :show-act="showAct"
+        :scene-mode="sceneMode"
         @toggle-immersive="toggleImmersive"
+        @toggle-scene="toggleScene"
+        @toggle-show-think="toggleShowThink"
+        @toggle-show-act="toggleShowAct"
         @new-backdrop="drawBackdrop(chatCharId)"
         @select="chatCharId = $event"
         @send="sendChat"

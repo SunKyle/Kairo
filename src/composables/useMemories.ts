@@ -2,6 +2,7 @@ import { reactive, ref, toRaw } from 'vue'
 import { CHAT_WINDOW, extractMemories, uid } from '../api'
 import { deleteMemory, getAllMemories, getChatMessages, getChatSummary, putMemory } from '../lib/idb'
 import { categoryNeedsChar, freshExtracted, memoryLines, parseExtractedMemories, selectMemories } from '../lib/memory'
+import { keepInSummary } from '../lib/messageLayers'
 import type { ApiConfig, Character, MemoryCategory, MemoryItem } from '../types'
 
 /* ===== 记忆条目这一域(PRD §3.2-E / F) ================================
@@ -206,10 +207,13 @@ export function useMemories(deps: MemoryDeps) {
   /** 手动触发(记忆中心那枚"整理一下"):从库里读最近一窗消息 */
   async function extractNow(charId: string): Promise<number> {
     const { list } = await getChatMessages(charId, EXTRACT_WINDOW)
-    if (!list.length) return 0
+    /* 摘掉"想"那一层再抽:心里话没打算说出口,不该被当成关于你的事实永久记下
+       (与 App 里自动那条路同一道 keepInSummary、同一口径;见 lib/messageLayers) */
+    const keep = list.filter((m) => keepInSummary(m))
+    if (!keep.length) return 0
     return runExtract(
       charId,
-      list.map((m) => ({ role: m.role, content: m.content }))
+      keep.map((m) => ({ role: m.role, content: m.content }))
     )
   }
 

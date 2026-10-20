@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -n server,web -c blue,green \"npm:dev:server\" \"npm:dev:web\"",
+    "restart": "bash scripts/restart-dev.sh",
     "dev:web": "vite",
     "dev:server": "PORT=3101 node --watch server/index.js",
     "typecheck": "vue-tsc --noEmit",

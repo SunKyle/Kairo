@@ -20,6 +20,9 @@
  *  这个端点没有鉴权,手搓一个空 content 的请求同样会打到上游,那边必须也兜住。
  */
 
+import type { ChatAttachment } from '../types'
+import { attachmentContextLine } from './chatAttachments'
+
 /** 带图但一个字没写 */
 export const EMPTY_WITH_IMAGE = '(sent a photo)'
 /** 什么都空的消息:理论上前端不该产生,但 stopped 的空回复会落到这里 */
@@ -35,15 +38,24 @@ function hasImage(m: { imageId?: string; photoId?: string }): boolean {
  *
  * 不空的原样返回(**不 trim**:正文里的首尾空白是用户自己打的,
  * 上游那边本来也不会因为它报错)。
+ *
+ * 带附件的消息在正文后面补一行**给模型看的**转述 —— 否则它下一轮不记得
+ * 自己转过什么(附件本身不重发,与图同一条理由)。补的那一行只在这份请求里,
+ * 库里的消息与导出包都不含它。
  */
 export function contextText(m: {
   content: string
   imageId?: string
   photoId?: string
+  attachment?: ChatAttachment
 }): string {
   const text = String(m?.content ?? '')
-  if (text.trim()) return text
-  return hasImage(m) ? EMPTY_WITH_IMAGE : EMPTY_WITHOUT_IMAGE
+  const share = m.attachment ? `(${attachmentContextLine(m.attachment)})` : ''
+  if (text.trim()) return share ? `${text}\n${share}` : text
+  const parts = []
+  if (hasImage(m)) parts.push(EMPTY_WITH_IMAGE)
+  if (share) parts.push(share)
+  return parts.length ? parts.join('\n') : EMPTY_WITHOUT_IMAGE
 }
 
 /** 发回模型这一条属于哪个心理层次。say(或没标)= 说出口的话,原样发。 */

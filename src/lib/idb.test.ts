@@ -312,6 +312,52 @@ describe('chatMessageFromRow · 只收会被渲染的那一项', () => {
     expect(chatMessageFromRow({ ...base, photoError: long }).photoError?.length).toBe(300)
   })
 
+  it('附件在读出时再收一次:坏地址整块丢掉,合法地址被归一化', () => {
+    const bad = chatMessageFromRow({
+      ...base,
+      attachment: { kind: 'link', title: 'x', url: 'http://localhost:3101/x' }
+    })
+    expect(bad.attachment).toBeUndefined()
+
+    const good = chatMessageFromRow({
+      ...base,
+      attachment: {
+        kind: 'link',
+        title: '  A  post ',
+        url: 'https://www.example.com/x',
+        preview: { description: ' the gist ' }
+      }
+    })
+    expect(good.attachment).toEqual({
+      kind: 'link',
+      title: 'A post',
+      url: 'https://www.example.com/x',
+      preview: { description: 'the gist' }
+    })
+  })
+
+  it('音乐卡在读出时同样收一次:坏地址只丢地址、留住卡,没地址也照样是一条消息', () => {
+    /* 曲名是本体:地址过不了不该把整张卡带走 —— 这和链接恰好相反 */
+    const badUrl = chatMessageFromRow({
+      ...base,
+      attachment: { kind: 'music', title: 'Night Changes', subtitle: 'Harry Styles', url: 'http://127.0.0.1:9/x' }
+    })
+    expect(badUrl.attachment).toEqual({ kind: 'music', title: 'Night Changes', subtitle: 'Harry Styles' })
+
+    const noUrl = chatMessageFromRow({
+      ...base,
+      attachment: { kind: 'music', title: '  Solo  ' }
+    })
+    expect(noUrl.attachment).toEqual({ kind: 'music', title: 'Solo' })
+
+    /* 只剩一个空壳(没标题)才是真的没东西可展示 —— 整块丢 */
+    const noTitle = chatMessageFromRow({
+      ...base,
+      attachment: { kind: 'music', url: 'https://www.example.com/song' }
+    })
+    expect(noTitle.attachment).toBeUndefined()
+  })
+
   it('退化输入不抛', () => {
     expect(chatMessageFromRow(null)).toBe(null)
     expect(chatMessageFromRow(undefined)).toBe(undefined)

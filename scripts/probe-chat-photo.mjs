@@ -193,6 +193,7 @@ async function post(port, url, body) {
 async function readChat(res) {
   const deltas = []
   let done = null
+  let error = ''
   const reader = res.body.getReader()
   const dec = new TextDecoder()
   let buf = ''
@@ -212,10 +213,11 @@ async function readChat(res) {
         continue
       }
       if (typeof evt.delta === 'string') deltas.push(evt.delta)
+      if (typeof evt.error === 'string') error = evt.error
       if (evt.done) done = evt
     }
   }
-  return { deltas, text: deltas.join(''), done }
+  return { deltas, text: deltas.join(''), done, error }
 }
 
 /* ===== 用例 =========================================================== */
@@ -237,7 +239,9 @@ async function main() {
 
   const app = spawn(process.execPath, ['server/index.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(APP_PORT) },
+    /* 探针在一分钟里会打三十多次，超过默认的每分钟 30 次限制 ——
+       不抬高的话，后面的用例会拿着 429 当成"服务端的行为"来断言 */
+    env: { ...process.env, PORT: String(APP_PORT), KAIRO_RATE_MAX: '1000' },
     stdio: ['ignore', 'pipe', 'pipe']
   })
   const appErr = []
@@ -292,6 +296,17 @@ async function main() {
       JSON.stringify(reqTools[0]?.function?.parameters?.required)
     )
     ok(
+      'schema 里有 attachment，必填 kind/title（url 可缺：音乐是纯分享卡）',
+      reqTools[0]?.function?.parameters?.properties?.attachment?.required?.join(',') === 'kind,title',
+      JSON.stringify(reqTools[0]?.function?.parameters?.properties?.attachment?.required)
+    )
+    ok(
+      'attachment 的 kind 枚举认 link 与 music',
+      reqTools[0]?.function?.parameters?.properties?.attachment?.properties?.kind?.enum?.join(',') ===
+        'link,music',
+      JSON.stringify(reqTools[0]?.function?.parameters?.properties?.attachment?.properties?.kind)
+    )
+    ok(
       'photo 的子字段是 scene/shot/frame，scene 必填',
       reqTools[0]?.function?.parameters?.properties?.photo?.required?.join(',') === 'scene',
       JSON.stringify(reqTools[0]?.function?.parameters?.properties?.photo)
@@ -303,6 +318,12 @@ async function main() {
         systemOf().includes('never write the metadata')
     )
     ok('system 里带着发图那一段', systemOf().includes('Sending a picture:'))
+    ok(
+      'system 里带着分享那一段（且不随 canDraw 消失）',
+      systemOf().includes('Sharing something with a message:') &&
+        systemOf().includes('Only share a URL that already appears somewhere in this conversation') &&
+        systemOf().includes('A song needs no link to be shared')
+    )
     ok(
       'system 里没有旧标签 / 哨兵 / 任何文本协议残留',
       !systemOf().includes('[photo:') && !systemOf().includes('[mood:') && !systemOf().includes('%%KAIRO_META%%'),
@@ -371,6 +392,133 @@ async function main() {
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
     ok('末尾的换行不流到气泡里', out.text === 'Sure.', JSON.stringify(out.text))
+
+    /* —— 用例 1d：分享一个链接 ——
+       attachment 与正文走同一条工具调用，收尾时应原样归一化后带出来。
+       单独占一个用例，是因为它是"消息不止文字"的第一个非图片形态：
+       地址校验、标题兜底、与 photo 互不干扰，三件都在这里过一遍。 */
+    console.log('\n用例 1d · 分享一个链接')
+    chatReply = 'This is the one I meant.'
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        mood: 'warm',
+        attachment: {
+          kind: 'link',
+          title: '  The quiet part of the internet ',
+          url: 'https://example.com/a-post',
+          subtitle: 'you would like this one'
+        }
+      })
+    }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok('正文照常送达', out.text === chatReply, JSON.stringify(out.text))
+    ok(
+      '卡片带出来了（标题压成一行、副标题也在）',
+      out.done?.attachment?.title === 'The quiet part of the internet' &&
+        out.done?.attachment?.subtitle === 'you would like this one',
+      JSON.stringify(out.done?.attachment)
+    )
+    ok('地址是 http(s) 且完整', out.done?.attachment?.url === 'https://example.com/a-post')
+    ok('这一轮没有 metaIssue', out.done?.metaIssue === undefined, String(out.done?.metaIssue))
+
+    /* 一个字都不说、只转一张卡片：这不是空回复。若按"没正文"判空，
+       这条消息会在前端被当成空气泡摘掉 —— 卡片也跟着消失。 */
+    chatReply = ''
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        attachment: { kind: 'link', title: 'Look at this', url: 'https://example.com/b' }
+      })
+    }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok('只带卡片、一个字不说也算一轮（不报"没话说"）', !out.error && !!out.done, out.error)
+    ok('卡片还在', out.done?.attachment?.url === 'https://example.com/b', JSON.stringify(out.done?.attachment))
+    ok('mood 缺省是空串', out.done?.mood === '', String(out.done?.mood))
+
+    /* 不安全的地址：整块丢掉。丢掉之后既没有正文也没有卡片，
+       这一轮就该按空回复报出来，而不是挂一张点不开的卡 */
+    chatReply = ''
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        attachment: { kind: 'link', title: 'dev server', url: 'http://192.168.1.10/x' }
+      })
+    }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok('内网地址的卡片被丢掉', out.done?.attachment == null, JSON.stringify(out.done?.attachment))
+    ok(
+      '丢掉之后如实报"没话说"',
+      out.error.includes('nothing to say'),
+      JSON.stringify({ error: out.error, done: out.done })
+    )
+
+    /* 预览端点：它才是真的去访问外网的那一层，所以本机地址必须在门口就被拒 */
+    r = await post(APP_PORT, '/api/link-preview', { url: 'http://127.0.0.1:18431/' })
+    ok('预览接口拒绝本机地址', r.status === 400, String(r.status))
+    r = await post(APP_PORT, '/api/link-preview', {})
+    ok('预览接口拒绝空地址', r.status === 400, String(r.status))
+
+    /* —— 用例 1e：分享一首歌（音乐可以没有链接） ——
+       music 与 link 唯一分叉的是"要不要地址"。这里钉三件事：
+       纯分享卡（无 url）能成立；坏地址只丢地址、留住卡；空正文只递一张卡也算一轮。 */
+    console.log('\n用例 1e · 分享一首歌')
+    chatReply = 'Putting this on for you.'
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        mood: 'warm',
+        attachment: { kind: 'music', title: ' Night Changes ', subtitle: '  Harry Styles ' }
+      })
+    }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok('正文照常送达', out.text === chatReply, JSON.stringify(out.text))
+    ok(
+      '纯分享卡：kind=music、曲名与歌手都收、没有 url 也成立',
+      out.done?.attachment?.kind === 'music' &&
+        out.done?.attachment?.title === 'Night Changes' &&
+        out.done?.attachment?.subtitle === 'Harry Styles' &&
+        out.done?.attachment?.url === undefined,
+      JSON.stringify(out.done?.attachment)
+    )
+    ok('这一轮没有 metaIssue', out.done?.metaIssue === undefined, String(out.done?.metaIssue))
+
+    /* 音乐带了个坏地址（本机）：只丢地址，卡片留下 —— 它本来就是能独立成立的分享卡 */
+    chatReply = ''
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        attachment: { kind: 'music', title: 'Real Home', url: 'http://127.0.0.1:9/x' }
+      })
+    }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok(
+      '音乐里的坏地址只丢地址、留住这张卡（与链接整块丢不同）',
+      out.done?.attachment?.kind === 'music' &&
+        out.done?.attachment?.title === 'Real Home' &&
+        out.done?.attachment?.url === undefined,
+      JSON.stringify(out.done?.attachment)
+    )
+
+    /* 一个字都不说、只递一张音乐卡：与链接同一条理由，这不是空回复 */
+    chatReply = ''
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({ attachment: { kind: 'music', title: 'A Song', subtitle: 'Someone' } })
+    }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok('只递一张音乐卡、一个字不说也算一轮（不报"没话说"）', !out.error && !!out.done, out.error)
+    ok('音乐卡还在', out.done?.attachment?.kind === 'music', JSON.stringify(out.done?.attachment))
+
+    // 还给后面的用例留一个带正文的默认值
+    chatReply = 'Sure.'
+    chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'calm' }) }
 
     /* —— 用例 2：接近上限的长场景 ——
        arguments 越大，被切成越多片；同时正文必须在参数收完之前就流出去 ——
@@ -568,8 +716,10 @@ async function main() {
     out = await readChat(r)
     const noDrawProps = seen.chat?.tools?.[0]?.function?.parameters?.properties || {}
     ok('工具 schema 里没有 photo', noDrawProps.photo === undefined, Object.keys(noDrawProps).join(','))
+    ok('attachment 不受出图配置影响，仍然在', !!noDrawProps.attachment, Object.keys(noDrawProps).join(','))
     ok('mood 仍然必填', seen.chat?.tools?.[0]?.function?.parameters?.required?.join(',') === 'mood')
     ok('system 里不再提发图', !systemOf().includes('Sending a picture:'))
+    ok('system 里分享那一段照旧在', systemOf().includes('Sharing something with a message:'))
     ok('mood 这一路照常工作', out.done?.mood === 'bored', String(out.done?.mood))
     ok('没有 photo 字段时 photo 为空', out.done?.photo === '')
 

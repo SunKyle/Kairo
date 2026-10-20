@@ -122,6 +122,11 @@ async function readChatForExport(id: string): Promise<ImportedChat> {
     ...(m.stopped ? { stopped: true } : {}),
     ...(m.truncated ? { truncated: true } : {}),
     ...(m.mood ? { mood: m.mood } : {}),
+    /* 它转过来的那张卡片。**标题、地址、站点描述一起带走** ——
+       卡片本身就是这条消息的一部分,少了它,对方读到的是一句
+       "你看这个"却没有任何可点的东西(预览信息也一并带上,
+       不必让对方的第一次打开再等一次外部请求) */
+    ...(m.attachment ? { attachment: m.attachment } : {}),
     ...(m.imageId ? { imageId: m.imageId } : {}),
     /* 角色发的那张也要带走。**两条都要**:漏了 photo 这枚标记,
        导进来的记录会少一张图;漏了 photoId 就只剩一句"我给你看个东西"。

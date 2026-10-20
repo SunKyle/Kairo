@@ -9,6 +9,8 @@ import type {
   MemoryOrigin
 } from '../types'
 import { normalizeMessageLayer } from './messageLayers'
+/* 附件的读侧收口:与导入包共用同一个判据(见 lib/chatAttachments 的文件头) */
+import { coerceChatAttachment } from './chatAttachments'
 
 // 极简 IndexedDB 封装:用来持久化历史记录与提示词封面(比 localStorage 容量大得多)
 const DB_NAME = 'kimage.db'
@@ -553,6 +555,13 @@ export function chatMessageFromRow(row: unknown): ChatMessage {
      读侧 effectiveLayer 自然兜回 say;合法/缺省原样留 */
   if (out.layer !== undefined && normalizeMessageLayer(out.layer) === undefined) {
     out = { ...out, layer: undefined }
+  }
+  /* 附件来自外部内容(导入包、被同步工具改过的库),而它会被直接画成一张
+     可点的卡片 —— url 就是那个 `<a href>`。整块收口,不合法就丢掉:
+     留一个没有地址的空壳会在界面上挂出一张点不开的卡 */
+  if (out.attachment !== undefined) {
+    const attachment = coerceChatAttachment(out.attachment)
+    out = { ...out, attachment }
   }
   return out
 }

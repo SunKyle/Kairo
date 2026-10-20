@@ -6,6 +6,8 @@ import {
   /* 出图失败时收口成人话(中止不算失败、空话给兜底)——
      这条链上每一步的失败原因都靠它传出来 */
   photoFailureText,
+  /* 链接卡片的异步补全。失败返回 null,不打断这一轮 */
+  previewLink,
   uid
 } from '../api'
 import {
@@ -41,7 +43,7 @@ import { lastMessageLookup, orderConversations } from '../lib/chatOrder'
 /* 打字节奏:上游吐字是匀速的,而匀速正是机器感最直接的来源(见那份文件的四条纪律) */
 import { Pacer } from '../lib/typing'
 import type { Page } from '../lib/nav'
-import type { ApiConfig, ChatMessage, HistorySource } from '../types'
+import type { ApiConfig, ChatAttachment, ChatMessage, HistorySource } from '../types'
 import type { useChat } from './useChat'
 import type { useConfigs } from './useConfigs'
 import type { useCharacters } from './useCharacters'
@@ -64,17 +66,17 @@ function metaIssueNote(issue: string): string {
       if (warnedMetaTool) return ''
       warnedMetaTool = true
       return (
-        'That model did not use tool calling, so the mood and picture for this reply are missing. ' +
+        'That model did not use tool calling, so the mood, picture and shared link for this reply are missing. ' +
         'Choose a model with function calling (for example deepseek-flash or deepseek-v4-pro) in API settings.'
       )
     case 'invalid_arguments':
       return (
-        "The model's metadata call arrived malformed, so this reply has no mood or picture. " +
+        "The model's metadata call arrived malformed, so this reply has no mood, picture or shared link. " +
         'Try again, or switch to a model with reliable tool calling.'
       )
     case 'empty_metadata':
       return (
-        'The model called the metadata tool but left it empty, so this reply has no mood or picture.'
+        'The model called the metadata tool but left it empty, so this reply has no mood, picture or shared link.'
       )
     default:
       return ''
@@ -374,6 +376,8 @@ async function runChat(id: string) {
      与视角一样只由模型说得出 —— 而它是"让角色拍特写,却总变成臂展自拍"
      那件事的解药(见 lib/chatPhoto 的 FRAMING) */
   let photoFrame = ''
+  /* 它这一轮转过来的链接。null = 没有；服务端已经归一化过 */
+  let attachment: ChatAttachment | null = null
   /* 工具调用这一路的岔子(见 api.ts 的 ChatStreamResult.metaIssue)。
      正文照常保留,只在下面对应的那一小段里换成一句提示 */
   let metaIssue = ''
@@ -486,6 +490,7 @@ async function runChat(id: string) {
     photoSelf = out.photoSelf
     photoShot = out.photoShot
     photoFrame = out.photoFrame
+    attachment = out.attachment
     metaIssue = out.metaIssue
     /* 这一轮到底有没有"发图的意图",以及它想给你看什么。
      *
@@ -601,8 +606,16 @@ async function runChat(id: string) {
     }
     drawChatPhoto(id, reply)
   }
+  /* 它这一轮转过来的卡片:**与发图同理,挂在 spine 上** ——
+     卡片是"说出口的话"的一部分(那一轮的主句在卡片旁边),不是内心或旁白。
+     模型给的标题与地址当场就能画;页面标题 / 站点名由服务端去读,
+     晚一步补上(见 fillAttachmentPreview 的说明),失败就不补 */
+  if (attachment && !stopped) {
+    reply.attachment = attachment
+    void fillAttachmentPreview(id, reply)
+  }
   // 整轮到底有没有留下可见文字(扇出后要看这一轮的全部消息,不能只看 spine)
-  if (!turn.some((m) => m.content.trim()) && !stopped) {
+  if (!turn.some((m) => m.content.trim() || m.attachment) && !stopped) {
     /* 一个字都没收到(上游出错,或它真的什么都没说):
        把这轮的空壳摘掉,免得消息流里留一个空气泡。
        摘掉之后最后一条又回到用户那句 —— 界面上因此会给出"重试",
@@ -708,6 +721,38 @@ async function saveChatWork(
        它内部把落盘失败变成了提示(见 useHistory)。这句只是让"作品墙里没有它"
        有个说法 —— 它不会盖掉出图本身已经给出的提示 */
     notice.value = 'The image is in the conversation, but was not saved to history.'
+  }
+}
+
+/**
+ * 链接卡片的"站点信息"是服务端去那个页面读回来的(og:description / 站点名),
+ * 比模型给的一句标题更准 —— 但它要发一次外部请求,**不能挡在回复前面**:
+ * 卡片当场就用模型给的标题与域名画出来,这一路回来再把 description 补上。
+ *
+ * 补不到(取不到页面、超时、对方不是 HTML)就保持原样:卡片上已经有标题、
+ * 域名与一个能点的地址,少了描述只是少一行字,不该冒出一句错误。
+ *
+ * 写回之前核一次"这条还在、还是同一个地址":生成途中可能清空过对话、
+ * 删掉这条,或者用户已经重生成过 —— 一张迟到的卡片不该把删掉的消息叫回来。
+ */
+async function fillAttachmentPreview(charId: string, msg: ChatMessage) {
+  const att = msg.attachment
+  /* 只对 link 走:music 的曲名歌手是模型给的,不该被某个网页的 og 标题盖掉;
+     而它常常根本没有地址,也没得读。 */
+  if (!att || att.kind !== 'link' || !att.url) return
+  /* 网络层直接抛(断网、服务没起):与"预览不到"同一条退路 */
+  const preview = await previewLink(att.url).catch(() => null)
+  if (!preview) return
+  const cur = (chatMessages.value[charId] || []).find((m) => m.id === msg.id)
+  const live = cur?.attachment
+  if (!cur || !live || live.url !== att.url) return
+  cur.attachment = { ...live, preview }
+  try {
+    await putChatMessage({ ...toRaw(cur) })
+    // 另一页若正开着这个角色,让它的卡片也补上描述
+    announce('chat', charId)
+  } catch {
+    /* 预览只是锦上添花:存不下就算了,界面上这张卡片已经完整可用 */
   }
 }
 

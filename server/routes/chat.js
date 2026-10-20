@@ -27,6 +27,7 @@ import { guidanceSection } from '../chatGuidance.js'
 import { memoryBrief, memoryBriefSection, memorySection } from '../chatMemory.js'
 import { photoRules } from '../chatPhoto.js'
 import { priorityRules } from '../chatPriority.js'
+import { shareRules } from '../chatShare.js'
 import { relationshipSection } from '../relationship.js'
 import { layerRules } from '../chatLayers.js'
 
@@ -69,7 +70,7 @@ const CHAT_RULES = `Rules:
 const CHAT_META_RULE = `Ending a message:
 - After you finish writing the reply, call the ${META_TOOL_NAME} tool exactly once. It is not part of the message: never write the metadata, the tool name, or a JSON object into the reply text, and never mention the call to the user.
 - "mood" is one lowercase English word for how you feel as you send this message. Pick the word that actually fits, for example: arrogant, amused, wary, bored, angry, tired, warm, cold, proud, uneasy, delighted. Never a phrase, never more than one word.
-- If you are sending a picture, include the "photo" object in that same call, described above.
+- If you are sending a picture and the tool offers a "photo" field, include it. If you are passing along a link or a song, include the "attachment" object. Fill them as described in the tool definition.
 - Never mention this call, comment on it, or explain it to the user. It is a technical envelope, not something you say.`
 
 /** 换行与连续空白收敛成单个空格。这些值在表单里是可换行的 textarea,
@@ -234,14 +235,19 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
      与上面几段一样,空串时整段不出现 —— 用户一项都没表态,就不该有任何指导 */
   const guide = guidanceSection(guidance)
   if (guide) parts.push(guide)
-  /* 规则三段分开 push,顺序是有讲究的:**通用规则 → 发图说明 → 元数据工具 → 分层纪律**。
+  /* 规则几段分开 push,顺序是有讲究的:**通用规则 → 发图说明 → 分享链接 → 元数据工具 → 分层纪律**。
 
      - 发图说明(chatPhoto.js)只在 **canDraw** 为真时注入。canDraw = 前端那条出图配置
        可用(有 baseUrl 且有 model,与 generateChatPhoto 的 imageConfigGap 同一个判法)。
        没配出图模型时这段整块消失:既省 token,又不引着模型去报一个画不出来的 photo。
        缺省按"能画"处理(见调用处),老前端/手搓请求不传时维持原行为。
 
-     - 元数据规则排在发图之后,因为上面那段先讲 photo 对象怎么填,这一条再把
+     - 分享链接(chatShare.js)**不门控**。它没有对应的外部能力要求 ——
+       链接是模型从对话里原样转述的，不联网也能做；而"别编 URL"这条纪律
+       恰恰要在它能编的时候一直说。排在发图之后，是因为这两段都在讲
+       "同一枚工具调用里另外那个对象怎么填"。
+
+     - 元数据规则排在它们之后,先把 photo / attachment 两个对象讲清,这一条再把
        "每轮调用一次 emit_message_meta、正文里不许写"钉死。它不由 canDraw 门控 ——
        心情每轮都要报。
 
@@ -255,6 +261,7 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
        由模型通过 tool calling 报给服务端(见 chatTools.js)。 */
   parts.push(CHAT_RULES)
   if (canDraw) parts.push(photoRules())
+  parts.push(shareRules())
   parts.push(CHAT_META_RULE)
   parts.push(layerRules(sceneMode))
   return parts.join('\n\n')
@@ -469,7 +476,10 @@ app.post('/api/chat', rateLimit, async (req, res) => {
       photo: meta?.photo || '',
       photoSelf: meta?.photoSelf === true,
       photoShot: meta?.photoShot || '',
-      photoFrame: meta?.photoFrame || ''
+      photoFrame: meta?.photoFrame || '',
+      /* 附件只在这一帧里出现一次。它是**已经归一化过的对象**（见
+         chatAttachments.js），不是模型原话 —— 前端可以直接拿去渲染 */
+      attachment: meta?.attachment || null
     }
   }
 
@@ -583,6 +593,31 @@ app.post('/api/chat', rateLimit, async (req, res) => {
        所以得一路记着 —— 丢掉它等于把"说完了"和"额度用完了"混成同一件事 */
     let finishReason = ''
 
+    /* 收尾只有一条判断,两条出口共用:
+       - 上游吐了一行 `data: [DONE]`(OpenAI 兼容服务端的常规收场)
+       - 上游没发 [DONE] 就把流读完了
+       以前只有后者走空轮判断,于是**一条被丢掉的内网链接卡片**(归一化后
+       attachment 为空)配上零正文,会从 [DONE] 那条路直接回 `done` —— 界面
+       收到一条什么都没有的空气泡,把"这一轮其实失败了"当成了正常沉默。
+       判据:有正文,或有归一化后仍然活着的 attachment,才算这一轮有东西可看;
+       两者都没有就是"没话说",回 error。 */
+    const finishTurn = () => {
+      const tool = toolMetaFromCalls(toolCalls, who)
+      if (gotAny || tool.meta.attachment) {
+        sendEvent({
+          done: true,
+          finish: finishReason,
+          ...flushTail(tool.meta),
+          ...(tool.issue ? { metaIssue: tool.issue } : {})
+        })
+      } else {
+        /* 一个字都没吐出来 —— 上游只回了 role 那一帧就结束,或回了别的东西。
+           这时候回 done 会让前端以为"它就是这么沉默",而其实是一次失败 */
+        sendEvent({ error: 'The model returned nothing to say.' })
+      }
+      endStream()
+    }
+
     for (;;) {
       armIdle()
       const { done, value } = await reader.read()
@@ -597,14 +632,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
         const payload = line.slice(5).trim()
         if (!payload) continue
         if (payload === '[DONE]') {
-          const tool = toolMetaFromCalls(toolCalls, who)
-          sendEvent({
-            done: true,
-            finish: finishReason,
-            ...flushTail(tool.meta),
-            ...(tool.issue ? { metaIssue: tool.issue } : {})
-          })
-          endStream()
+          finishTurn()
           return
         }
         let delta = ''
@@ -640,21 +668,8 @@ app.post('/api/chat', rateLimit, async (req, res) => {
       }
     }
 
-    if (gotAny) {
-      const tool = toolMetaFromCalls(toolCalls, who)
-      sendEvent({
-        done: true,
-        finish: finishReason,
-        ...flushTail(tool.meta),
-        ...(tool.issue ? { metaIssue: tool.issue } : {})
-      })
-    } else {
-      /* 一个字都没吐出来 —— 上游只回了 role 那一帧就结束,或回了别的东西。
-         这时候回 done 会让前端以为"它就是这么沉默",而其实是一次失败。
-         只调了工具、没写正文也算这一类:聊天框里没有话可说,不该留一个空气泡 */
-      sendEvent({ error: 'The model returned nothing to say.' })
-    }
-    endStream()
+    // 上游没发 [DONE] 就把流读完了 —— 与 [DONE] 那条出口共用同一个收尾判断
+    finishTurn()
   } catch (e) {
     const aborted = e?.name === 'AbortError'
     /* 流已经开了:只能按事件收场,再回 HTTP 错误码没有意义 */

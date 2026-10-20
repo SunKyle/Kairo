@@ -21,6 +21,43 @@ describe('contextText · 空正文换成给模型看的占位', () => {
     expect(contextText({ content: '   \n  ', imageId: 'x' })).toBe(EMPTY_WITH_IMAGE)
     expect(contextText({ content: '\t' })).toBe(EMPTY_WITHOUT_IMAGE)
   })
+
+  it('只转了一个链接、一个字没写:说出"转了什么",而不是当成空消息', () => {
+    expect(
+      contextText({
+        content: '',
+        attachment: { kind: 'link', title: 'A post', url: 'https://example.com/x' }
+      })
+    ).toBe('(shared a link — "A post": https://example.com/x)')
+  })
+
+  it('图与链接都有时两句都在,各占一行', () => {
+    expect(
+      contextText({
+        content: '',
+        photoId: 'p-1',
+        attachment: { kind: 'link', title: 'A post', url: 'https://example.com/x' }
+      })
+    ).toBe(`${EMPTY_WITH_IMAGE}\n(shared a link — "A post": https://example.com/x)`)
+  })
+
+  it('只分享一首歌、没写正文:说出"放了什么歌",歌手在副标题里,没地址也不硬编', () => {
+    expect(
+      contextText({
+        content: '',
+        attachment: { kind: 'music', title: 'Night Changes', subtitle: 'Harry Styles' }
+      })
+    ).toBe('(shared a song — "Night Changes" by Harry Styles)')
+  })
+
+  it('歌带了地址时把那一句也念出来;没歌手就省略 by', () => {
+    expect(
+      contextText({
+        content: '',
+        attachment: { kind: 'music', title: 'Solo', url: 'https://example.com/s' }
+      })
+    ).toBe('(shared a song — "Solo": https://example.com/s)')
+  })
 })
 
 describe('contextText · 有正文就一个字不动', () => {
@@ -30,6 +67,15 @@ describe('contextText · 有正文就一个字不动', () => {
 
   it('带图的正常消息也一样', () => {
     expect(contextText({ content: 'look', imageId: 'x' })).toBe('look')
+  })
+
+  it('带链接的正常消息:正文一个字不动,只在后面补一行转述', () => {
+    expect(
+      contextText({
+        content: '  you would like this  ',
+        attachment: { kind: 'link', title: 'A post', url: 'https://example.com/x' }
+      })
+    ).toBe('  you would like this  \n(shared a link — "A post": https://example.com/x)')
   })
 
   it('标题里那种全角/换行正文照旧', () => {

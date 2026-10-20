@@ -37,6 +37,9 @@ import { agoLabel } from '../../server/chatTime.js'
 /* 左栏的目录与搜索收在 ChatRail 里 —— 它与窄屏那个"换角色"浮层是同一个组件,
    两份内容一字不差的重复因此消掉。排序口径(lib/chatOrder)也随它一起走 */
 import ChatRail from './ChatRail.vue'
+/* 消息里转过来的链接。**画在气泡外面** —— 它与图同一条理由:
+   文字有文字的框,一个能点开的东西该有它自己的边 */
+import MessageAttachment from './MessageAttachment.vue'
 /* 此刻情绪那枚胶囊：判据（en→中文/色桶/表情、没配到回显原词）全在 lib/moodDisplay，
    这里只负责在名字旁摆出来 */
 import MoodPill from './MoodPill.vue'
@@ -503,9 +506,9 @@ function canDeleteMsg(m: ChatMessage): boolean {
 function hasMsgOps(m: ChatMessage): boolean {
   return canSpeakMsg(m) || canDeleteMsg(m) || canRegenMsg(m)
 }
-/** 这条消息挂着图没有(用户附的、或角色发的)。空气泡的判据要用它 */
+/** 这条消息挂着图没有(用户附的、角色发的,或一张链接卡)。空气泡的判据要用它 */
 function hasAttach(m: ChatMessage): boolean {
-  return !!(m.imageId || m.photoId || m.photo)
+  return !!(m.imageId || m.photoId || m.photo || m.attachment)
 }
 
 const personaMissing = computed(() => !!current.value && !hasPersona(current.value.persona))
@@ -1261,6 +1264,16 @@ onBeforeUnmount(() => {
                     </button>
                   </span>
                 </div>
+                <!-- 它转过来的链接。画在气泡与图之间:**先读它说了什么,再看它转来什么**,
+                     最后才是它自己拍的画面 —— 三样都是这一条消息的一部分,
+                     所以跟着同一条走,不与别的消息混排。
+                     只有卡片、没写字的那一条也有地方落:气泡 v-for 一格都不画,
+                     这张卡自己撑起整条消息(空气泡的判据见 hasAttach) -->
+                <MessageAttachment
+                  v-if="r.msg.role === 'assistant' && r.msg.attachment"
+                  class="msg-link"
+                  :attachment="r.msg.attachment"
+                />
                 <!-- 角色发来的图。**也在气泡外面**,垫在它说的话下面:
                      先读它说什么,再看它给你看什么。还没有 photoId = 正在画,
                      占一个同尺寸的方骨架位,免得图到了把整段对话顶下去。
@@ -2164,6 +2177,14 @@ onBeforeUnmount(() => {
    (选择器只咬"紧跟在另一格后面"的那一格) */
 .msg > .bubble + .bubble {
   margin-top: var(--sp-1);
+}
+/* 链接卡与上面那条气泡之间留 8px(与图同一档)。
+   卡片自己撑起一条消息时(first-child)那 8px 就成了消息上方莫名的空档,收掉 */
+.msg > .msg-link {
+  margin-top: 8px;
+}
+.msg > .msg-link:first-child {
+  margin-top: 0;
 }
 /* 每一格轻轻浮出来。分拍的价值正在这儿:流式里新起的那一拍、以及一段说完
    连着出现的几拍,各自淡入一次,一拍接一拍 —— 而不是"哗"地一起冒出来。

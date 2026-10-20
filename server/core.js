@@ -124,7 +124,9 @@ export async function safeFetch(target, init = {}) {
 }
 
 const RATE_WINDOW_MS = 60_000
-const RATE_MAX = 30
+/* 每分钟每个来源地址的上限。探针会在一分钟里打三十多次（它起的是自己的服务端），
+   所以留一个启动时的旋钮 —— 默认值不变，请求方改不了它。 */
+const RATE_MAX = Math.max(1, Number(process.env.KAIRO_RATE_MAX) || 30)
 const rateHits = new Map()
 
 export function rateLimit(req, res, next) {

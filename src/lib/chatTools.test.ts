@@ -54,7 +54,7 @@ describe('metaTool · 工具的形状', () => {
       required: string[]
       properties: Record<string, { enum?: string[]; description?: string }>
     }
-    expect(Object.keys(props).sort()).toEqual(['mood', 'photo'])
+    expect(Object.keys(props).sort()).toEqual(['attachment', 'mood', 'photo'])
     expect(photo.type).toBe('object')
     expect(photo.required).toEqual(['scene'])
     expect(photo.properties.shot.enum).toEqual(['selfie', 'third'])
@@ -66,9 +66,28 @@ describe('metaTool · 工具的形状', () => {
 
   it('canDraw=false 时 schema 里连 photo 这个字段都不出现', () => {
     const props = metaTool(false).function.parameters.properties
-    expect(Object.keys(props)).toEqual(['mood'])
+    expect(Object.keys(props)).toEqual(['mood', 'attachment'])
     // 也不能只是把 required 去掉、留一个可选字段在那儿引着模型写
     expect(props.photo).toBeUndefined()
+  })
+
+  it('附件不随 canDraw:分享链接/歌曲都不需要出图配置,两种情况下都在', () => {
+    for (const canDraw of [true, false]) {
+      const att = metaTool(canDraw).function.parameters.properties.attachment as {
+        required: string[]
+        properties: { kind: { enum: string[] } } & Record<string, unknown>
+      }
+      // url 从必填里拿掉了：音乐可以先只是一张"我在放这首歌"的分享卡
+      expect(att.required).toEqual(['kind', 'title'])
+      expect(Object.keys(att.properties).sort()).toEqual(['kind', 'subtitle', 'title', 'url'])
+    }
+  })
+
+  it('kind 枚举认 link 与 music', () => {
+    const att = metaTool(true).function.parameters.properties.attachment as {
+      properties: { kind: { enum: string[] } }
+    }
+    expect(att.properties.kind.enum).toEqual(['link', 'music'])
   })
 })
 
@@ -135,7 +154,8 @@ describe('toolMetaFromCalls · 收成旧的扁平字段', () => {
       photo: '',
       photoSelf: false,
       photoShot: '',
-      photoFrame: ''
+      photoFrame: '',
+      attachment: null
     })
   })
 
@@ -168,6 +188,71 @@ describe('toolMetaFromCalls · 收成旧的扁平字段', () => {
     expect(got.issue).toBe('')
     expect(got.meta.mood).toBe('tired')
     expect(got.meta.photo).toBe('')
+  })
+
+  it('只分享一个链接、一个字不说也算成功', () => {
+    const calls = newToolCalls()
+    call(calls, 0, META_TOOL_NAME, {
+      mood: 'amused',
+      attachment: {
+        kind: 'link',
+        title: '  The   quiet  part of the internet ',
+        url: 'https://example.com/a-post',
+        subtitle: 'you would like this one'
+      }
+    })
+    const got = toolMetaFromCalls(calls)
+    expect(got.issue).toBe('')
+    expect(got.meta.attachment).toEqual({
+      kind: 'link',
+      title: 'The quiet part of the internet',
+      url: 'https://example.com/a-post',
+      subtitle: 'you would like this one'
+    })
+  })
+
+  it('标题留空时用域名兜底,卡片不会只剩一串地址', () => {
+    const calls = newToolCalls()
+    call(calls, 0, META_TOOL_NAME, {
+      mood: 'calm',
+      attachment: { kind: 'link', url: 'https://www.example.com/x' }
+    })
+    expect(toolMetaFromCalls(calls).meta.attachment?.title).toBe('example.com')
+  })
+
+  it('本机/内网地址整块丢掉 —— 它不算"这一轮有元数据"', () => {
+    const calls = newToolCalls()
+    call(calls, 0, META_TOOL_NAME, {
+      attachment: { kind: 'link', title: 'dev server', url: 'http://localhost:3101/x' }
+    })
+    const got = toolMetaFromCalls(calls)
+    expect(got.meta.attachment).toBeNull()
+    expect(got.issue).toBe('empty_metadata')
+  })
+
+  it('只递一首歌、一个地址都没有也算成功(纯分享卡)', () => {
+    const calls = newToolCalls()
+    call(calls, 0, META_TOOL_NAME, {
+      mood: 'warm',
+      attachment: { kind: ' music ', title: ' Night  Changes ', subtitle: ' Harry Styles ' }
+    })
+    const got = toolMetaFromCalls(calls)
+    expect(got.issue).toBe('')
+    expect(got.meta.attachment).toEqual({
+      kind: 'music',
+      title: 'Night Changes',
+      subtitle: 'Harry Styles'
+    })
+  })
+
+  it('音乐带了个坏地址:只丢地址、留住这张卡(链接则会整块丢)', () => {
+    const calls = newToolCalls()
+    call(calls, 0, META_TOOL_NAME, {
+      attachment: { kind: 'music', title: 'Real Home', url: 'http://127.0.0.1:9/x' }
+    })
+    const got = toolMetaFromCalls(calls)
+    expect(got.meta.attachment).toEqual({ kind: 'music', title: 'Real Home' })
+    expect(got.issue).toBe('')
   })
 
   it('mood 不成词就当没给 —— 但同一份参数里的 photo 仍然有效', () => {
@@ -304,7 +389,8 @@ describe('normalizeMeta · 不做 issue 判断的那一层', () => {
       photo: '',
       photoSelf: false,
       photoShot: '',
-      photoFrame: ''
+      photoFrame: '',
+      attachment: null
     })
   })
 

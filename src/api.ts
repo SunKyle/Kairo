@@ -1,4 +1,4 @@
-import type { ApiConfig, GenParams, HistoryEntry, ResultItem, ReuseParams, Collection, Character, CharacterDraft, CharacterFields, CharacterPersona, CharacterView, CharacterViewKind, CharacterVoice, ChatMessage, FieldOrigin, FieldOriginMap, ImportedCharacter, ImportedChat, ImportedChatMessage, SpecFieldKey } from './types'
+import type { ApiConfig, GenParams, HistoryEntry, ResultItem, ReuseParams, Collection, Character, CharacterDraft, CharacterFields, CharacterPersona, CharacterView, CharacterViewKind, CharacterVoice, ChatAttachment, ChatAttachmentPreview, ChatMessage, FieldOrigin, FieldOriginMap, ImportedCharacter, ImportedChat, ImportedChatMessage, SpecFieldKey } from './types'
 import type { PruneResult, CharRefRecord } from './lib/idb'
 import { titleFromPrompt } from './lib/text'
 /* 关系状态那一域的收口住在 lib/relationship —— 载入时读回来的 relationship
@@ -23,6 +23,8 @@ import { localStamp } from '../server/chatTime.js'
    这一处,于是**导进来的对话"重画这一张"会拿到一句被砍掉尾巴的场景**,
    而且不报错。上限只该有一个出处 */
 import { PHOTO_SCENE_CHARS } from '../server/chatTags.js'
+/* 附件从工具调用、导入包、IndexedDB 三条路进来,收口只有这一份 —— 见那边文件头 */
+import { coerceAttachmentPreview, coerceChatAttachment } from './lib/chatAttachments'
 import {
   getAll,
   pruneHistory,
@@ -1344,7 +1346,11 @@ function coerceImportedChat(raw: unknown): ImportedChat | undefined {
     const o = row as Record<string, unknown>
     const role = o.role === 'user' || o.role === 'assistant' ? o.role : null
     const content = typeof o.content === 'string' ? o.content.slice(0, CHAT_MAX_CHARS) : ''
-    if (!role || !content.trim()) return
+    /* 附件先过收口。**它能让一条没有正文的消息成立** —— 角色只转来一张
+       卡片、一个字没写，在包里同样是一条消息；从前这里按"正文为空"丢掉，
+       导进来的那段对话会少掉它转过的东西 */
+    const attachment = coerceChatAttachment(o.attachment)
+    if (!role || (!content.trim() && !attachment)) return
     messages.push({
       role,
       content,
@@ -1383,6 +1389,9 @@ function coerceImportedChat(raw: unknown): ImportedChat | undefined {
       ...(o.photoFrame === 'close' || o.photoFrame === 'medium' || o.photoFrame === 'full'
         ? { photoFrame: o.photoFrame }
         : {}),
+      /* 转过来的那个链接。**再过一次 URL 收口** —— 这是外部文件，
+         导出时干净不代表收到时干净（包可以被手改） */
+      ...(attachment ? { attachment } : {}),
       /* 上一次失败的原因。**这是一句外部输入**(它最初来自上游的报错原文),
          会被直接渲染在界面上,所以按文案那一道收:去掉控制字符、限长。
          它不影响"有没有图"这个判断(那由 photoId 定),所以留着是无害的 ——
@@ -2382,9 +2391,12 @@ export interface ChatStreamResult {
      客户端按"它 → 场景文本 → 这一档视角的缺省"定下最终景别(见 lib/chatPhoto
      的 resolveFrame)。它与 photoShot 是同一性质的一位,所以同路送达 */
   photoFrame: string
+  /* 它这一轮转过来的链接。null = 没有。**服务端已经归一化过**
+     (见 server/chatAttachments.js),客户端只做一次形状复核 */
+  attachment: ChatAttachment | null
   /* 元数据这一路出了什么岔子:`not_called`(模型根本没调工具)、
      `unknown_tool`(调了别的工具)、`invalid_arguments`(参数不是合法 JSON)、
-     `empty_metadata`(调了但没给出 mood/photo)。空串 = 一切正常。
+     `empty_metadata`(调了但没给出 mood/photo/attachment)。空串 = 一切正常。
      正文照常送达 —— 这一位只用来让界面提示"换个支持 tool calling 的模型",
      不改变这一轮已经收到的内容 */
   metaIssue: string
@@ -2668,6 +2680,8 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
   let photoShot = ''
   /* 这一张离得多近(见 ChatStreamResult.photoFrame)。与 photo 同路 */
   let photoFrame = ''
+  /* 它这一轮转过来的链接。null = 没有；与 mood/photo 同走收尾帧 */
+  let attachment: ChatAttachment | null = null
   /* 元数据这一路出的岔子(见 ChatStreamResult.metaIssue)。同样走收尾帧 */
   let metaIssue = ''
   try {
@@ -2690,6 +2704,7 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
           photoSelf?: boolean
           photoShot?: string
           photoFrame?: string
+          attachment?: ChatAttachment | null
           metaIssue?: string
         }
         try {
@@ -2709,6 +2724,7 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
             photoSelf: evt.photoSelf === true || photoSelf,
             photoShot: evt.photoShot || photoShot,
             photoFrame: evt.photoFrame || photoFrame,
+            attachment: coerceChatAttachment(evt.attachment) || attachment,
             metaIssue: evt.metaIssue || metaIssue
           }
         }
@@ -2718,6 +2734,8 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
         if (evt.photoSelf === true) photoSelf = true
         if (typeof evt.photoShot === 'string' && evt.photoShot) photoShot = evt.photoShot
         if (typeof evt.photoFrame === 'string' && evt.photoFrame) photoFrame = evt.photoFrame
+        const att = coerceChatAttachment(evt.attachment)
+        if (att) attachment = att
         if (typeof evt.metaIssue === 'string' && evt.metaIssue) metaIssue = evt.metaIssue
       }
     }
@@ -2726,7 +2744,32 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
        不取消这条读流就悬着。已经读完时取消是空操作 */
     reader.cancel().catch(() => {})
   }
-  return { finish, mood, photo, photoSelf, photoShot, photoFrame, metaIssue }
+  return { finish, mood, photo, photoSelf, photoShot, photoFrame, attachment, metaIssue }
+}
+
+/**
+ * 取一个链接的预览（标题 / 描述 / 站点名）。**失败返回 null，不抛**：
+ * 它是卡片上多出来的一行字，不是一条回复能不能成立的条件。
+ * 调用方用它在消息已经落屏之后异步补全（见 useChatFlow）。
+ */
+export async function previewLink(
+  url: string,
+  signal?: AbortSignal
+): Promise<ChatAttachmentPreview | null> {
+  const resp = await fetch('/api/link-preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify({ url })
+  })
+  if (!resp.ok) return null
+  let data: unknown
+  try {
+    data = await resp.json()
+  } catch {
+    return null
+  }
+  return coerceAttachmentPreview(data) ?? null
 }
 
 /* ============================================================

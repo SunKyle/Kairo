@@ -1,7 +1,8 @@
 /* ===== 消息元数据的唯一通道：tool calling ==============================
-   一轮回复除了正文，还带着两样**用户不该在正文里看见**的东西：
-   它此刻的心情词，以及它想发的那张图。以前这两样写在正文末尾的
-   `[mood:]` / `[photo:]` 标签里，由 chatTags.js 从文本上剪下来 ——
+   一轮回复除了正文，还带着几样**用户不该在正文里看见**的东西：
+   它此刻的心情词、它想发的那张图，以及它想转给你的一个链接。
+   以前前两样写在正文末尾的 `[mood:]` / `[photo:]` 标签里，
+   由 chatTags.js 从文本上剪下来 ——
    那是"文本信道"，做法再稳也一直要跟半截标签、代码围栏、引号写坏打交道。
 
    2026-10-20 起改成 tool calling：模型在正文之外调用
@@ -22,6 +23,7 @@
    -------------------------------------------------------------------- */
 
 import { PHOTO_SCENE_CHARS, cleanScene, parsePhotoIntent } from './chatTags.js'
+import { attachmentSchema, normalizeAttachment } from './chatAttachments.js'
 
 /** 工具名。System Prompt、探针、这里三处必须逐字一致 */
 export const META_TOOL_NAME = 'emit_message_meta'
@@ -108,7 +110,7 @@ function normalizePhoto(v, charName) {
   }
 }
 
-/** 一个已通过 JSON.parse 的参数对象 → 旧的扁平结果 */
+/** 一个已通过 JSON.parse 的参数对象 → 旧的扁平字段 + 一枚附件 */
 export function normalizeMeta(obj, charName = '') {
   const photo = normalizePhoto(obj?.photo, charName)
   return {
@@ -116,7 +118,10 @@ export function normalizeMeta(obj, charName = '') {
     photo: photo ? photo.scene : '',
     photoSelf: photo ? photo.self : false,
     photoShot: photo ? photo.shot : '',
-    photoFrame: photo ? photo.frame : ''
+    photoFrame: photo ? photo.frame : '',
+    /* 附件与 photo 彼此独立：可以只分享一个链接、可以两样都有，
+       也可以（绝大多数时候）两样都没有 */
+    attachment: normalizeAttachment(obj?.attachment)
   }
 }
 
@@ -160,12 +165,14 @@ export function metaTool(canDraw = true) {
       additionalProperties: false
     }
   }
+  /* 附件不随 canDraw：分享一个链接、一首歌都不需要任何出图配置 */
+  properties.attachment = attachmentSchema()
   return {
     type: 'function',
     function: {
       name: META_TOOL_NAME,
       description:
-        'Record the private metadata for the message you are sending. Call this exactly once after you finish writing your reply. Never write this metadata into the reply text, and never mention the call to the user.',
+        'Record the private metadata for the message you are sending: how you feel, and anything you are sending along with it (a picture, a link, a song). Call this exactly once after you finish writing your reply. Never write this metadata into the reply text, and never mention the call to the user.',
       parameters: {
         type: 'object',
         properties,
@@ -219,8 +226,8 @@ export function takeToolCallDeltas(calls, deltas) {
  * - not_called        模型一个工具都没调用（多半是不支持，或没照着做）
  * - unknown_tool      调了，但不是 emit_message_meta
  * - invalid_arguments 调了，arguments 不是合法 JSON / 不是对象
- * - empty_metadata    参数合法，但 mood 与 photo 都为空
- * 合法且至少有一项时 issue 是空串。
+ * - empty_metadata    参数合法，但 mood / photo / attachment 都为空
+ * 合法且至少有一项时 issue 是空串（只分享一个链接、只递一首歌、一个字不说也算一项）。
  */
 export function toolMetaFromCalls(calls, charName = '') {
   const empty = {
@@ -228,7 +235,8 @@ export function toolMetaFromCalls(calls, charName = '') {
     photo: '',
     photoSelf: false,
     photoShot: '',
-    photoFrame: ''
+    photoFrame: '',
+    attachment: null
   }
   if (!calls || calls.size === 0) return { meta: empty, issue: 'not_called' }
 
@@ -272,7 +280,9 @@ export function toolMetaFromCalls(calls, charName = '') {
   }
 
   const meta = normalizeMeta(merged, charName)
-  if (!meta.mood && !meta.photo) return { meta, issue: 'empty_metadata' }
+  if (!meta.mood && !meta.photo && !meta.attachment) {
+    return { meta, issue: 'empty_metadata' }
+  }
   return { meta, issue: '' }
 }
 

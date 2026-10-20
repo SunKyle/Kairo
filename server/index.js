@@ -6,6 +6,7 @@ import { ON_SERVERLESS, assertSafeTarget, safeFetch, isBlockedAddress } from './
 import { registerGenerateRoute } from './routes/generate.js'
 import { registerEnhanceRoute } from './routes/enhance.js'
 import { registerChatRoute } from './routes/chat.js'
+import { registerLinkPreviewRoute } from './routes/linkPreview.js'
 import { registerTtsRoutes } from './routes/tts.js'
 import { registerTestRoutes } from './routes/test.js'
 
@@ -27,6 +28,7 @@ app.use(express.json({ limit: JSON_LIMIT }))
 registerGenerateRoute(app)
 registerEnhanceRoute(app)
 registerChatRoute(app)
+registerLinkPreviewRoute(app)
 registerTtsRoutes(app)
 registerTestRoutes(app)
 

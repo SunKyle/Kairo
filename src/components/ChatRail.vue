@@ -93,12 +93,21 @@ function stampOf(t: number): string {
   return new Date(t).toISOString()
 }
 
-/** 那一行摘要:最后一句说了什么 */
+/** 那一行摘要:最后一句说了什么。
+ *  只发了一张卡片、一个字没说的回复也要有个说法 —— 从前这里会落到
+ *  "Empty message",而那条消息明明带着一个能点开的链接 */
 function lastLine(c: Character): string {
   const m = lastOf(c.id)
   if (!m) return 'No messages yet'
   const t = m.content.replace(/\s+/g, ' ').trim()
-  if (!t) return m.stopped ? '…' : 'Empty message'
+  if (!t) {
+    if (m.attachment) {
+      return m.attachment.kind === 'music'
+        ? `Shared a song: ${m.attachment.title}`
+        : `Shared a link: ${m.attachment.title}`
+    }
+    return m.stopped ? '…' : 'Empty message'
+  }
   return (m.role === 'user' ? 'You: ' : '') + t
 }
 </script>

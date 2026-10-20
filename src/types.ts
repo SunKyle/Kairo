@@ -302,6 +302,34 @@ export type SpecFieldKey = keyof CharacterFields | keyof CharacterPersona
  *  不必为它们补一次数据迁移。 */
 export type FieldOriginMap = Partial<Record<SpecFieldKey, FieldOrigin>>
 
+/** 链接预览补上的那一行。**不是模型给的** —— 它由服务端去页面里读回来
+ *  (见 server/linkPreview.js),取不到就不出现。 */
+export interface ChatAttachmentPreview {
+  title?: string
+  description?: string
+  siteName?: string
+}
+
+/** 一条消息**转过来的那样东西**。与 photo 的区别:photo 是"它拍的画面",
+ *  attachment 是"它从别处转给你的东西" —— 目前是 link（一个网页）与 music
+ *  （一首歌），再加一种就多一个 kind + 一条渲染器;所以带一个 `kind` 判别位。
+ *  一条消息最多带一件。
+ *
+ *  存的是**已经归一化过的对象**(服务端 chatAttachments.js 收口过一次),
+ *  不是模型原话。url 一定是 http(s) 且不含账号密码、不只指向本机/内网。
+ *  link 一定带 url;music 的 url 可缺 —— 纯分享一首歌(曲名 + 歌手)也成立。 */
+export interface ChatAttachment {
+  kind: 'link' | 'music'
+  /** 卡片上的主标题。模型给的,不是页面标题 —— 页面标题在 preview.title */
+  title: string
+  /** link 必有;music 可缺(那是一张不可点的分享卡)。存在时一定是安全的 http(s) */
+  url?: string
+  /** 一行副标题:为什么转给你、歌手。可缺 */
+  subtitle?: string
+  /** 服务端异步补的页面元信息(只对 link 走)。可缺 —— 卡片照常显示模型给的标题 */
+  preview?: ChatAttachmentPreview
+}
+
 /* 一条对话消息。存在 IndexedDB,按 charId 索引 ——
    一期一个角色一条连续对话,所以没有 sessionId;将来要开多段会话时再加这个字段 */
 export interface ChatMessage {
@@ -369,6 +397,11 @@ export interface ChatMessage {
      "让角色拍特写图,总是变成自拍"。
      存下来,重画与导出才对得起当时那个意图 */
   photoFrame?: ChatFrameTag
+  /* 它这一轮**转过来的那样东西**(这一版只有链接)。与 photo 一样来自
+     `emit_message_meta` 的独立信道,挂在表示"说出口的话"的 spine 上。
+     它可以让一条消息**没有正文也有内容** —— 只发一张链接卡、一个字不说,
+     是一条合法消息(见 useChatFlow 的空回复判据与 ChatPage 的卡片块) */
+  attachment?: ChatAttachment
   /* 这一条是角色的**哪一层**：说出口的话(say) / 没说出口的内心(think) / 动作旁白(act)。
      模型一轮回复会被 lib/messageLayers 的 parseLayers 按区域标记**扇出**成多条带这个
      字段的独立消息（见 doc/对话体验.md，脊柱 A/B）。
@@ -629,6 +662,10 @@ export interface ImportedChatMessage {
   /* 这一张离得多近(见 ChatMessage.photoFrame)。同上 ——
      少了它,对方重画时会按场景文本重新判一次,而那一判可能读到不同的东西 */
   photoFrame?: ChatFrameTag
+  /* 它转过来的那个链接。**跟着包走**:对方读到的这段对话里,
+     "它给我看过什么"包括那张卡片。导入时仍会再过一遍 URL 收口 ——
+     包是外部文件,不能因为"导出时是干净的"就跳过校验 */
+  attachment?: ChatAttachment
 }
 
 /* 角色包里带回来的那段对话。**记忆是主,消息是辅** ——

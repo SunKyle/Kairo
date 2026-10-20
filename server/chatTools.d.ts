@@ -2,16 +2,20 @@
    这里补一份声明,好让单测能带着类型引用它(与 chatPhoto.d.ts /
    chatTags.d.ts 同一条理由)。 */
 
+import type { ChatAttachment } from './chatAttachments.js'
+
 /** 工具名。System Prompt、探针、实现三处必须逐字一致 */
 export declare const META_TOOL_NAME: string
 
-/** 一份归一化之后的元数据 —— 与旧标签协议吐出来的扁平字段一字不差 */
+/** 一份归一化之后的元数据 —— 与旧标签协议吐出来的扁平字段一字不差,
+ *  外加一枚可选的附件(链接) */
 export interface ChatMeta {
   mood: string
   photo: string
   photoSelf: boolean
   photoShot: string
   photoFrame: string
+  attachment: ChatAttachment | null
 }
 
 /** `emit_message_meta` 的工具定义。canDraw 为假时 schema 里没有 photo 字段 */

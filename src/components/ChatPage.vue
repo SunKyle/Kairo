@@ -47,7 +47,7 @@ import { parsePhotoIntent, stripStandaloneTags } from '../../server/chatTags.js'
    库里仍是一条 ChatMessage,拆分只在渲染这一刻发生 */
 import { splitAssistantReply } from '../lib/chatSplit'
 /* 心理层次(说/想/做)的显示侧判据:剪掉流式里还没扇开的区域标记、按开关过滤行、
-   给每行认一个生效层(见 lib/messageLayers 与 doc/消息表达形态-心理层次设计.md) */
+   给每行认一个生效层(见 lib/messageLayers 与 doc/对话体验.md) */
 import { effectiveLayer, hasLayerMarkers, isVisibleForUI, parseLayers } from '../lib/messageLayers'
 import { speak, speechSupported, speakingId, speakingLoading, stopSpeaking, warmUpSpeech } from '../lib/speech'
 /* 对话流的滚动编排(自动跟随 / 往前读一档时稳住视口)抽到 composable ——
@@ -97,7 +97,7 @@ const props = defineProps<{
   /* 朗读要用的合成配置。没配就退回浏览器自带的语音(见 lib/speech)——
      它是"能用就行"与"这个角色自己的嗓子"之间的那条分界线 */
   ttsConfig?: ApiConfig
-  /* 沉浸态:同一页的第二种骨架(见 doc/沉浸式对话页面设计.md)。
+  /* 沉浸态:同一页的第二种骨架(见 doc/对话体验.md)。
      **它是显示层的事,页面自己不改任何数据** —— 偏好存盘与外壳那一层归主界面 */
   immersive?: boolean
   /* 这一场戏的**背景图**(单独生成、单独存的那一张)的地址。
@@ -1268,7 +1268,7 @@ onBeforeUnmount(() => {
                      **沉浸态也照常显示**。曾经有一条"最新那张已经在背景上了,
                      所以流里不再重复"的例外 —— 那是"背景图就借这张剧照"那会儿
                      留下的。现在背景图是**单独生成、单独存**的另一张(见
-                     doc/沉浸式对话页面设计.md §4),那条例外就没有理由了:
+                     doc/对话体验.md §7.3),那条例外就没有理由了:
                      它发过的图是**这段对话的一部分**,不该因为换了个骨架就消失。
                      (只有"还没有专用背景图、暂借这张剧照铺底"的那一档会看到
                      同一张图出现两次 —— 那是过渡状态,不是丢掉消息的理由) -->
@@ -2985,7 +2985,7 @@ onBeforeUnmount(() => {
    屏幕上每句台词都还顶着一块浅灰方块) */
 /* ===== 沉浸态 =====
    这一段的每一条都在做同一件事:**把工具那一层收走,把画面还给角色**
-   (见 doc/沉浸式对话页面设计.md)。判据只有一条 —— 屏幕上每一样东西,
+   (见 doc/对话体验.md)。判据只有一条 —— 屏幕上每一样东西,
    是在服务这段话,还是在服务"这个软件的功能" */
 .chat.is-immersive {
   /* 沉浸页的阅读列宽。**普通页刻意不收窄**(见 .chat-inner 那段注释),
@@ -3032,7 +3032,7 @@ onBeforeUnmount(() => {
 }
 
 /* ===== 剧本那套:两个声音,没有气泡 =====
-   参考的是"一页剧本压在剧照上"那种排法(见 doc/沉浸式对话页面设计.md §3.3):
+   参考的是"一页剧本压在剧照上"那种排法(见 doc/对话体验.md §7.2):
    谁说的**不由左右和底色表达**,由**字体音区**表达 ——
    角色:大、亮、衬线;你:小、暗、同一个衬线族。
    两者都不是气泡:没有底色、没有圆角、没有内边距,直接躺在画面/背景上。 */

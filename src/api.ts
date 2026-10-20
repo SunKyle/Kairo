@@ -5,7 +5,7 @@ import { titleFromPrompt } from './lib/text'
    也走同一份 coerce + 空判,免得"合法形状"与"什么算空"在入口和逻辑层各写一遍 */
 import { coerceRelationship, hasCloseness } from './lib/relationship'
 /* 长期记忆的"留不留"判据:心理层次里**想的那一层永不进简报**,旁白按保守策略处理
-   (见 lib/messageLayers 与 doc/消息表达形态-心理层次设计.md §5"三根杆独立") */
+   (见 lib/messageLayers 与 doc/对话体验.md §6.4"三根杆独立") */
 import { keepInSummary } from './lib/messageLayers'
 /* 角色设定那一份权威定义(键 / 顺序 / 标签 / 必填 / 枚举)住在服务端 ——
    那边拼起稿提示词用的就是它。前端在这里取用它的读法,
@@ -1816,7 +1816,7 @@ export function characterFaceDesc(c: Character): string {
  * 也是侧脸。根因不是"正面"这两个字没写 —— 那句一直在(见下面 front 的 suffix)——
  * 而是**参考图在图像编辑那条路上是最强的机位来源**:i2i 的默认行为就是保住输入
  * 的姿态,一句 "front-facing headshot" 拗不过它。这正是
- * [角色配图构图与光影设计.md](../doc/角色配图构图与光影设计.md) 决定五里写的
+ * [角色出图.md](../doc/角色出图.md) 决定五里写的
  * "参考图同时是同一张脸的唯一保证,又是最强的机位与光线污染源" ——
  * 而那一条当时**只落进了提示词改写那条路**(`REF_NOTE`),没落到设定图上。
  *

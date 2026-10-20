@@ -22,7 +22,7 @@ import { effectiveLayer } from '../lib/messageLayers'
 /* 相处偏好:按角色读出来摊成 system 里那几行"希望被怎么对待"(见 lib/prefs) */
 import { interactionGuidanceFor, sceneModeFor } from '../lib/prefs'
 /* 心理层次扇出:把带 `[think]`/`[act]` 区域标记的一轮拆成多条带 layer 的消息
-   (见 lib/messageLayers 与 doc/消息表达形态-心理层次设计.md,脊柱 A/B)。
+   (见 lib/messageLayers 与 doc/对话体验.md,脊柱 A/B)。
    hasLayerMarkers 是那道"普通一轮一个字节都不动"的闸。 */
 import { hasLayerMarkers, parseLayers } from '../lib/messageLayers'
 /* 记忆条目:发这一轮时把"它记得的、且这个角色看得到的"摊成几行事实(见 lib/memory)。
@@ -654,7 +654,7 @@ async function runChat(id: string) {
  *
  * **用户 2026-10-05 的要求**:对话过程中生成的所有图都要进历史,
  * 生成的那张对话背景图也算;并且要归到角色名下(见 `characterId`)。
- * 从前这条链是明确"不进历史"的(见 doc/角色配图设计.md)—— 图只活在对话里,
+ * 从前这条链是明确"不进历史"的(见 doc/角色出图.md)—— 图只活在对话里,
  * 于是关掉对话页之后它就再也翻不到了,而画它同样花了钱。
  *
  * 字节是**两处各留一份**,这是有意的:
@@ -720,7 +720,7 @@ async function saveChatWork(
  *  场景描述**保留**(它是重试要用的全部依据),界面据此给一行说明 + 重试。
  *
  *  正文不受影响:一句"我画不出来"比什么都不说更打断对话
- *  (见 doc/角色配图设计.md 的"失败不阻断文字")。
+ *  (见 doc/角色出图.md 的"失败不阻断文字")。
  *
  *  —— 这一条也是"重画一张已经画好的图"的入口(2026-10-06)——
  *

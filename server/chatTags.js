@@ -1,16 +1,29 @@
 /* ===== 回复里的元数据标签 ==============================================
    模型产出不了情绪，也产出不了图片字节 —— 它只能产出**意图**。所以这两件事
-   都做成"写在回复最末尾的一枚标签"，由这一层负责剪下来:
+   都做成"写在回复里的标签"，由这一层负责剪下来:
 
    - `[mood:amused]`  情绪。给界面出一枚药丸，也是朗读的语调
    - `[photo:pacing by a window at dawn]`  让它发一张图。这一枚只表达
      "想给你看什么"，真正出图在客户端(它才拿得到出图配置与参考图)
 
    三条纪律，缺一条就会漏给用户看:
-   1. 剪取只认**末尾**那一枚 —— 正文中间出现方括号是正常文字，不该被吃掉;
-   2. 流式期间半截标签必须**扣在手里**先不发(见 holdTail)，否则 `[pho` 会闪出来;
+   1. 末尾那枚走 `splitTags`（$ 锚定，绝不吃正文中间的方括号）；顶在行首、
+      被正文顶到中间的那几枚走 `stripStandaloneTags`（仍以行首锚定，
+      "正文在前、标签在后"一律不碰）;
+   2. 流式期间半截标签必须**扣在手里**先不发(见 tailHold)，否则 `[pho` 会闪出来;
    3. 标签里的内容是**外部输入**(模型写的自由文本)。它会被拼进出图提示词，
       所以在这里就截断、压成一行 —— 越靠近边界收口越好。
+
+   —— 2026-10 通用化(收益①：kind 注册表) ——
+   以前"哪些 kind 存在"这件事散在四五个地方写死：`isTagRoom` 里的
+   `p|h|ho|hot|photo|m|o|oo|ood` 前缀叉积、`head0` 的 startsWith、
+   `stripStandaloneTags` 的 `(photo|mood)` 与逐类 if 分支、`splitTags` 的
+   mood/photo 2×2 顺序分支、半截擦除的先后。每加一枚 kind 要在这些处各补一刀，
+   且必须严格同步。现在这些都由下面那个 `TAGS` 注册表**派生**：加一枚 kind
+   = 往 `TAGS` 追加一项（名字 + 各自的形状正则 + parse 归一化对象 + 扁平字段映射），
+   剪取层与扣尾层**一处正则都不用再动**。公共函数(`splitTags`/`stripStandaloneTags`/
+   `tailHold`)的签名与返回的扁平字段**保持不变**，调用方零改动 —— 这一版是纯重构。
+   （"位置判据 → 形状判据"那一步是另一件事，见 doc/标签层通用化设计.md，本层未动。）
 
    单独成文件是为了测得了:它没有 IO、没有状态，只有几个正则和几行字符串处理。
    -------------------------------------------------------------------- */
@@ -65,7 +78,7 @@ export function cleanScene(s) {
       剪掉(它不是内容);
    4. `me:` / `me,` / `me -`，或直接以 `me at my desk` / `I'm on the balcony`
       开头 —— **代词本身是描述的一部分**，只置位不剪(剪掉就只剩 "at my desk"，
-      画面里少了主语)。`\b` 保证 "meeting" / "selfish" 不会被误判。
+       画面里少了主语)。`\b` 保证 "meeting" / "selfish" 不会被误判。
 
    **第 3 种为什么不等于"他拍"** —— 它只说了"我在画面里"。谁拿的相机由客户端
    按"标签 → 场景文本 → 默认自拍"定(见 lib/chatPhoto 的 planChatPhoto)。
@@ -265,6 +278,74 @@ export function parsePhotoIntent(raw, charName = '') {
   return { scene, self: self || named, shot: self ? shot : '', frame }
 }
 
+/* ===== kind 注册表 ====================================================
+   "有哪些 kind""这一 kind 长什么形状""剪下来之后往扁平结果里写哪几个字段"
+   三件事在这里各登记一次。下面 `splitTags`/`stripStandaloneTags`/`head0`/
+   `isTagRoom` 全部从这张表派生，**不再各自写死 kind 名字**。
+   加一枚新 kind(music / video / …)= 往这个数组追加一项:
+     - name       : 标签里的名字
+     - trailingRe : $ 锚定、捕获组 1 = 内层内容的末尾形状(交给 splitTags)
+     - partialRe  : "只擦不取"用的半截形状(交给 splitTags 的擦除分支)
+     - parse      : (inner, charName) → 归一化意图对象(校验/拆位都关在这一层)
+     - fields     : 归一化对象 → 扁平返回里的几个字段
+     - empty      : 这一 kind 缺席时那几个字段的缺省值
+   数组顺序有讲究:半截擦除时靠前的 kind 先判(photo 括号更长,见 splitTags 末尾)。 */
+
+/** mood 的形状归一化:小写、两端去空白。末尾那条路已由 MOOD_RE 卡过字符集，
+ *  行首那条(stripStandaloneTags)沿用从前一样的宽松(不过度收窄，保持行为等价)。 */
+function parseMoodIntent(inner) {
+  return { mood: String(inner || '').trim().toLowerCase() }
+}
+
+const TAGS = [
+  {
+    name: 'photo',
+    trailingRe: PHOTO_RE,
+    partialRe: PHOTO_PARTIAL_RE,
+    parse: (inner, charName) => parsePhotoIntent(inner, charName),
+    fields: (i) => ({ photo: i.scene, photoSelf: i.self, photoShot: i.shot, photoFrame: i.frame }),
+    empty: { photo: '', photoSelf: false, photoShot: '', photoFrame: '' }
+  },
+  {
+    name: 'mood',
+    trailingRe: MOOD_RE,
+    partialRe: MOOD_PARTIAL_RE,
+    parse: (inner) => parseMoodIntent(inner),
+    fields: (i) => ({ mood: i.mood }),
+    empty: { mood: '' }
+  }
+]
+
+/** name → kind 定义，供行首那条路按捕获到的名字回查 */
+const TAG_BY_NAME = {}
+for (const t of TAGS) TAG_BY_NAME[t.name] = t
+
+/** 所有 kind 缺席时的扁平缺省集合（splitTags / stripStandaloneTags 拼返回值用） */
+const EMPTY_RESULT = {}
+for (const t of TAGS) Object.assign(EMPTY_RESULT, t.empty)
+
+/** 行首/中段那条路的整体形状：名字候选从注册表派生，内层宽松(逐类再 parse)。
+ *  判据仍然窄 —— `^\[...\]` 只吃顶到行首的标签，「正文在前、标签在后」不碰。 */
+const ROW_TAG_RE = new RegExp(
+  `^\\[\\s*(${TAGS.map((t) => t.name).join('|')})\\s*[:=]\\s*([^\\[\\]]*?)\\s*\\]\\s*[.!?]?(.*)$`,
+  'i'
+)
+
+/** 从注册表派生"任一 kind 名字的所有前缀"(长前缀在前)—— 取代从前写死的
+ *  `p|h|ho|hot|photo|m|o|oo|ood`。加 kind 时这里自动跟着长，不用手改。 */
+const TAG_NAME_PREFIXES = TAGS.flatMap((t) => {
+  const list = []
+  for (let len = t.name.length; len >= 1; len--) list.push(t.name.slice(0, len))
+  return list
+}).join('|')
+
+/** 把扁平缺省铺好，再把这一轮真取到的 kind 覆盖上去（不 mutate 入参） */
+function flatten(intents, text) {
+  const out = { text, ...EMPTY_RESULT }
+  for (const t of TAGS) if (t.name in intents) Object.assign(out, t.fields(intents[t.name]))
+  return out
+}
+
 /**
  * 把**顶在行首的**标签摘出来（不限于末尾）。
  *
@@ -286,38 +367,29 @@ export function parsePhotoIntent(raw, charName = '') {
  * 与末尾那条路的分工：末尾的标签尾巴会被 `tailHold` 扣住、由 `splitTags` 收走,
  * 走不到这里；能走到这里的就是"被正文顶到中间去 / 黏在正文前面"的那几枚。
  *
- * @returns text 摘干净之后的正文；photo / mood 是顺手取出来的意图（没有就是空串）。
- *          同一类标签出现多次时**取第一枚** —— 它就是这一轮想说的事。
+ * 每 kind 的取法、形状、扁平字段都由 `TAGS` 注册表给出；同一类出现多次时
+ * **取第一枚** —— 它就是这一轮想说的事。
+ *
+ * @returns text 摘干净之后的正文；其余是顺手取出来的意图（photo / mood …，
+ *          没有就是各自的缺省值）。
  */
 export function stripStandaloneTags(s, charName = '') {
   const lines = String(s || '').split('\n')
   const kept = []
-  let photo = ''
-  let photoSelf = false
-  let photoShot = ''
-  let photoFrame = ''
-  let mood = ''
+  const intents = {}
   let removed = false
   for (const line of lines) {
     /* 第 3 个捕获组 = 尾随正文：空/仅空白 → 整行吞掉（旧行为）,
        非空 → 把那段留回气泡（模型写完标签又补了一句收尾话的情形） */
-    const m = /^\[\s*(photo|mood)\s*[:=]\s*([^[\]]*?)\s*\]\s*[.!?]?(.*)$/i.exec(line.trim())
+    const m = ROW_TAG_RE.exec(line.trim())
     if (!m) {
       kept.push(line)
       continue
     }
     const kind = m[1].toLowerCase()
-    if (kind === 'photo') {
-      if (!photo) {
-        const shot = parsePhotoIntent(m[2], charName)
-        photo = shot.scene
-        photoSelf = shot.self
-        photoShot = shot.shot
-        photoFrame = shot.frame
-      }
-    } else if (!mood) {
-      mood = m[2].trim().toLowerCase()
-    }
+    const t = TAG_BY_NAME[kind]
+    /* 同一类只取第一枚；标签照样从正文里摘掉（即便那枚没 parse 出东西） */
+    if (t && !(kind in intents)) intents[kind] = t.parse(m[2], charName)
     /* 标签连它前面那个换行一起收走;但标签**后面**挂的话是它说的话,原样留回 */
     const rest = m[3]
     if (rest.trim()) kept.push(rest)
@@ -327,14 +399,8 @@ export function stripStandaloneTags(s, charName = '') {
      否则用户看到的是一段话、两个空行、再一段话(收成一段一处空行)。
      没抽掉任何东西时一个字都不动 —— 不借着这个机会去改别人的正文 */
   const text = removed ? kept.join('\n').replace(/\n{3,}/g, '\n\n') : kept.join('\n')
-  return { text, photo, photoSelf, photoShot, photoFrame, mood }
+  return flatten(intents, text)
 }
-
-/* 一枚标签的**名字**。**必须与那两条正则认的前缀一致** ——
-   放宽一处、这里不放宽,边界就会算错;收窄一处、这里不收窄,正文会被多扣一段。
-   只写名字而不是整条正则:下面那个回溯是从末尾逐段剥,剥到哪一段不是标签就停 */
-const PHOTO_NAME = 'photo'
-const MOOD_NAME = 'mood'
 
 /* 还没闭合的那一段:某个 `[` 之后既没有 `]` 也没有换行,一直延伸到末尾。
    它可能是"正在写"的标签(`[pho`、`[photo:self:me on the bal`),
@@ -419,17 +485,18 @@ export function tailHold(buffer) {
  *  直到某一段不是标签为止。
  *
  *  三处判断都不能省:
- * 1. `[` 与 `]` 之间必须**以标签名开头** —— 否则它只是正文里的一个方括号
- *    (`[1]`、`[注]` 都靠这一条挡掉);
+ * 1. `[` 与 `]` 之间必须**以某个已注册 kind 的名字开头** —— 否则它只是正文里的
+ *    一个方括号(`[1]`、`[注]` 都靠这一条挡掉);
  * 2. 这一段的**右边**只允许空白或另一枚正在长的标签(`isTagRoom`)——
  *    右边夹着正文就说明它不是"末尾的那一枚";
  * 3. `]` 要在**当前区段内**找,不能全局找。 */
 
 /** 这一段是标签的话,它开头的名字是什么;不是标签就返回空串。
- *  判据只有名字 —— 正文段落不会以 `photo` / `mood` 开头 */
+ *  判据只有名字 —— 正文段落不会以某个已注册 kind 的名字开头。名字清单从 `TAGS` 来 */
 function head0(inner) {
   const h = inner.trim().toLowerCase()
-  return h.startsWith(PHOTO_NAME) || h.startsWith(MOOD_NAME) ? h : ''
+  for (const t of TAGS) if (h.startsWith(t.name)) return h
+  return ''
 }
 
 function completeTagStart(s) {
@@ -451,8 +518,8 @@ function completeTagStart(s) {
     /* **刻意不检查换行** —— 场景描述本身就可能很长、还会带换行,
        任何"含换行就不是标签"的规则都会把合法标签判掉,边界于是跑到
        末尾那个没闭合的 `[` 上,把整枚标签放出去(探针抓到过两次)。
-       跨行散文被误当成标签的风险由下面那条 `head` 判据挡住:
-       正文段落不会以 `photo` / `mood` 开头。 */
+       跨行散文被误当成标签的风险由下面那条 `head0` 判据挡住:
+       正文段落不会以某个 kind 的名字开头。 */
     if (head0(inner) === '') break
     cut = open
     end = open
@@ -479,7 +546,10 @@ function completeTagStart(s) {
  *    下一块增量来了才会接着长),而流式里这个瞬间每轮都会出现。
  *
  *  现在这版:名字与后面那整块都**可选**,`[photo]` 这种没有分隔符的仍然被当作正文
- *  —— 那是对的,splitTags 也不认它。 */
+ *  —— 那是对的,splitTags 也不认它。名字前缀清单从 `TAGS` 派生(见 TAG_NAME_PREFIXES),
+ *  加 kind 时这里自动扩,不再手写叉积。 */
+const TAG_ROOM_TAG_RE = new RegExp(`^\\[(?:(?:${TAG_NAME_PREFIXES})\\s*[:=]?[^\\]]*\\]?)?`)
+
 function isTagRoom(s) {
   let i = 0
   while (i < s.length) {
@@ -498,7 +568,7 @@ function isTagRoom(s) {
     /* `\[` 之后那一整块整体可选 —— **孤零零一个 `[` 也是合法的标签开头**
        (它是下一枚标签的第一个字符,下一块增量来了才会接着长)。 */
     /* 内容里允许换行 —— 场景描述可能很长并带换行 */
-    const tag = /^\[(?:(?:p(?:h(?:o(?:t(?:o)?)?)?)?|m(?:o(?:o(?:d)?)?)?)\s*[:=]?[^\]]*\]?)?/.exec(s.slice(i))
+    const tag = TAG_ROOM_TAG_RE.exec(s.slice(i))
     if (tag) {
       i += tag[0].length
       continue
@@ -510,85 +580,52 @@ function isTagRoom(s) {
 
 /**
  * 剪掉末尾的元数据标签。
+ *
+ * 从 `TAGS` 注册表派生末尾形状，**逐 kind、从末尾往内剥，一类只取最靠末尾的那一枚**
+ * —— 这一条同时覆盖了从前 mood/photo 那 2×2 顺序分支要处理的"谁写在最后"的每种情形，
+ * 且 kind 数量增加时这里一个字都不用改。顺序不挑:mood 在前、photo 在后，
+ * 或反过来，都各取各的最末一枚。
+ *
  * @param s        整段回复
  * @param charName 角色名。只用于判断"这一张里有没有它本人"(见 parsePhotoIntent)——
  *                 传空也能用,只是少一条兜底判据
- * @returns {{ text: string, mood: string, photo: string, photoSelf: boolean, photoShot: string, photoFrame: string }}
- *   - text      真正要说的话(标签连同它前面那个换行一起收走)
- *   - mood      小写情绪词，空串表示这一轮没给
- *   - photo     场景描述(已收敛成一行、已剪掉 selfie:/close:/self: 这几类前缀)，
- *               空串表示这一轮不发图
- *   - photoSelf 这张图里有没有它本人。true 才把角色设定与设定图发给出图模型
- *   - photoShot 这一张**谁拿的相机**:'selfie' / 'third' / 空串(= 标签没说)。
- *               客户端按"它 → 场景文本 → 默认自拍"定下最终视角(见 lib/chatPhoto)
- *   - photoFrame 这一张**离得多近**:'close' / 'medium' / 'full' / 空串(= 标签没说)。
- *               客户端按"它 → 场景文本 → 这一档视角的缺省"定下最终景别
+ * @returns 扁平对象: `text` = 真正要说的话(标签连同它前面那个换行一起收走)，
+ *   外加每一 kind 的字段(photo/photoSelf/photoShot/photoFrame、mood …)。
+ *   某 kind 这一轮没给就是它的缺省值(见各 kind 的 `empty`)。
+ *   —— 键集与重构前**逐字一致**，调用方与测试都无需改动。
  */
 export function splitTags(s, charName = '') {
   const str = s || ''
+  let text = str
+  const intents = {}
 
-  const m = MOOD_RE.exec(str)
-  if (m) {
-    // 标签可能不止一枚:先剪 mood，再看剩下的尾巴里有没有 photo
-    const head = str.slice(0, m.index).trimEnd()
-    const p = PHOTO_RE.exec(head)
-    if (p) {
-      const shot = parsePhotoIntent(p[1], charName)
-      return {
-        text: head.slice(0, p.index).trimEnd(),
-        mood: m[1].toLowerCase(),
-        photo: shot.scene,
-        photoSelf: shot.self,
-        photoShot: shot.shot,
-        photoFrame: shot.frame
-      }
+  /* 一轮一轮从末尾往内剥:每轮扫一遍注册表，取第一个"末尾就压着它"的 kind，
+     剪下来、把尾巴 trimEnd，再进下一轮。`break` 让外层重新从最末扫起，
+     于是顺序天然无关、且天然是"最靠末尾那一枚赢"。 */
+  for (;;) {
+    let moved = false
+    for (const t of TAGS) {
+      if (t.name in intents) continue // 一类只取最末一枚
+      const m = t.trailingRe.exec(text)
+      if (!m) continue
+      intents[t.name] = t.parse(m[1], charName)
+      text = text.slice(0, m.index).trimEnd()
+      moved = true
+      break
     }
-    return {
-      text: head,
-      mood: m[1].toLowerCase(),
-      photo: '',
-      photoSelf: false,
-      photoShot: '',
-      photoFrame: ''
-    }
+    if (!moved) break
   }
 
-  const p = PHOTO_RE.exec(str)
-  if (p) {
-    const head = str.slice(0, p.index).trimEnd()
-    const shot = parsePhotoIntent(p[1], charName)
-    const mm = MOOD_RE.exec(head)
-    if (mm) {
-      return {
-        text: head.slice(0, mm.index).trimEnd(),
-        mood: mm[1].toLowerCase(),
-        photo: shot.scene,
-        photoSelf: shot.self,
-        photoShot: shot.shot,
-        photoFrame: shot.frame
-      }
-    }
-    return {
-      text: head,
-      mood: '',
-      photo: shot.scene,
-      photoSelf: shot.self,
-      photoShot: shot.shot,
-      photoFrame: shot.frame
-    }
-  }
+  if (Object.keys(intents).length) return flatten(intents, text)
 
-  /* 两枚都没写全:把半截的擦掉、只擦不取。
-     顺序上先看 photo —— 它的括号更长，半截的 mood 只可能出现在它之后 */
-  const empty = { mood: '', photo: '', photoSelf: false, photoShot: '', photoFrame: '' }
-  const pp = PHOTO_PARTIAL_RE.exec(str)
-  if (pp) return { text: str.slice(0, pp.index).trimEnd(), ...empty }
-  const mp = MOOD_PARTIAL_RE.exec(str)
-  if (mp) return { text: str.slice(0, mp.index).trimEnd(), ...empty }
-  /* 一枚标签都没有。**末尾空白照样收掉** —— 这里以前是原样返回,于是
+  /* 一枚完整标签都没有:可能是半截(只擦不取)，也可能压根没写标签。
+     半截的先后按注册表顺序(photo 在前 —— 它的括号更长,半截的 mood 只可能出现在它之后)。 */
+  for (const t of TAGS) {
+    const p = t.partialRe.exec(str)
+    if (p) return { text: str.slice(0, p.index).trimEnd(), ...EMPTY_RESULT }
+  }
+  /* **末尾空白照样收掉** —— 这里以前是原样返回,于是
      "模型忘了写标签、但结尾带了个换行"的回复会把那行空行留在气泡里。
      它与上面几条分支做的事其实是同一件:末尾的空白不是它要说的话 */
-  return { text: str.trimEnd(), ...empty }
+  return { text: str.trimEnd(), ...EMPTY_RESULT }
 }
-
-

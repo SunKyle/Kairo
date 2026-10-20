@@ -223,10 +223,11 @@ export function useGeneration(deps: GenerationDeps) {
    *  - `self` = 这一张里有没有**它本人**。有 → 拼身份锚点、把设定图当参考图,
    *    这是"同一张脸"的保证;没有 → 提示词里只有场景、一张参考图都不发
    *    —— 一张风景照带上设定图,模型会被拽着往那个人的脸和衣服上靠;
-   *  - `shot` = **谁拿的相机**,由聊天模型写在标签前缀里(selfie: / third:)。
-   *  - `frame` = **离得多近**,同样由聊天模型写在标签前缀里(close: / medium: / full:);
-   *  - `mood` = **发这一条时它的心情**(那枚 `[mood:word]`)。它落在 expression
-   *    那一层,"这一刻脸上是什么神情"。
+   *  - `shot` = **谁拿的相机**,由聊天模型的 `emit_message_meta` 工具参数给出
+   *    (`photo.shot`: selfie / third)。
+   *  - `frame` = **离得多近**,同样来自 `photo.frame`(close / medium / full);
+   *  - `mood` = **发这一条时它的心情**(同一个工具调用里的 `mood`)。它落在
+   *    expression 那一层,"这一刻脸上是什么神情"。
    *
    *  **绝不 reject**:这条链是后台跑的,往外抛没有调用方接得住
    *  (见 useChatFlow 的 drawChatPhoto)。所以一律返回上面那个结果对象。 */

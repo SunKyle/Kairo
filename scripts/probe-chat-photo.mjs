@@ -1,16 +1,17 @@
 /* ===== 对话出图整条链的端到端探针（不花钱，也不联网）=====================
  *
- *  起一个假上游，把 KImage 自己的服务端跑起来，然后打它三个端点：
+ *  起一个假上游，把 Kairo 自己的服务端跑起来，然后打它三个端点：
  *  `/api/chat`（流式）→ `/api/enhance`（photo 档）→ `/api/generate`。
  *
  *  —— 为什么需要它 ——
  *
  *  单测只能证明"纯函数算得对"。这一条链上真正会出事的地方全在接缝上，
  *  而它们的表现都是**静默**的：
- *  - 扣尾算错 → 用户看见半截 `[pho` 闪出来，而正文内容一个字不差；
- *  - photo 档格式崩 → 摄影指导那一层悄悄降级回模板，出图照样成功；
- *  - 场景被截断 → 图能出来，只是和它说的话对不上。
- *  三种都不会报错，只会"图不太对味"。
+ *  - 工具调用的 arguments 被流式劈开 → 拼不回去时心情和图一起消失，正文却一字不差；
+ *  - 正文被元数据拖住 → 话先攒着、流末才一次性冒出来，看着像"卡住了"；
+ *  - 模型压根没调工具 → 没有提示的话，用户只会觉得"它今天怎么没情绪"；
+ *  - 上游不支持 tools → 被当成普通报错，用户不知道该换模型。
+ *  四种都不会报错，只会"不太对味"。
  *
  *  用法：node scripts/probe-chat-photo.mjs
  *  退出码 0 = 全过。
@@ -30,36 +31,73 @@ const APP_PORT = 18432
 
 /** 一次 `/api/chat` 要吐出来的正文。由每个用例自己设 */
 let chatReply = ''
+/** 这一轮要发的工具调用：{ name, args }。null = 模型什么工具都没调 */
+let chatTool = null
 /** 让假上游在出图那一步回 401（用来验失败原因有没有传到浏览器） */
 let FAIL_GENERATE = false
+/** 让假上游像"不支持 tools 的模型"那样拒绝整条请求 */
+let FAIL_CHAT_TOOLS = false
 /** 每个用例要断言的请求：上游收到什么，探针就看什么 */
 const seen = { chat: null, enhance: null, generate: null }
 
-/** 把一段文本切成**很小**的增量 —— 扣尾的 bug 只在增量的边界上出现，
- *  一次吐一大块是测不出来的（那正是它会在生产里翻车的原因） */
+/** 把一段文本切成**很小**的增量 —— 工具参数的 bug 只在增量的边界上出现，
+ *  一次吐一大块是测不出来的（那正是它会在生产里翻车的原因）。
+ *  按 UTF-16 码元切，连 emoji 的代理对都会被劈进两帧。 */
 function tinyChunks(s, size = 3) {
   const out = []
   for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size))
   return out
 }
 
-function sse(res, pieces) {
+/** 一个上游 SSE 帧 */
+function frame(delta, extra = {}) {
+  return `data: ${JSON.stringify({ choices: [{ delta, ...extra }] })}\n\n`
+}
+
+function contentFrames(text, size = 3) {
+  return tinyChunks(text, size).map((p) => frame({ content: p }))
+}
+
+/**
+ * 正文 + 可选的工具调用。**故意把工具调用夹在正文中间**：
+ * 两件事在协议里是同一帧里的两个字段，服务端不该因为开始收工具参数
+ * 就把正文停下来，也不该把 arguments 当成正文吐出去。
+ */
+function sseChat(res, text, tool) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive'
   })
-  /* **每个数据帧之间必须有换行** —— 少了它,所有帧会挤成一行,
-     而服务端是逐行解析上游的。上一版这里用的是 '' 连接,
-     结果服务端只认到第一帧,后面全当杂质丢了 ——
-     表现是"客户端只收到第一个分片",看着像扣尾坏了,其实是假上游坏了 */
-  const frames = pieces.map(
-    (p) => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`
-  )
-  frames.push(
-    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
-    'data: [DONE]\n\n'
-  )
+  const parts = tinyChunks(text, 3)
+  const mid = Math.floor(parts.length / 2)
+  const frames = []
+  for (const p of parts.slice(0, mid)) frames.push(frame({ content: p }))
+
+  if (tool) {
+    /* 第一片带 id / type / name，后面**只带 arguments 的一段字符串** ——
+       这就是 OpenAI 兼容协议的流式形状。参数故意切到 4 个字符一片，
+       一个 JSON 的引号、逗号、括号都会被劈开 */
+    const pieces = tinyChunks(String(tool.args ?? ''), 4)
+    frames.push(
+      frame({
+        tool_calls: [
+          {
+            index: 0,
+            id: 'call_meta_1',
+            type: 'function',
+            function: { name: tool.name, arguments: pieces.shift() ?? '' }
+          }
+        ]
+      })
+    )
+    for (const p of pieces) {
+      frames.push(frame({ tool_calls: [{ index: 0, function: { arguments: p } }] }))
+    }
+  }
+
+  for (const p of parts.slice(mid)) frames.push(frame({ content: p }))
+  frames.push(frame({}, { finish_reason: tool ? 'tool_calls' : 'stop' }), 'data: [DONE]\n\n')
   res.end(frames.join(''))
 }
 
@@ -74,9 +112,8 @@ const upstream = http.createServer((req, res) => {
       /* 空体也算合法（例如只读请求） */
     }
     if (req.url.endsWith('/chat/completions')) {
-      /* 同一个地址上三种用途，靠 caller 记下来的顺序区分：
-         第 1 次是 /api/chat，第 2 次是 /api/enhance（photo 档），
-         它们的请求体长得很不一样，直接按形状分 */
+      /* 同一个地址上三种用途，靠请求体的形状区分：
+         摄影指导那一条的 system 里带着 "You are the photographer" */
       const isDirector = (json.messages || []).some(
         (m) => typeof m.content === 'string' && m.content.includes('You are the photographer')
       )
@@ -92,7 +129,16 @@ const upstream = http.createServer((req, res) => {
         return res.end(JSON.stringify({ choices: [{ message: { content: out } }] }))
       }
       seen.chat = json
-      return sse(res, tinyChunks(chatReply))
+      /* "这个模型不支持 tools" —— 假上游按上游的样子回一个 400 +
+         一句人话。服务端得把它翻成"换一个支持 function calling 的模型"，
+         而不是一句笼统的 400 */
+      if (FAIL_CHAT_TOOLS) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        return res.end(
+          JSON.stringify({ error: { message: 'tools is not supported by this model' } })
+        )
+      }
+      return sseChat(res, chatReply, chatTool)
     }
     if (req.url.includes('images/generations') || req.url.includes('image')) {
       seen.generate = json
@@ -112,9 +158,7 @@ const upstream = http.createServer((req, res) => {
       const px =
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      return res.end(
-        JSON.stringify({ data: [{ b64_json: px }] })
-      )
+      return res.end(JSON.stringify({ data: [{ b64_json: px }] }))
     }
     res.writeHead(404).end('{}')
   })
@@ -133,18 +177,17 @@ function ok(name, cond, extra = '') {
 }
 
 async function post(port, url, body) {
-  const r = await fetch(`http://127.0.0.1:${port}${url}`, {
+  return fetch(`http://127.0.0.1:${port}${url}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   })
-  return r
 }
 
 /** 读服务端吐回来的流。
  *
  *  **不是 SSE** —— 它在这一层已经从上游的 `data: {...}` 转成了 NDJSON:
- *  一行一个 JSON 对象,`{"delta":"…"}` 与收尾那一帧 `{"done":true,…,photo,…}`。
+ *  一行一个 JSON 对象,`{"delta":"…"}` 与收尾那一帧 `{"done":true,…,metaIssue,…}`。
  *  解析方式与客户端 chatStream 逐行处理的那一套必须一致(见 src/api.ts),
  *  否则这里过了、浏览器里不过。 */
 async function readChat(res) {
@@ -178,9 +221,14 @@ async function readChat(res) {
 /* ===== 用例 =========================================================== */
 
 const SCENE_FULL =
-  'self:me leaning on the balcony rail at dusk, the rain just stopped, ' +
+  'me leaning on the balcony rail at dusk, the rain just stopped, ' +
   'streetlights coming on below, hair still wet from the shower, ' +
   'the harbour lights doubled in the puddles on the deck'
+
+/** 把工具参数写成 JSON 字符串（真实上游也是字符串，不是对象） */
+function metaArgs(obj) {
+  return JSON.stringify(obj)
+}
 
 async function main() {
   console.log('对话出图端到端探针\n')
@@ -210,181 +258,323 @@ async function main() {
     apiKey: 'k',
     character: { name: 'Alice' }
   }
+  const systemOf = () => String(seen.chat?.messages?.[0]?.content || '')
 
   try {
-    /* —— 用例 1：短场景，末尾两枚标签 —— */
-    console.log('用例 1 · 普通回复 + 两枚标签')
-    chatReply = 'Rain again. I am so tired of it.\n[photo:self:me on the balcony]\n[mood:tired]'
+    /* —— 用例 1：请求形状与 System Prompt ——
+       元数据协议换成了 tool calling。这一步看的是**发出去的东西**:
+       工具有没有带上、schema 对不对、正文的规则里还在不在教旧标签。
+       这几项任何一项错了，模型都会照着错的那份写。 */
+    console.log('用例 1 · 请求形状与 System Prompt')
+    chatReply = 'Rain again. I am so tired of it.'
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        mood: 'tired',
+        photo: {
+          scene: 'me on the balcony at dusk, streetlights coming on below',
+          shot: 'selfie',
+          frame: 'close'
+        }
+      })
+    }
     let r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     let out = await readChat(r)
-    ok('正文里没有标签残留', !/\[(photo|mood)/.test(out.text), JSON.stringify(out.text))
-    ok('正文完整（末句没被扣掉）', out.text.trim().endsWith('tired of it.'), JSON.stringify(out.text))
-    ok('photo 剪出来了且 self 前缀被剪掉', out.done?.photo === 'me on the balcony', String(out.done?.photo))
+    const reqTools = seen.chat?.tools || []
+    ok('请求里带了一个工具', reqTools.length === 1, JSON.stringify(reqTools).slice(0, 120))
+    ok('工具名是 emit_message_meta', reqTools[0]?.function?.name === 'emit_message_meta')
+    ok('tool_choice 是 auto（思考模式不接受 required / 点名工具）', seen.chat?.tool_choice === 'auto')
+    ok(
+      'schema 里 mood 必填，photo 是可选项',
+      Array.isArray(reqTools[0]?.function?.parameters?.required) &&
+        reqTools[0].function.parameters.required.includes('mood') &&
+        !!reqTools[0]?.function?.parameters?.properties?.photo,
+      JSON.stringify(reqTools[0]?.function?.parameters?.required)
+    )
+    ok(
+      'photo 的子字段是 scene/shot/frame，scene 必填',
+      reqTools[0]?.function?.parameters?.properties?.photo?.required?.join(',') === 'scene',
+      JSON.stringify(reqTools[0]?.function?.parameters?.properties?.photo)
+    )
+    ok('system 里点名了工具', systemOf().includes('emit_message_meta'))
+    ok(
+      'system 里要求回复写完后调用一次，且不许写进正文',
+      systemOf().includes('After you finish writing the reply, call the emit_message_meta tool exactly once') &&
+        systemOf().includes('never write the metadata')
+    )
+    ok('system 里带着发图那一段', systemOf().includes('Sending a picture:'))
+    ok(
+      'system 里没有旧标签 / 哨兵 / 任何文本协议残留',
+      !systemOf().includes('[photo:') && !systemOf().includes('[mood:') && !systemOf().includes('%%KAIRO_META%%'),
+      JSON.stringify(
+        systemOf()
+          .split('\n')
+          .filter((l) => l.includes('[photo:') || l.includes('[mood:') || l.includes('KAIRO_META'))
+      )
+    )
+
+    /* —— 用例 1a：正文与工具调用互不污染 ——
+       arguments 在假上游里被切成 4 个字符一片，一个 JSON 的引号和括号
+       都会被劈开。服务端必须按 index 攒回来，而且一个字都不能漏进正文。 */
+    console.log('\n用例 1a · 正文 + 工具调用（arguments 被切碎）')
+    ok('正文完整、没有被工具参数污染', out.text === chatReply, JSON.stringify(out.text))
+    ok('正文里没有 JSON 残渣', !/emit_message_meta|\{"mood"/.test(out.text), JSON.stringify(out.text))
+    ok('正文是分多帧流出来的', out.deltas.length > 6, String(out.deltas.length))
+    ok('photo 拼回来了', out.done?.photo === 'me on the balcony at dusk, streetlights coming on below', String(out.done?.photo))
     ok('photoSelf = true', out.done?.photoSelf === true)
-    ok('self: 只说"它在画面里"，相机那一项留空给客户端判', out.done?.photoShot === '', String(out.done?.photoShot))
+    ok('photoShot = selfie', out.done?.photoShot === 'selfie', String(out.done?.photoShot))
+    ok('photoFrame = close', out.done?.photoFrame === 'close', String(out.done?.photoFrame))
     ok('mood = tired', out.done?.mood === 'tired', String(out.done?.mood))
+    ok('这一轮没有 metaIssue', out.done?.metaIssue === undefined, String(out.done?.metaIssue))
+
+    /* —— 用例 1b：中文 + emoji 的参数被劈开 ——
+       参数是 JSON 字符串里的内容，而假上游按 UTF-16 码元切。emoji 的代理对、
+       ZWJ 组合、变体选择符都会被劈进两帧 —— 这里盯的是"劈开之后还能不能
+       原样拼回去"。cleanScene 会压空白，但不会动字符本身。 */
+    console.log('\n用例 1b · 中文与 emoji 的参数原样拼回')
+    chatReply = '嗯，听着就冷。'
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        mood: 'warm',
+        photo: { scene: '我靠在阳台栏杆上，雨刚停😮\u200d💨 灯✨\uFE0F 亮着', shot: 'selfie' }
+      })
+    }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok('正文原样', out.text === '嗯，听着就冷。', JSON.stringify(out.text))
     ok(
-      '流式期间没有任何一帧露出半截标签',
-      out.deltas.every((d) => !/\[(p|ph|pho|m|mo|moo)/.test(d)),
-      JSON.stringify(out.deltas.filter((d) => d.includes('[')))
+      '中文与 emoji 一字不差',
+      out.done?.photo === '我靠在阳台栏杆上，雨刚停😮\u200d💨 灯✨\uFE0F 亮着',
+      JSON.stringify(out.done?.photo)
     )
-    /* 这一条量的是"扣尾有没有把正文也一起停住"。**不是**量分了多少帧 ——
-       扣尾会让释放的批次变少(那是它的正常工作),所以只要求正文被分成了
-       多帧、而不是等到流末才一次吐出来 */
-    const proseFrames = out.deltas.filter((d) => !d.includes('[photo') && d.trim())
-    ok('正文是分多帧流出来的(扣尾没有把正文停住)', proseFrames.length > 3, String(proseFrames.length))
+    ok('mood 也在', out.done?.mood === 'warm', String(out.done?.mood))
 
-    /* —— 用例 1b：正文末尾的那个换行不许流到界面上 ——
-       模型把标签写在单独一行,而那个 `\n` **总是比标签先到**。按"标签起点"
-       算出来的放行边界正好落在它后面,于是它被当成正文发出去;收尾那次
-       splitTags 的 trimEnd 追不回来(字早发出去了)。气泡是 pre-wrap,
-       结尾的 `\n` 会被如实渲染成一行空行 —— 用户看到的就是"短回复底下
-       多了一行"。这条断言的是**流出来的正文精确等于那句话**,不带尾巴 */
-    console.log('\n用例 1b · 正文末尾不带那个换行')
-    chatReply = 'Sure.\n[mood:calm]'
-    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
-    out = await readChat(r)
-    ok('流出来的正文精确等于那句话(末尾没有换行)', out.text === 'Sure.', JSON.stringify(out.text))
-    ok('mood 照旧剪出来', out.done?.mood === 'calm', String(out.done?.mood))
-    /* 空行只可能从末尾来;中间那个换行(如果模型真写了分行)必须留着 */
-    chatReply = 'First line.\nSecond line.\n[photo:a window at dawn]'
-    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
-    out = await readChat(r)
-    ok('正文中间的分行留着', out.text === 'First line.\nSecond line.', JSON.stringify(out.text))
-
-    /* —— 用例 1d：正文里的 emoji 不许被弄坏 ——
-       放开 emoji 之后,风险不在"模型写不写",而在**链路上有没有东西把它吃掉
-       或截断**。假上游的 tinyChunks 是按 UTF-16 码元每 3 个切一刀,所以一个
-       emoji(代理对 = 2 个码元)必然被劈进两帧,中间还要过 JSON、过扣尾的
-       逐段回退再拼回来。这一条盯的就是"劈开之后还能不能拼回去"。
-       用例里特意放了两个更脆的:😮‍💨 是 ZWJ 连接符拼起来的组合,
-       ✨️ 后面跟着变体选择符 —— 它们比单个 emoji 更容易被按码元截断 */
-    console.log('\n用例 1d · 正文里的 emoji 原样保留')
-    chatReply = '累死了😮\u200d💨 不过还行✨\uFE0F\n[mood:tired]'
+    /* —— 用例 1c：正文里的 emoji 与分行 ——
+       正文这条信道同样按码元切。emoji 被劈开、JSON 来回转义之后，
+       客户端收到的必须与模型"说"的一字不差。 */
+    console.log('\n用例 1c · 正文里的 emoji 与分行')
+    chatReply = '累死了😮\u200d💨\n不过还行✨\uFE0F'
+    chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'tired' }) }
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
     ok(
-      'emoji(ZWJ 组合 + 变体选择符)一字不差',
-      out.text === '累死了😮\u200d💨 不过还行✨\uFE0F',
+      'emoji（ZWJ 组合 + 变体选择符）一字不差',
+      out.text === '累死了😮\u200d💨\n不过还行✨\uFE0F',
       JSON.stringify(out.text)
     )
-    ok('末尾的 mood 照旧剪掉', out.done?.mood === 'tired', String(out.done?.mood))
+    ok('中间的分行留着', out.text.includes('\n'))
 
-    /* —— 用例 1c：标签被正文顶到中间 ——
-       模型先说一句、再决定给你看张图、然后又补一句收尾的话。splitTags 只认末尾
-       (那是为了不误吃正文里的方括号),所以这一枚原来会**原样流给用户看** ——
-       用户在聊天框里看见一行 `[photo:self:…]`。现在由 stripStandaloneTags 摘掉,
-       意图照样报上来(图还是要发的) */
-    console.log('\n用例 1c · 中段那枚标签不许露给用户')
-    chatReply =
-      '等下等下,这个状态你也想看呀?\n\n[photo:self:me in the car, tired but grinning]\n\n怎么样,值不值得等这么久诶?\n[mood:tired]'
+    /* 末尾的换行不属于它要说的话 —— 哪怕没有标签也要收掉 */
+    chatReply = 'Sure.\n'
+    chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'calm' }) }
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
-    ok('正文里没有标签残留', !/\[\s*(photo|mood)/i.test(out.text), JSON.stringify(out.text))
-    ok(
-      '中段那个换行/空行也没留下一堆空行',
-      out.text === '等下等下,这个状态你也想看呀?\n\n怎么样,值不值得等这么久诶?',
-      JSON.stringify(out.text)
-    )
-    ok('意图照样报上来(图还是要发的)', out.done?.photo === 'me in the car, tired but grinning', String(out.done?.photo))
-    ok('self: 也认出来了', out.done?.photoSelf === true)
-    ok('中段那枚同样不带相机信息', out.done?.photoShot === '', String(out.done?.photoShot))
-    ok('末尾那枚 mood 照旧', out.done?.mood === 'tired', String(out.done?.mood))
+    ok('末尾的换行不流到气泡里', out.text === 'Sure.', JSON.stringify(out.text))
 
-    /* —— 用例 2：接近上限的长场景 —— */
+    /* —— 用例 2：接近上限的长场景 ——
+       arguments 越大，被切成越多片；同时正文必须在参数收完之前就流出去 ——
+       否则等于"工具调用把整条回复停到了流末"。 */
     console.log('\n用例 2 · 长场景（' + SCENE_FULL.length + ' 字）')
-    chatReply = `Look at this.\n[photo:${SCENE_FULL}]\n[mood:warm]`
+    chatReply = 'Look at this.'
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        mood: 'warm',
+        photo: { scene: SCENE_FULL, shot: 'selfie' }
+      })
+    }
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
-    /* 场景原文里的 `self:` 是**标记不是内容**,服务端会连冒号一起剪掉 ——
-       所以比对的是剪过的那一份。用显式的去前缀而不是数下标:
-       标记的字符数一变,数下标就会静静地错一位 */
-    const sceneText = SCENE_FULL.replace(/^self:/, '')
-    ok('长场景整段保住', out.done?.photo === sceneText, `len=${out.done?.photo?.length} 期望 ${sceneText.length}`)
-    ok('photoSelf = true（self: 前缀）', out.done?.photoSelf === true)
-    ok('正文里没有标签残留', !/\[photo/.test(out.text))
-    ok('正文本身完整', out.text.trim() === 'Look at this.', JSON.stringify(out.text))
-    /* 关键：正文必须在场景那 400 字还没写完时就已经到了客户端。
-       否则等于"扣尾把整条回复停到了流末" —— 那正是旧版按长度预留的毛病 */
-    ok(
-      '正文在场景写完之前就已经流出去了（扣尾没把整条回复停住）',
-      out.text.trim() === 'Look at this.' && out.deltas.length > 3,
-      JSON.stringify(out.deltas.slice(0, 5))
-    )
+    ok('长场景整段保住', out.done?.photo === SCENE_FULL, `len=${out.done?.photo?.length} 期望 ${SCENE_FULL.length}`)
+    ok('photoSelf = true', out.done?.photoSelf === true)
+    ok('正文本身完整', out.text === 'Look at this.', JSON.stringify(out.text))
+    ok('正文是分多帧流出来的（没有等参数收完）', out.deltas.length > 3, String(out.deltas.length))
 
-    /* —— 用例 3：场景照（不写 self:）—— */
-    console.log('\n用例 3 · 场景照')
-    chatReply = 'It is coming down hard.\n[photo:rain on the window at dawn]'
+    /* —— 用例 3：场景照 / 视角 / 景别 ——
+       这三样在服务端只做一件事：把工具参数原样（归一化后）带出来。
+       漏掉任何一位的表现都是静默的：图照样出得来，只是又变回一张臂展自拍。 */
+    console.log('\n用例 3 · 场景照、视角与景别')
+    chatReply = 'It is coming down hard.'
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({ mood: 'uneasy', photo: { scene: 'rain on the window at dawn' } })
+    }
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
-    ok('photo 剪出来了', out.done?.photo === 'rain on the window at dawn')
-    ok('photoSelf = false（不写前缀就是它看到的东西）', out.done?.photoSelf === false)
-    ok('画面里没有人，相机那一项自然是空的', out.done?.photoShot === '', String(out.done?.photoShot))
-    ok('没有 mood 时 mood 是空串', out.done?.mood === '')
+    ok('photo 带出来了', out.done?.photo === 'rain on the window at dawn')
+    ok('照片里没有人', out.done?.photoSelf === false)
+    ok('相机那一项自然是空的', out.done?.photoShot === '', String(out.done?.photoShot))
+    ok('没有景别时是空串（不是替它猜一个）', out.done?.photoFrame === '', String(out.done?.photoFrame))
 
-    /* —— 用例 3b：自拍 / 他拍由标签说清（2026-10-05 新增） ——
-       在这之前，视角交给一次只看得到场景的文本调用去猜，猜出来大多是他拍 ——
-       用户的原话是"对于自拍的理解总是不好，老是会生成他拍视角的图片"。
-       现在模型自己写 `selfie:` / `third:`，服务端原样带出来 */
-    console.log('\n用例 3b · 谁拿的相机')
-    chatReply = 'One second, mirror is fogged.\n[photo:selfie:me in the bathroom mirror, hair wet]'
+    chatReply = 'One second, mirror is fogged.'
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        mood: 'amused',
+        photo: { scene: 'me in the bathroom mirror, hair wet', shot: 'selfie' }
+      })
+    }
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
     ok('photoShot = selfie', out.done?.photoShot === 'selfie', String(out.done?.photoShot))
-    ok('selfie: 前缀也说明它在画面里', out.done?.photoSelf === true)
-    ok('前缀不进场景描述', out.done?.photo === 'me in the bathroom mirror, hair wet', String(out.done?.photo))
+    ok('自拍说明它在画面里', out.done?.photoSelf === true)
 
-    chatReply = 'Caught me off guard.\n[photo:third:me on stage, taken from the crowd]'
+    chatReply = 'Caught me off guard.'
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        mood: 'wary',
+        photo: { scene: 'me on stage, taken from the crowd', shot: 'third', frame: 'full' }
+      })
+    }
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
     ok('photoShot = third', out.done?.photoShot === 'third', String(out.done?.photoShot))
-    ok('photoSelf 照样是 true（它在画面里，只是相机在别人手上）', out.done?.photoSelf === true)
-    ok('前缀不进场景描述', out.done?.photo === 'me on stage, taken from the crowd', String(out.done?.photo))
-
-    /* —— 用例 3c：这一张离得多近（2026-10-06 新增） ——
-       用户报的是"让角色拍特写图，总是变成自拍"。景别在服务端只做一件事：
-       把标签里那个词原样带出去 —— 而它**很容易在这一层被漏掉**（多一个字段、
-       多一处解构、多一处 return），漏掉的表现是静默的：图照样出得来，
-       只是又变回一张臂展自拍。所以这里两个形状都要盯：
-       带相机前缀的、以及人根本不在画面里的那种"拍个特写给我看" */
-    console.log('\n用例 3c · 这一张离得多近')
-    chatReply = 'Look, up close.\n[photo:selfie:close:my eyes, looking straight at you]'
-    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
-    out = await readChat(r)
-    ok('photoFrame = close', out.done?.photoFrame === 'close', String(out.done?.photoFrame))
-    ok('photoShot 照旧', out.done?.photoShot === 'selfie', String(out.done?.photoShot))
-    ok('两类前缀都不进场景描述', out.done?.photo === 'my eyes, looking straight at you', String(out.done?.photo))
+    ok('他拍时它照样在画面里', out.done?.photoSelf === true)
+    ok('photoFrame = full', out.done?.photoFrame === 'full', String(out.done?.photoFrame))
 
     /* 人不在画面里也照样有景别 —— 这正是"拍个特写给我看"最常见的形状 */
-    chatReply = 'Here.\n[photo:close:rain running down the window pane]'
+    chatReply = 'Here.'
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        mood: 'calm',
+        photo: { scene: 'rain running down the window pane', frame: 'close' }
+      })
+    }
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
     ok('空镜也有景别', out.done?.photoFrame === 'close', String(out.done?.photoFrame))
     ok('空镜仍然没有人', out.done?.photoSelf === false)
-    ok('相机那一项仍然是空的', out.done?.photoShot === '', String(out.done?.photoShot))
+    ok('空镜的相机项仍然是空的', out.done?.photoShot === '', String(out.done?.photoShot))
 
-    /* 没说就是空串 —— 客户端据此落回"按场景判、再不行这一档的缺省" */
-    chatReply = 'Fine.\n[photo:selfie:me on the balcony]'
+    /* —— 用例 3b：旧前缀被写进了 scene ——
+       新协议不再要求前缀，但模型可能顺手沿用旧写法。parsePhotoIntent 会把它
+       从描述里剪掉，否则 "selfie:close:me …" 整句会被喂给出图模型。 */
+    console.log('\n用例 3b · scene 里残留的旧前缀会被剪掉')
+    chatReply = 'Sure.'
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        mood: 'warm',
+        photo: { scene: 'selfie:close:me in the bathroom mirror, hair wet' }
+      })
+    }
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
-    ok('没说景别时是空串（不是替它猜一个）', out.done?.photoFrame === '', String(out.done?.photoFrame))
+    ok('前缀不进场景描述', out.done?.photo === 'me in the bathroom mirror, hair wet', String(out.done?.photo))
+    ok('视角从前缀里认出来了', out.done?.photoShot === 'selfie', String(out.done?.photoShot))
+    ok('景别从前缀里认出来了', out.done?.photoFrame === 'close', String(out.done?.photoFrame))
+    ok('它本人在画面里', out.done?.photoSelf === true)
 
-    /* 半身那一档是他拍那一档**唯一**能比"全身"更近的来路：它的缺省就是全身，
-       而 scene 词表与标签前缀都得走通，那段覆盖才不是死代码 */
-    chatReply = 'Sure, up close.\n[photo:third:medium:me at my desk, the lamp still on behind me]'
+    /* —— 用例 4：模型没调工具 ——
+       正文照常送达；收尾帧带 metaIssue，前端据此提示"换个支持 tool calling
+       的模型"。**不静默降级**去正文里找旧标签 —— 那会把"模型不支持"藏起来。 */
+    console.log('\n用例 4 · 模型没调工具')
+    chatReply = 'Just words, nothing else.'
+    chatTool = null
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
-    ok('半身那一档也带得出来', out.done?.photoFrame === 'medium', String(out.done?.photoFrame))
+    ok('正文照常送达', out.text === chatReply, JSON.stringify(out.text))
+    ok('metaIssue = not_called', out.done?.metaIssue === 'not_called', String(out.done?.metaIssue))
+    ok('既然没调工具，photo 就是空的', out.done?.photo === '')
+    ok('mood 也是空的', out.done?.mood === '')
 
-    /* 中段那枚标签那条路也要带上它 —— 两条路的字段是分开解构的 */
-    chatReply = 'One sec.\n\n[photo:third:close:my hands wrapped around the mug]\n\nOkay.'
+    /* —— 用例 4b：调了别的工具 —— */
+    console.log('\n用例 4b · 调了别的工具')
+    chatReply = 'Let me look that up.'
+    chatTool = { name: 'search_web', args: metaArgs({ q: 'weather in Lisbon' }) }
     r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
     out = await readChat(r)
-    ok('中段那枚也带景别', out.done?.photoFrame === 'close', String(out.done?.photoFrame))
-    ok('中段那枚的视角也在', out.done?.photoShot === 'third', String(out.done?.photoShot))
+    ok('metaIssue = unknown_tool', out.done?.metaIssue === 'unknown_tool', String(out.done?.metaIssue))
+    ok('正文照常送达', out.text === chatReply, JSON.stringify(out.text))
 
-    /* —— 用例 4：photo 档确实按五行回 —— */
-    console.log('\n用例 4 · /api/enhance 的 photo 档')
+    /* —— 用例 4c：参数不是合法 JSON —— */
+    console.log('\n用例 4c · 参数写坏了')
+    chatReply = 'Fine.'
+    chatTool = { name: 'emit_message_meta', args: '{"mood":"tired"' }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok('metaIssue = invalid_arguments', out.done?.metaIssue === 'invalid_arguments', String(out.done?.metaIssue))
+    ok('正文照常送达', out.text === chatReply, JSON.stringify(out.text))
+
+    /* —— 用例 4d：参数合法但两项都空 —— */
+    console.log('\n用例 4d · 调了但什么都没填')
+    chatReply = 'Hm.'
+    chatTool = { name: 'emit_message_meta', args: '{}' }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok('metaIssue = empty_metadata', out.done?.metaIssue === 'empty_metadata', String(out.done?.metaIssue))
+
+    /* —— 用例 5：老标签只清理、不取意图 ——
+       历史消息里可能还留着旧标签；正文流出去之前仍要把它们摘干净，
+       但它们**不再能顶替 tool call**。否则"模型没调工具"这件事会被
+       一段文本悄悄补上，协议就又有两条路了。 */
+    console.log('\n用例 5 · 老标签只清理，不当作这一轮的意图')
+    chatReply = 'Rain again.\n[photo:self:me on the balcony]\n[mood:tired]'
+    chatTool = null
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok('正文里的旧标签被摘干净', out.text === 'Rain again.', JSON.stringify(out.text))
+    ok('旧 photo 标签不再产生 photo', out.done?.photo === '', String(out.done?.photo))
+    ok('旧 mood 标签不产生 mood', out.done?.mood === '', String(out.done?.mood))
+    ok('仍然如实报告 not_called', out.done?.metaIssue === 'not_called', String(out.done?.metaIssue))
+
+    chatReply = 'One sec.\n\n[photo:selfie:close:my hands wrapped around the mug]\n\nOkay.'
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok(
+      '中段那枚旧标签也不露给用户',
+      !/\[\s*(photo|mood)/i.test(out.text),
+      JSON.stringify(out.text)
+    )
+    ok('中段那枚同样不产生意图', out.done?.photo === '', String(out.done?.photo))
+
+    /* —— 用例 6：上游明确拒绝 tools ——
+       "这个模型用不了这一版的新协议"必须说清楚，让用户去换模型；
+       不能退回到"读正文标签"那条老路（那等于把问题藏起来）。 */
+    console.log('\n用例 6 · 上游不支持 tools')
+    chatReply = 'never sent'
+    chatTool = null
+    FAIL_CHAT_TOOLS = true
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    const reject = await r.json().catch(() => ({}))
+    ok('HTTP 400', r.status === 400, String(r.status))
+    ok(
+      '错误说清是 tool calling 不支持',
+      reject.error === 'This model does not support tool calling',
+      JSON.stringify(reject)
+    )
+    ok(
+      'detail 里带着上游原话与可操作的下一步',
+      String(reject.detail || '').includes('tools is not supported') &&
+        String(reject.detail || '').includes('deepseek-flash'),
+      JSON.stringify(reject.detail)
+    )
+    FAIL_CHAT_TOOLS = false
+
+    /* —— 用例 7：canDraw=false ——
+       配不出图的角色，工具 schema 里连 photo 字段都不该出现，
+       system 里也不该提"发图"这件事 —— 教了就会写，写了也画不出来。 */
+    console.log('\n用例 7 · 配不出图时')
+    chatReply = 'Just talking.'
+    chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'bored' }) }
+    r = await post(APP_PORT, '/api/chat', {
+      ...cfg,
+      canDraw: false,
+      messages: [{ role: 'user', content: 'hi' }]
+    })
+    out = await readChat(r)
+    const noDrawProps = seen.chat?.tools?.[0]?.function?.parameters?.properties || {}
+    ok('工具 schema 里没有 photo', noDrawProps.photo === undefined, Object.keys(noDrawProps).join(','))
+    ok('mood 仍然必填', seen.chat?.tools?.[0]?.function?.parameters?.required?.join(',') === 'mood')
+    ok('system 里不再提发图', !systemOf().includes('Sending a picture:'))
+    ok('mood 这一路照常工作', out.done?.mood === 'bored', String(out.done?.mood))
+    ok('没有 photo 字段时 photo 为空', out.done?.photo === '')
+
+    /* —— 用例 8：photo 档确实按四行回 —— */
+    console.log('\n用例 8 · /api/enhance 的 photo 档')
     r = await post(APP_PORT, '/api/enhance', {
       prompt: 'scene: me on the balcony',
       mode: 'photo',
@@ -412,8 +602,8 @@ async function main() {
     )
     ok('温度是 0.6', seen.enhance?.temperature === 0.6, String(seen.enhance?.temperature))
 
-    /* —— 用例 5：/api/generate 收到的是什么 —— */
-    console.log('\n用例 5 · /api/generate 收到的载荷')
+    /* —— 用例 9：/api/generate 收到的是什么 —— */
+    console.log('\n用例 9 · /api/generate 收到的载荷')
     r = await post(APP_PORT, '/api/generate', {
       prompt: 'photographic, shot on a phone front camera, me on the balcony, selfie at arm\u2019s length',
       size: '1024x1536',
@@ -429,11 +619,11 @@ async function main() {
     ok('quality 带上了', seen.generate?.quality === 'high')
     ok('size 是竖幅', seen.generate?.size === '1024x1536', String(seen.generate?.size))
 
-    /* —— 用例 6：出图失败时，原因必须传到浏览器 ——
+    /* —— 用例 10：出图失败时，原因必须传到浏览器 ——
        这一条是"图片生成失败根本没有详细提示"那次报错的回归。
        浏览器那边只显示 `photoFailureText(e.message)`，所以**服务端把原话
        传没传出来**就是这条链的全部 —— 传丢了，界面上就只剩"生成失败"。 */
-    console.log('\n用例 6 · 出图失败时原因要传到浏览器')
+    console.log('\n用例 10 · 出图失败时原因要传到浏览器')
     FAIL_GENERATE = true
     r = await post(APP_PORT, '/api/generate', {
       prompt: 'a rooftop at dawn',
@@ -458,16 +648,16 @@ async function main() {
     )
     FAIL_GENERATE = false
 
-    /* —— 用例 7：时间那一块 ——
+    /* —— 用例 11：时间那一块 ——
        "现在几点 / 上次说话"由前端算好、服务端拼进 system（见 server/chatTime.js）。
        这一条链上会静默出错的正是**接缝**：前端没把字段发出来、服务端没接住、
        或者接住了却插错位置 —— 三种都不会报错，角色只是变得不知道时间，
        而"它不知道时间"这件事在产品上完全看不出来（它照聊不误）。 */
-    console.log('\n用例 7 · 时间那一块')
+    console.log('\n用例 11 · 时间那一块')
     chatReply = 'Sure.'
+    chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'calm' }) }
     const STAMP = '2026-10-05T23:41:07+08:00'
     const STAMP_MS = Date.parse(STAMP)
-    const systemOf = () => String(seen.chat?.messages?.[0]?.content || '')
 
     r = await post(APP_PORT, '/api/chat', {
       ...cfg,
@@ -515,8 +705,9 @@ async function main() {
        现在改成"大多数消息里没有图,这是正常的",连贯性收成描述规则末尾
        的一个从句(断言跟着改成新措辞) */
     ok(
-      '规则里点明"标签必须在最后、后面不许再有话"',
-      systemOf().includes('Nothing may come after it')
+      '规则里点明"回复写完后调用一次元数据工具"',
+      systemOf().includes('call the emit_message_meta tool exactly once') &&
+        systemOf().includes('never write the metadata')
     )
     ok(
       '规则里带着"接话题"与"照片别滥用"',
@@ -527,13 +718,13 @@ async function main() {
     )
     /* 2026-10-06：教它怎么写景别。**这一条只断言"它在 system 里"** ——
        模型用不用、用得像不像人，属于提示词类改动，只能手测。
-       但少了这一句，`close:` 就永远不会出现在标签里，特写还是变自拍 */
+       但少了这一句，close 就永远不会进 photo.frame，特写还是变自拍 */
     ok(
-      '规则里教了景别那个词，并且点明"拿着的东西的特写不是自拍"',
-      systemOf().includes('[photo:selfie:close:') &&
+      '规则里教了 frame 的三个档位，并且点明"拿着的东西的特写不是自拍"',
+      systemOf().includes('"frame" is optional') &&
         systemOf().includes('is not a selfie') &&
         systemOf().includes("not a picture of your face held out at arm's length"),
-      JSON.stringify(systemOf().split('\n').filter((l) => l.includes('close:')))
+      JSON.stringify(systemOf().split('\n').filter((l) => l.includes('frame')))
     )
 
     /* 没给时间（老前端、手搓请求、时钟坏掉）→ 整块不出现，且**不影响这一轮**。
@@ -553,14 +744,15 @@ async function main() {
     await readChat(r)
     ok('时间给坏了也只是没有这一块（不报错、不挡话）', !/^Right now: /m.test(systemOf()))
 
-    /* —— 用例 8：心情那一块 ——
+    /* —— 用例 12：心情那一块 ——
        与时间同一条理由：这条链上会静默出错的正是**接缝** ——
        前端没把状态发出来、服务端没接住、或者接住了却插错位置。
        三种都不报错，角色只是变成"每一轮从零决定心情"，
        而这在界面上**完全看不出来**（它照聊不误，药丸也照常显示）。
        行首锚定的正则，不拿 includes('wary') 判 —— 场景里本来就可能出现那个词 */
-    console.log('\n用例 8 · 心情那一块')
+    console.log('\n用例 12 · 心情那一块')
     chatReply = 'Fine.'
+    chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'calm' }) }
     const hoursAgo = (h) => Date.now() - h * 3600_000
     const moodLine = () => /^You are feeling (\S+) right now\.$/m.test(systemOf())
 
@@ -620,11 +812,11 @@ async function main() {
     ok('不给这一项时整块消失', !moodLine())
     ok('也不影响这一轮（时间那一块照旧在）', /^Right now: /m.test(systemOf()))
 
-    /* —— 用例 9：说话样本那一栏（2026-10-08）——
+    /* —— 用例 13：说话样本那一栏（2026-10-08）——
        它与规则不是一类：规则是"要求"，样本是"照着抄口吻的例子"。所以断言两件事：
        它进了 system，而且带着那句**读法**（跟着语气、不要跟着话题）——
        少了那句读法，模型会把样例里的**场景**当成当下的事实搬进这一轮。 */
-    console.log('\n用例 9 · 说话样本')
+    console.log('\n用例 13 · 说话样本')
     const SAMPLES = "User: how was your day / You: long. don't ask. | User: im outside / You: door's open"
     r = await post(APP_PORT, '/api/chat', {
       ...cfg,

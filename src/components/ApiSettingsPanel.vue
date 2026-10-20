@@ -181,7 +181,7 @@ const purposeNote = computed(() => {
     case 'image':
       return props.capabilityNote
     case 'chat':
-      return 'Chat models are called through /chat/completions — for the replies and for compressing long-term memory. For Bailian, pick the compatible-mode address.'
+      return 'Chat models are called through /chat/completions — for the replies and for compressing long-term memory. They must support tool calling (function calling), which carries each reply\'s mood and picture intent; deepseek-flash and deepseek-v4-pro do. For Bailian, pick the compatible-mode address.'
     case 'vision':
       return 'Vision models are called through /chat/completions with the image attached. For Bailian, pick the compatible-mode address.'
     case 'tts':
@@ -751,7 +751,7 @@ function onImportFile(e: Event) {
                 />
                 <span class="pm">
                   <b>Role chat</b>
-                  <span>How characters reply, and how long-term memory gets compressed.</span>
+                  <span>How characters reply, and how long-term memory gets compressed. Needs tool calling.</span>
                 </span>
                 <span class="tick" aria-hidden="true"><PhCheck /></span>
               </label>

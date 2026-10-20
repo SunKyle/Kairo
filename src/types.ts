@@ -321,7 +321,7 @@ export interface ChatMessage {
      用户会以为角色话说一半是它自己的风格 */
   truncated?: boolean
   /* 这一轮的情绪,一个英文小写词(见服务的 CHAT_MOOD_RE)。
-     它是模型写在回复最末尾的元数据,由服务端剪下来单独送 ——
+     它来自回复之外的 `emit_message_meta` 工具调用,由服务端归一化后单独送 ——
      正文里永远不含它,所以这不是"从文本里解析出来的",是原样收到的。
      只对助手消息有意义;空/缺省 = 这一轮没给 */
   mood?: string
@@ -348,19 +348,20 @@ export interface ChatMessage {
      现在逐条传出来,界面上直接给原因。
      它也用于**出图之前**那几条校验(那时 photoFailed 还没置上) */
   photoError?: string
-  /* 这张画面里有没有**它本人**(模型写在标签前缀里,见 server/chatTags.js)。
+  /* 这张画面里有没有**它本人**(工具调用的 photo.shot / photo.self,
+     见 server/chatTools.js)。
      它决定出图时带不带角色的设定图:场景照带上会被带跑,自拍不带会画成陌生人。
      存下来是为了让"重画这一张"与导出包里的这段对话保持同一个意图 */
   photoSelf?: boolean
-  /* 这一张**谁拿的相机**,由模型写在标签前缀里:`selfie:` / `third:`。
+  /* 这一张**谁拿的相机**,由工具调用的 photo.shot 给出:`selfie` / `third`。
      空/缺省 = 它没说 —— 那时由 lib/chatPhoto 按场景文本判、再不行**默认自拍**。
      **单独存一位是有原因的**(2026-10-05):视角曾经交给一次额外的文本调用去猜,
      而它只看得到一句场景,猜出来大多是他拍 —— 用户报的就是
      "对于自拍的理解总是不好,老是会生成他拍视角的图片"。
      存下来,重画与导出才对得起当时那个意图 */
   photoShot?: ChatShotTag
-  /* 这一张**离得多近**,同样由模型写在标签前缀里(`close:` / `medium:` / `full:`,
-     见 server/chatTags.js)。空/缺省 = 它没说 —— 那时由 lib/chatPhoto 按场景文本判、
+  /* 这一张**离得多近**,同样由工具调用的 photo.frame 给出(`close` / `medium` / `full`,
+     见 server/chatTools.js)。空/缺省 = 它没说 —— 那时由 lib/chatPhoto 按场景文本判、
      再不行落回这一档视角的缺省景别。
      **为什么它非得单独存一位**(2026-10-06):在这之前,景别是写死在模板的机位句里的
      (自拍那句是半身、他拍那句是全身),而场景里那句"特写"在整个链路里唯一的作用
@@ -418,7 +419,7 @@ export interface ChatSummary {
   updatedAt: number
 }
 
-/* 角色**此刻的心情**。它由每一轮回复末尾那枚 `[mood:word]` 攒出来 ——
+/* 角色**此刻的心情**。它由每一轮 `emit_message_meta` 工具调用里的 mood 攒出来 ——
    与 ChatMessage.mood 是**同一个值**,只是那一位答的是"那条消息当时什么表情",
    这一条答的是"它现在是什么心情",而这是下一句该怎么写的一个输入。
 

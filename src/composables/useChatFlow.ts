@@ -50,6 +50,37 @@ import type { useGeneration } from './useGeneration'
 import type { useHistory } from './useHistory'
 import type { useMemories } from './useMemories'
 
+/* "这个模型压根没在用工具调用"这一条整个会话只提示一次。
+   它每一轮都会发生,每轮弹一遍等于把界面变成一块常驻警告牌;
+   而用户真正要做的动作(去设置里换个模型)一次就够听清。
+   参数坏掉那两种是偶发的,不受这个开关管,每次都说 */
+let warnedMetaTool = false
+
+/** 收尾元数据缺了时的提示。空串 = 不必说 */
+function metaIssueNote(issue: string): string {
+  switch (issue) {
+    case 'not_called':
+    case 'unknown_tool':
+      if (warnedMetaTool) return ''
+      warnedMetaTool = true
+      return (
+        'That model did not use tool calling, so the mood and picture for this reply are missing. ' +
+        'Choose a model with function calling (for example deepseek-flash or deepseek-v4-pro) in API settings.'
+      )
+    case 'invalid_arguments':
+      return (
+        "The model's metadata call arrived malformed, so this reply has no mood or picture. " +
+        'Try again, or switch to a model with reliable tool calling.'
+      )
+    case 'empty_metadata':
+      return (
+        'The model called the metadata tool but left it empty, so this reply has no mood or picture.'
+      )
+    default:
+      return ''
+  }
+}
+
 /* ===== 角色对话：流式那一轮 ==========================================
    这是「对话这一域」的另一半 —— 非流式的那一半(消息、长期记忆、清空、
    导入导出)收在 useChat.ts,这里管真正发出去的那一轮:进对话页挑人、
@@ -328,21 +359,26 @@ async function runChat(id: string) {
   let failure = ''
   /* 上游为什么停下。'length' 表示它撞上了 max_tokens —— 见下面收尾那一段 */
   let finish = ''
-  /* 这一轮的情绪,由服务端从正文末尾剪下来单独给 */
+  /* 这一轮的情绪,由服务端把 `emit_message_meta` 工具调用归一化后单独给 */
   let mood = ''
-  /* 这一轮它想给你看的画面(场景描述)。空串 = 不发图 */
+  /* 这一轮它想给你看的画面(工具调用里的 photo.scene)。空串 = 不发图 */
   let photo = ''
-  /* 这张里有没有它本人(模型写在标签前缀里)。
+  /* 这张里有没有它本人(工具调用里的 photo.shot / photo.self)。
      它决定出图时带不带设定图:场景照带上会被带跑,自拍不带会画成陌生人 */
   let photoSelf = false
   /* 这一张谁拿的相机:'selfie' / 'third' / 空串(它没说)。
-     由模型在标签前缀里说(selfie: / third:,见 server/chatTags.js)——
+     由工具调用的 photo.shot 说(见 server/chatTools.js)——
      它是**唯一**知道"我在描述自己举着手机拍,还是别人给我拍"的那一层 */
   let photoShot = ''
   /* 这一张离得多近:'close' / 'medium' / 'full' / 空串(它没说)。
      与视角一样只由模型说得出 —— 而它是"让角色拍特写,却总变成臂展自拍"
      那件事的解药(见 lib/chatPhoto 的 FRAMING) */
   let photoFrame = ''
+  /* 工具调用这一路的岔子(见 api.ts 的 ChatStreamResult.metaIssue)。
+     正文照常保留,只在下面对应的那一小段里换成一句提示 */
+  let metaIssue = ''
+  /* 这一轮有没有"没能存下来"。它比元数据提示要紧,收尾时先让它占住提示条 */
+  let saveFailed = false
   /* 打字节奏。它只决定"什么时候放",不决定"放什么" ——
      所以这里最要紧的不是节奏好不好看,而是**一个字都不能丢**:
      收尾(马上要落盘)、按 Stop、页面被切走三处都必须把手里剩下的冲出来,
@@ -450,10 +486,11 @@ async function runChat(id: string) {
     photoSelf = out.photoSelf
     photoShot = out.photoShot
     photoFrame = out.photoFrame
+    metaIssue = out.metaIssue
     /* 这一轮到底有没有"发图的意图",以及它想给你看什么。
      *
-     * **不该靠猜**:标签在服务端就被剪掉了(那是对的,用户不该看见 `[photo:…]`),
-     * 于是"它没打算发图"和"它打算发、但被剪掉了"在界面上长得一模一样 ——
+     * **不该靠猜**:元数据走的是正文之外的工具调用,正文里本来就没有它的痕迹,
+     * 于是"它没打算发图"和"它打算发、但工具调用没送到"在界面上长得一模一样 ——
      * 一旦出现"怎么每句都在发图"的疑问,这一层是唯一能一眼分辨的地方。
      * 走 console.debug(详细级别,控制台默认不显示),**不落盘、不上报**。
      * 只在**确实有意图**时打一行 —— 它就是为"太多了"这种问题准备的 */
@@ -486,8 +523,9 @@ async function runChat(id: string) {
   else if (finish === 'length') reply.truncated = true
 
   /* ===== 扇出:把带区域标记的一轮拆成多条带 layer 的消息(脊柱 A)=====
-     服务端只认 `[photo:]`/`[mood:]` 两枚值标签,`[think]`/`[act]` 是**普通文字**一路流到
-     这里、还留在 reply.content 上。绝大多数回复根本没有标记 —— hasLayerMarkers 为假就
+     元数据(心情/发图)走工具调用的独立信道,不在正文里;`[think]`/`[act]` 是**普通文字**
+     一路流到这里、还留在 reply.content 上。服务端只为历史消息保留旧 `[photo:]`/`[mood:]`
+     的清理,不会把它们当成这一轮的意图。绝大多数回复根本没有标记 —— hasLayerMarkers 为假就
      **一个字节都不动**,走原来那条单条落盘的路(窄修先落、别惊动常态)。
      有标记时才拆:
      - spine(承接 photo/mood/cursor/出图回调的那一条)= 第一个 say 段,没有 say 就用第 0 段;
@@ -590,6 +628,7 @@ async function runChat(id: string) {
       // 另一页的左栏与消息流都要跟上(它可能正开着这个角色)
       announce('chat', id)
     } catch (e) {
+      saveFailed = true
       console.error('[Kairo] this reply could not be saved', e)
       notice.value =
         'This reply is on screen but could not be saved — it will be lost on refresh.'
@@ -599,6 +638,12 @@ async function runChat(id: string) {
   }
   if (stopped) notice.value = 'Stopped.'
   else if (failure) notice.value = failure
+  /* 元数据缺了只是少一颗药丸、少一张图,不该盖掉"这条没存下来"那种更要紧的提示。
+     metaIssueNote 有副作用(把"只提醒一次"的开关拨掉),所以只在真要说的时候调 */
+  else if (!saveFailed) {
+    const note = metaIssueNote(metaIssue)
+    if (note) notice.value = note
+  }
   /* 收尾之后顺手看一眼要不要压记忆。放在最末是有意的:
      它是后台整理,不该挡在用户看到回复之前,也不该挤进上面那两句提示 */
   void maybeSummarize(id)

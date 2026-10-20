@@ -191,7 +191,7 @@ function nudge(charId: string, salt: string): number {
 }
 
 /* ===== 情绪落到语调上 ================================================
-   情绪已经有自己的出口了(见 server/chatTags.js 的 `[mood:…]`),但**那是给眼睛的**。
+   情绪已经有自己的出口了(见 server/chatTools.js 的 `emit_message_meta`),但**那是给眼睛的**。
    同一句话换个语调念出来,像不像那个人差别很大 —— 而这是全站唯一一处
    "情绪可以不花钱地影响表达"的地方(浏览器自带语音:零成本、离线)。
 
@@ -501,7 +501,7 @@ export interface SpeakTarget {
   language?: string
   /** 走 tts 时用的那条配置。engine 是 tts 而它缺了,就直接走浏览器 */
   cfg?: ApiConfig
-  /* 这一条消息的情绪(见 chatTags 的 `[mood:…]`)。**只影响浏览器那条路**:
+  /* 这一条消息的情绪(见 chatTools 的 `emit_message_meta`)。**只影响浏览器那条路**:
      第三方合成的音色是角色身份的一部分,跟着情绪改音高等于换了个人 */
   mood?: string
 }

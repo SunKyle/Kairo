@@ -834,8 +834,8 @@ function hasAction(scene: string): boolean {
  * @param gender **这个角色的性别**(见 characterGender)。只在特写那一档用得上 ——
  *               它是"画面里没有脸"时唯一还成立的身份特征(见 partLine)。
  *               空串 = 没填过(老角色),那时 partLine 只留不带性别的那半句
- * @param mood   **发这条消息时它的心情**(就是那条消息末尾那枚 `[mood:word]`,
- *               见 server/chatMood.js)。它落在 expression 那一层 ——
+ * @param mood   **发这条消息时它的心情**(就是那条消息那次 `emit_message_meta`
+ *               调用里的 mood,见 server/chatTools.js)。它落在 expression 那一层 ——
  *               "这一刻它脸上是什么神情"。空串 / 形状不合法 = 这一层不拼
  *
  * —— 视角是谁定的(2026-10-05 改过一次) ——
@@ -850,8 +850,9 @@ function hasAction(scene: string): boolean {
  *    看不到对话,信息比聊天模型**更少** —— 它同样只能猜,而且猜出来的
  *    "third" 还会盖掉场景里明写的"自拍"。用户的原话:
  *    "对于自拍的理解总是不好,老是会生成他拍视角的图片";
- * 3. **现在**:由**聊天模型自己**在标签里说(它才知道自己在描述什么),
- *    见 server/chatTags.js 的三个前缀;它没说时才退回词表,再不行**默认自拍**。
+ * 3. **现在**:由**聊天模型自己**在 `emit_message_meta` 的 `photo.shot` 里说
+ *    (它才知道自己在描述什么),见 server/chatTools.js;它没说时才退回词表,
+ *    再不行**默认自拍**。旧消息里的 `selfie:` / `third:` 前缀仍然照认。
  *
  * —— 为什么默认是自拍,而不是沿用原来的"默认第三人称" ——
  *

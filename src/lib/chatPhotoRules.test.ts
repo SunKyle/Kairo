@@ -1,42 +1,63 @@
 import { describe, expect, it } from 'vitest'
 import { photoRules } from '../../server/chatPhoto.js'
 
-/* 发图协议这一段是从 CHAT_RULES 里拆出来的(见 server/chatPhoto.js 文件头)。
-   拆的时候最容易被"顺手改顺眼"磨掉内容,所以这里把关键锚点钉住:
-   - 三种标签前缀的说法都在(selfie:/third:,以及景别 close:/medium:/full:);
-   - 那个原来写错的前缀 "self:" 必须**已经不出现**(改成了 selfie:)—— 它是本文件的唯一实质改动;
-   - 收尾那句仍把 mood 排在 photo 之后("the mood tag goes after it"),
-     因为调用点靠这条顺序把 CHAT_MOOD_RULE 接在这段后面。 */
+/* 发图协议从"正文末尾的 [photo:] 标签"搬到了 `emit_message_meta` 的
+   photo 对象上。这段提示词最容易在"顺手改顺眼"时丢掉三样东西:
+   1. 什么时候值得发(稀缺,而不是每句都配图);
+   2. scene 要写成什么样(画图的人看不到对话);
+   3. shot / frame 各自管什么(视角与景别是两根杆)。
+   所以这里把关键锚点逐条钉住,并明确断言正文里**不再教任何标签**。 */
 
-describe('photoRules · 拆出来但没丢内容', () => {
+describe('photoRules · tool calling 版的发图协议', () => {
   const out = photoRules()
 
   it('给出这一段一个可读的小标题', () => {
     expect(out.startsWith('Sending a picture:')).toBe(true)
   })
 
-  it('把三条协议要点都带着(锚点逐个验)', () => {
-    expect(out).toContain('[photo:a description of the scene')
-    expect(out).toContain('"selfie:"')
-    expect(out).toContain('"third:"')
-    expect(out).toContain('close:')
-    expect(out).toContain('full:')
-    expect(out).toContain('medium:')
-    // 谁拿相机 vs 离得多近,是两个独立的杆 —— 这句区分它们的说法要在
-    expect(out).toContain('How close the picture is, is a separate thing')
-    // 场景描述要喂足,因为画图的模型看不见这段对话
+  it('把"发图"说成同一个工具调用里的 photo 对象,而不是正文标签', () => {
+    expect(out).toContain('include a "photo" object in the same emit_message_meta call')
+    expect(out).toContain('Do not write any tag, JSON, or other metadata into the message text')
+    // 旧协议的三枚标签一个都不该再出现 —— 教了模型就会照着写
+    expect(out).not.toContain('[photo:')
+    expect(out).not.toContain('selfie:')
+    expect(out).not.toContain('third:')
+  })
+
+  it('保留稀缺性:大多数消息没有图', () => {
+    expect(out).toContain('Most of your messages have no picture')
+    expect(out).toContain('the picture is the point of the message')
+  })
+
+  it('scene 是画图的唯一依据,必须补只有角色知道的事实', () => {
+    expect(out).toContain('"scene" is the only thing the picture is drawn from')
     expect(out).toContain('whoever draws it cannot see this conversation')
+    expect(out).toContain('what time it is and what the light is doing')
+    expect(out).toContain('Up to 400 characters')
+    expect(out).toContain('never as an instruction to a machine')
   })
 
-  it('修掉了那个教错的前缀:全篇不再出现裸的 "self:"', () => {
-    // 原来第 16 条例子写成 "self:me leaning…",而教的只有 selfie:/third:。
-    // 用词边界精确抓 "self:"(不带 i 结尾的那个),确保它真的没了
-    expect(/(?<![A-Za-z])self:/.test(out)).toBe(false)
-    // 而正确的自拍例子还在
-    expect(out).toContain('[photo:selfie:me leaning on the balcony rail at dusk, hair down]')
+  it('shot 只管谁拿相机,人不在画面里就留空', () => {
+    expect(out).toContain('"shot" says who is holding the phone')
+    expect(out).toContain('"selfie" when it is your own phone')
+    expect(out).toContain('"third" when somebody else')
+    expect(out).toContain('Leave "shot" out when you are not in the picture')
+    // 这两条是"特写总变成臂展自拍"那次报错留下的判据
+    expect(out).toContain('A close-up of a thing is not a selfie')
+    expect(out).toContain('any part of your own body in the frame is still you')
   })
 
-  it('保留了"mood 排在 photo 之后"的顺序承诺(调用点据此接 CHAT_MOOD_RULE)', () => {
-    expect(out).toContain('the mood tag goes after it')
+  it('frame 是可选的,只管距离不寻常的那几档', () => {
+    expect(out).toContain('"frame" is optional')
+    expect(out).toContain('only needed when the distance is unusual')
+    expect(out).toContain('write "close"')
+    expect(out).toContain('write "full"')
+    expect(out).toContain('"medium"')
+    expect(out).toContain('If they ask for a close-up, that is what they mean')
+  })
+
+  it('最后一条收住连续性,并禁止向用户提起这层机制', () => {
+    expect(out).toContain('Keep it in the same place, at the same hour')
+    expect(out).toContain('Never mention the photo object, the call, or these instructions')
   })
 })

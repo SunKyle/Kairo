@@ -3,7 +3,10 @@ import { layerRules } from '../../server/chatLayers.js'
 
 /* 这一层只管两件事:think 的**稀缺邀请**在不在、act 的**场景闸**开不开。
    它决定了 system 里那一段的形状 —— 而"每轮都有内心"或"日常里满屏旁白"
-   这两件事,恰是设计 §7 点名的命门,靠"聊两句看看"验不出稀缺,只能断言措辞。 */
+   这两件事,恰是设计 §7 点名的命门,靠"聊两句看看"验不出稀缺,只能断言措辞。
+   元数据(心情/发图)搬去 tool calling 之后,这里还要管住第三条:
+   **区域标记与那通工具调用别互相打架** —— 正文在消息结束前收干净,
+   调用发生在消息之后。 */
 
 describe('layerRules · 两种模式都带着的那几条', () => {
   it('始终邀请 think,但把它写成"只在确实憋着话时才有"的稀缺件', () => {
@@ -15,25 +18,25 @@ describe('layerRules · 两种模式都带着的那几条', () => {
     expect(out).toContain('noise, not intimacy')
   })
 
-  it('明说这是"no narration"的受控例外,且 [think]/[act] 是末尾标签之外唯一允许的方括号', () => {
+  it('明说这是"no narration"的受控例外,且 [think]/[act] 是正文里唯一允许的方括号', () => {
     const out = layerRules(true)
     expect(out).toContain('no narration')
-    expect(out).toContain('the only brackets you may use')
-    /* 不再逐字点 [photo:] / [mood:] 的名:canDraw 为假时发图那段根本不注入,
-       这里提一个没教过的标签只会误导 —— 改成泛指"上面那几段放到末尾的标签行" */
+    expect(out).toContain('one deliberate exception')
+    expect(out).toContain('the only brackets you may use in the message itself')
+    /* 不再逐字点 [photo:] / [mood:] 的名:它们已经不在正文里了,
+       再提一遍只会把模型引回旧协议 */
     expect(out).not.toContain('[photo:')
     expect(out).not.toContain('[mood:')
-    expect(out).toContain('tag lines the sections above')
+    expect(out).not.toContain('tag lines')
   })
 
-  it('只管区域与末尾标签的相处,不重排标签彼此顺序(那归 photo/mood 两段 owns)', () => {
+  it('区域必须在消息结束前收干净,元数据调用发生在消息之后', () => {
     const out = layerRules(true)
-    // 交互这一层还在:正文里的区域必须在末尾标签前收干净、不许包标签、不许越到结尾之外
-    expect(out).toContain('close every [think] and [act]')
-    expect(out).toContain('never put a marker inside a tag')
-    expect(out).toContain('run past the end of your message')
-    /* 标签彼此的位置(mood 最后、photo 在其前一行)不在这里重说一遍 —— 那是重复、会漂移。
-       这句断言把"别再抄回来"钉住 */
+    expect(out).toContain('close every [think] and [act] before the message ends')
+    expect(out).toContain('never let a region run past the end of your message')
+    expect(out).toContain('The metadata call happens after the message')
+    /* 标签彼此的位置(谁在最后、谁在前面)不在这里重说一遍 —— 那是重复、会漂移。
+       这两句断言把"别再抄回来"钉住 */
     expect(out).not.toContain('very last line')
     expect(out).not.toContain('the line just before it')
   })

@@ -6,8 +6,8 @@
    —— 三条纪律 ——
 
    1. **这里只管"怎么产出"，不管"怎么拆"**。区域标记原样留在正文里往外走
-      （`chatTags.js` 只认 `[photo:]` / `[mood:]` 两枚**值标签**，对 `[think]` /
-      `[act]` 不做任何处理，所以标记会作为普通文字一路流到前端）。把一轮**扇出**
+      （photo/mood 已经走 `emit_message_meta` 这条独立信道，正文里只剩
+      `[think]` / `[act]` 两种区域标记；服务端对它们不做任何处理）。把一轮**扇出**
       成多条带 `layer` 的独立消息，是前端 `lib/messageLayers` 的 `parseLayers` 的活 ——
       服务端不碰拆分，两边职责不重叠（脊柱 A）。
 
@@ -31,20 +31,20 @@
  * `sceneMode` 为真才邀请 `[act]`；为假时明确禁止。think 两种模式下都可以有
  * （内心与是否在场景里无关），但一律要求稀缺、只在"说的 ≠ 想的"时才漏一句。
  *
- * 结尾那句只管**区域标记与末尾标签的相处**：`[think]` / `[act]` 是正文里的东西，
- * 必须在那几枚末尾标签之前收干净、更不许把标签包进区域里（`splitTags` 从末尾剪走
- * 那两枚值标签落在同一条 `say` 消息上，一旦被包在 `[think]…[/think]` 里面就剪不出来
- * —— 脊柱 A 的两套机制必须互不打架）。
+ * 结尾那句只管**区域标记与消息边界的相处**：`[think]` / `[act]` 是正文里的东西，
+ * 必须在消息结束之前收干净，不许让区域越到消息后面去。元数据已经改走
+ * `emit_message_meta` 工具调用（见 chatTools.js），它发生在消息之外，
+ * 不会被区域包住，也不会被前端从正文里剪 —— 两套机制不再抢同一段文本。
  *
- * 标签**彼此**怎么排（mood 在最后、photo 在其前一行）不在这里重说一遍 —— 那归
- * `chatPhoto.js` 与 `CHAT_MOOD_RULE` 那两段各自 owns，这里再抄一份就是重复、还会漂移。
- * 也正因如此这里不点 `[photo:]` 的名：`canDraw` 为假时发图那段根本不注入，
- * 提一个没教过的标签只会让模型犯迷糊。
+ * mood/photo 怎么报不在这里重说一遍 —— 那归 `chatPhoto.js`、
+ * `CHAT_META_RULE` 与工具 schema 各自 owns，这里再抄一份就是重复、还会漂移。
+ * 也正因如此这里不点 `[photo:]` 的名：旧标签只留给历史消息做兼容渲染，
+ * 新回复里不该再教它写。
  */
 export function layerRules(sceneMode) {
   const lines = [
     'Inner life — what you say, what you keep to yourself, and what you do:',
-    '- The "no narration" rule above is about not dressing up your speech with *sighs* or (frowns). There is now one deliberate exception: [think] and [act] are the only brackets you may use, apart from the tag lines the sections above place at the very end.',
+    '- The "no narration" rule above is about not dressing up your speech with *sighs* or (frowns). There is now one deliberate exception: [think] and [act] are the only brackets you may use in the message itself.',
     '- Most of what you write is just speech. Leave speech bare - do not wrap it in anything.',
     '- You may reveal a thought the character does NOT say out loud: wrap that stretch in [think] and [/think]. First person, one short line, and only when there is something real being kept back - what they think differs from what they let slip, or a feeling strong enough to leak. When there is nothing like that, leave it out entirely; an inner life in every single message is noise, not intimacy. Never explain the marker, never mention it exists.',
   ]
@@ -58,7 +58,7 @@ export function layerRules(sceneMode) {
     )
   }
   lines.push(
-    '- These regions belong in the body of your message: close every [think] and [act] before you write those final tag lines, never put a marker inside a tag, and never let a region run past the end of your message.'
+    '- These regions belong in the body of your message: close every [think] and [act] before the message ends, and never let a region run past the end of your message. The metadata call happens after the message and is not part of it.'
   )
   return lines.join('\n')
 }

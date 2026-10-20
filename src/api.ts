@@ -2365,15 +2365,15 @@ export interface ChatStreamResult {
   /* 上游为什么停下:'stop' 是正常说完,'length' 是撞上了 max_tokens,
      其余按上游原话带回。空串表示上游没给这一项 —— 按正常处理 */
   finish: string
-  /* 这一轮的情绪。模型写在回复最末尾的那枚 [mood:xxx],
-     由服务端剪下来单独送来 —— 正文里读不到它。
-     空串 = 这一轮没给(模型没写,或收在半截上被剪掉了) */
+  /* 这一轮的情绪。走 `emit_message_meta` 工具调用,由服务端归一化后随收尾帧
+     单独送来 —— 正文里读不到它。空串 = 这一轮没给 */
   mood: string
-  /* 它这一轮想给你看的画面(场景描述),空串 = 不发图 */
+  /* 它这一轮想给你看的画面(场景描述),空串 = 不发图。
+     同样来自工具调用的 `photo.scene` */
   photo: string
-  /* 这张画面里有没有**它本人**。由模型写在标签前缀里(见 server/chatTags.js)。
-     true 才把角色设定与设定图发给出图模型 —— 一张风景照带上设定图会被带跑,
-     而一张自拍不带设定图就会画成陌生人 */
+  /* 这张画面里有没有**它本人**。来自工具调用的 `photo.shot` / `photo.self`
+     (见 server/chatTools.js)。true 才把角色设定与设定图发给出图模型 ——
+     一张风景照带上设定图会被带跑,而一张自拍不带设定图就会画成陌生人 */
   photoSelf: boolean
   /* 这一张**谁拿的相机**:'selfie' / 'third' / 空串(模型没说)。
      客户端按"它 → 场景文本 → 默认自拍"定下最终视角(见 lib/chatPhoto) */
@@ -2382,6 +2382,12 @@ export interface ChatStreamResult {
      客户端按"它 → 场景文本 → 这一档视角的缺省"定下最终景别(见 lib/chatPhoto
      的 resolveFrame)。它与 photoShot 是同一性质的一位,所以同路送达 */
   photoFrame: string
+  /* 元数据这一路出了什么岔子:`not_called`(模型根本没调工具)、
+     `unknown_tool`(调了别的工具)、`invalid_arguments`(参数不是合法 JSON)、
+     `empty_metadata`(调了但没给出 mood/photo)。空串 = 一切正常。
+     正文照常送达 —— 这一位只用来让界面提示"换个支持 tool calling 的模型",
+     不改变这一轮已经收到的内容 */
+  metaIssue: string
 }
 
 /* ===== 长期记忆的节奏 =================================================
@@ -2651,17 +2657,19 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
      紧跟 [DONE] 之前 —— 所以得一路记着,等收尾时再报上去。
      丢掉它等于把"正常说完"和"额度用完了"混成同一件事 */
   let finish = ''
-  /* 这一轮的情绪。与 finish 同路:服务端在收尾那一帧一起给 ——
-     正文里的标签已经被它剪掉了,这里是唯一的来源 */
+  /* 这一轮的情绪。与 finish 同路:服务端把工具调用归一化之后,
+     在收尾那一帧一起给 —— 正文里没有它的任何痕迹 */
   let mood = ''
-  /* 这一轮它想给你看的画面(服务端从正文末尾剪下来的场景描述) */
-  const photo = ''
+  /* 这一轮它想给你看的画面(工具调用里的 photo.scene) */
+  let photo = ''
   /* 这张里有没有它本人。与 photo 同路一起送来 */
   let photoSelf = false
   /* 这一张谁拿的相机(见 ChatStreamResult.photoShot)。与 photo 同路 */
   let photoShot = ''
   /* 这一张离得多近(见 ChatStreamResult.photoFrame)。与 photo 同路 */
   let photoFrame = ''
+  /* 元数据这一路出的岔子(见 ChatStreamResult.metaIssue)。同样走收尾帧 */
+  let metaIssue = ''
   try {
     for (;;) {
       const { done, value } = await reader.read()
@@ -2682,6 +2690,7 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
           photoSelf?: boolean
           photoShot?: string
           photoFrame?: string
+          metaIssue?: string
         }
         try {
           evt = JSON.parse(text)
@@ -2699,14 +2708,17 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
             photo: evt.photo || photo,
             photoSelf: evt.photoSelf === true || photoSelf,
             photoShot: evt.photoShot || photoShot,
-            photoFrame: evt.photoFrame || photoFrame
+            photoFrame: evt.photoFrame || photoFrame,
+            metaIssue: evt.metaIssue || metaIssue
           }
         }
         if (typeof evt.finish === 'string' && evt.finish) finish = evt.finish
         if (typeof evt.mood === 'string' && evt.mood) mood = evt.mood
+        if (typeof evt.photo === 'string' && evt.photo) photo = evt.photo
         if (evt.photoSelf === true) photoSelf = true
         if (typeof evt.photoShot === 'string' && evt.photoShot) photoShot = evt.photoShot
         if (typeof evt.photoFrame === 'string' && evt.photoFrame) photoFrame = evt.photoFrame
+        if (typeof evt.metaIssue === 'string' && evt.metaIssue) metaIssue = evt.metaIssue
       }
     }
   } finally {
@@ -2714,7 +2726,7 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
        不取消这条读流就悬着。已经读完时取消是空操作 */
     reader.cancel().catch(() => {})
   }
-  return { finish, mood, photo, photoSelf, photoShot, photoFrame }
+  return { finish, mood, photo, photoSelf, photoShot, photoFrame, metaIssue }
 }
 
 /* ============================================================

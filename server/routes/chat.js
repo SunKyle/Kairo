@@ -10,6 +10,14 @@ import {
   safeFetch
 } from '../core.js'
 import { splitTags, stripStandaloneTags, tailHold } from '../chatTags.js'
+import {
+  META_TOOL_NAME,
+  looksLikeToolUnsupported,
+  metaTool,
+  newToolCalls,
+  takeToolCallDeltas,
+  toolMetaFromCalls
+} from '../chatTools.js'
 import { timeContext } from '../chatTime.js'
 import { moodContext } from '../chatMood.js'
 /* 两段"客户端给几行、服务端加标签限长"的注入块。它们各有自己的纪律
@@ -49,15 +57,20 @@ const CHAT_RULES = `Rules:
 - Whatever has already happened in this conversation has happened. Never offer to do it again, and never talk about it as if it were still ahead. If you cannot tell whether it happened, do not treat it as pending.
 - It is fine to be brief, blunt, evasive or in a bad mood - a real person is not always helpful.`
 
-/* 发图协议(原 Rules 的第 14-16 条)已拆到 chatPhoto.js 的 photoRules(),由调用方
-   按 canDraw 决定注不注入 —— 发不出图的角色,提示词里就不该提"图"这件事(见那边
-   文件头)。原第 16 条例子里的 "self:" 是笔误(教的只有 selfie:/third:),已在那里改掉。
+/* 发图协议在 chatPhoto.js 的 photoRules(),由调用方按 canDraw 决定注不注入 ——
+   发不出图的角色,提示词里就不该提"图"这件事(见那边文件头)。
 
-   收尾那枚 [mood:] 标签单独成块放这儿:它必须排在 photoRules **之后**(标签顺序是
-   photo 在前、mood 在后,而第 14 条"the mood tag goes after it"要能被兑现)。
-   这条不由 canDraw 门控 —— 只要还在聊,它每轮都该报一个心情词(服务端剪下来喂下一轮)。 */
-const CHAT_MOOD_RULE = `Ending a message:
-- After everything you say, put a mood tag on the very last line, in exactly this form: [mood:word]. One lowercase English word for how you feel as you send this message. Pick the word that actually fits, for example: arrogant, amused, wary, bored, angry, tired, warm, cold, proud, uneasy, delighted. Do not comment on the tag or explain it - just end with it.`
+   收尾这条单独成块放这儿:元数据不再写进正文,而是每轮调用一次
+   emit_message_meta 工具。它必须排在 photoRules 之后 —— 上面那段先讲
+   photo 对象怎么填,这一条再把"每轮都要调、正文里一个字都不许写"钉死。
+
+   这条不由 canDraw 门控 —— 只要还在聊,它每轮都该报一个心情词
+   (服务端从 tool_calls 里取出来喂下一轮)。 */
+const CHAT_META_RULE = `Ending a message:
+- After you finish writing the reply, call the ${META_TOOL_NAME} tool exactly once. It is not part of the message: never write the metadata, the tool name, or a JSON object into the reply text, and never mention the call to the user.
+- "mood" is one lowercase English word for how you feel as you send this message. Pick the word that actually fits, for example: arrogant, amused, wary, bored, angry, tired, warm, cold, proud, uneasy, delighted. Never a phrase, never more than one word.
+- If you are sending a picture, include the "photo" object in that same call, described above.
+- Never mention this call, comment on it, or explain it to the user. It is a technical envelope, not something you say.`
 
 /** 换行与连续空白收敛成单个空格。这些值在表单里是可换行的 textarea,
  *  换行只是排版,原样拼进提示词会在句子中间插一段空白。
@@ -161,7 +174,7 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
 
   /* 信息优先级(冲突时谁说了算)紧跟开场白:它是"读法"层不是"事实"层,先给模型这把
      尺子,再让它带着往下读 Who you are / 此刻 / 记忆 各段(见 chatPriority.js)。
-     刻意排在规则之前 —— 规则里的 photoRules/CHAT_MOOD_RULE/layerRules 要留在末尾当收束 */
+     刻意排在规则之前 —— 规则里的 photoRules/CHAT_META_RULE/layerRules 要留在末尾当收束 */
   const parts = [CHAT_OPENING, priorityRules()]
   if (who.length) parts.push(`Who you are:\n${who.join('\n')}`)
   if (how.length) parts.push(`How you behave:\n${how.join('\n')}`)
@@ -221,26 +234,28 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
      与上面几段一样,空串时整段不出现 —— 用户一项都没表态,就不该有任何指导 */
   const guide = guidanceSection(guidance)
   if (guide) parts.push(guide)
-  /* 规则三段分开 push,顺序是有讲究的:**通用规则 → 发图协议 → 收尾心情 → 分层纪律**。
+  /* 规则三段分开 push,顺序是有讲究的:**通用规则 → 发图说明 → 元数据工具 → 分层纪律**。
 
-     - 发图协议(chatPhoto.js)只在 **canDraw** 为真时注入。canDraw = 前端那条出图配置
+     - 发图说明(chatPhoto.js)只在 **canDraw** 为真时注入。canDraw = 前端那条出图配置
        可用(有 baseUrl 且有 model,与 generateChatPhoto 的 imageConfigGap 同一个判法)。
-       没配出图模型时这段整块消失:既省掉每轮 ≈930 token,又不引着模型去写画不出来的
-       [photo:] 标签。缺省按"能画"处理(见调用处),老前端/手搓请求不传时维持原行为。
+       没配出图模型时这段整块消失:既省 token,又不引着模型去报一个画不出来的 photo。
+       缺省按"能画"处理(见调用处),老前端/手搓请求不传时维持原行为。
 
-     - 心情标签排在发图之后,因为标签顺序就是 photo 在前、mood 在最后;发图那段里
-       "the mood tag goes after it" 要读得到下面这条才成立。
+     - 元数据规则排在发图之后,因为上面那段先讲 photo 对象怎么填,这一条再把
+       "每轮调用一次 emit_message_meta、正文里不许写"钉死。它不由 canDraw 门控 ——
+       心情每轮都要报。
 
      - 分层产出纪律**紧跟其后**也是有意的:CHAT_RULES 里那句
        "Write only what the character would say out loud. No narration..." 会挡掉
        `[act]` 旁白(它正是 narration),而 layerRules 要在这条之上开一个受控的例外。
        排在后面 = 后说的覆盖先说的,模型读到的是"通用禁止 + 这一条具体豁免",而不是两条互相打脸。
        sceneMode 由前端带上来(见 src/lib/prefs 的 sceneModeFor):关着时这段会明确禁 act。
-       think 与 photo/mood 的标记在这里都只作为**提示文字**写进 system,
-       服务端不解析它们 —— 把一轮扇成多条是前端 parseLayers 的活(脊柱 A)。 */
+       think/act 的区域标记只作为**提示文字**写进 system,服务端不解析它们 ——
+       把一轮扇成多条是前端 parseLayers 的活(脊柱 A)。photo/mood 则完全不走正文,
+       由模型通过 tool calling 报给服务端(见 chatTools.js)。 */
   parts.push(CHAT_RULES)
   if (canDraw) parts.push(photoRules())
-  parts.push(CHAT_MOOD_RULE)
+  parts.push(CHAT_META_RULE)
   parts.push(layerRules(sceneMode))
   return parts.join('\n\n')
 }
@@ -384,7 +399,15 @@ app.post('/api/chat', rateLimit, async (req, res) => {
     messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood, guidance, memories, relationship, !!sceneMode, canDraw) }, ...history],
     temperature: CHAT_TEMPERATURE,
     max_tokens: CHAT_MAX_TOKENS,
-    stream: true
+    stream: true,
+    /* 元数据走 tool calling。`auto` 是**有意**的:
+       - DeepSeek 的思考模式不接受 `required` 或点名具体工具(会 400);
+       - 强制 required 时有些模型会只回一个 tool_call、一个字的正文都不写,
+         聊天框里就只剩一个空气泡。
+       每轮都调用一次由 System Prompt 的 CHAT_META_RULE 负责;模型没调用时
+       done 会带 metaIssue,前端据此提示,而不是偷偷回退到文本标签。 */
+    tools: [metaTool(canDraw)],
+    tool_choice: 'auto'
   })
 
   const ac = new AbortController()
@@ -424,34 +447,31 @@ app.post('/api/chat', rateLimit, async (req, res) => {
     }
   }
 
-  /* 扣着还没发的尾巴,专门用来截住末尾那几枚元数据标签(见 chatTags.js 的 tailHold)。
-     声明在 try 外面是有意的:中途 Stop 或上游断流时,那截尾巴也得放出去 ——
-     否则用户按了停止,最后那二三十个字符会凭空消失 */
+  /* 新协议下正文不需要扣尾:元数据走 tool_calls,与正文是两条信道。
+     这一截尾巴只剩**清理**用途 —— 模型还可能从历史习惯里漏出旧方括号标签,
+     半截 `[photo:` 闪给用户看很难看。tailHold / stripStandaloneTags 保留,
+     但**不再从里面取意图**:旧标签不是新协议,不能悄悄顶替 tool call。
+     声明在 try 外面是有意的:中途 Stop 或上游断流时,那截尾巴也得放出去 */
   let tail = ''
-  /* 中段那几枚标签取出来的意图(见下面循环里那一段)。末尾那几枚走 splitTags,
-     两处最后合在一起 —— 合的时候**末尾优先**:它更靠后,更接近"最后想给你看的那张" */
-  let midShot = { scene: '', self: false, shot: '', frame: '' }
-  let midMood = ''
-  /* 收尾那一下:把尾巴里该发的字发出去,该剪的标签剪下来返回给调用方。
-     角色名要传进去:标签里没写前缀时,"描述里点了自己的名字"也算它在画面里
-     (见 chatTags.js 的 parsePhotoIntent) */
-  const flushTail = () => {
-    const { text, mood, photo, photoSelf, photoShot, photoFrame } = splitTags(tail, who)
+  /* 模型这一轮调过的工具。key 是上游给的 index;参数是逐片拼起来的,
+     所以必须一路攒到 [DONE] 才能 parse(见 chatTools.js) */
+  const toolCalls = newToolCalls()
+  /* 角色名要传给标签清理:标签里没写前缀时,"描述里点了自己的名字"
+     也算它在画面里(见 chatTags.js 的 parsePhotoIntent) */
+  const who = character && typeof character === 'object' ? character.name : ''
+  /* 收尾那一下:把尾巴里该发的字发出去,把工具给的元数据摊成旧字段 */
+  const flushTail = (meta) => {
+    const { text } = splitTags(tail, who)
     if (text) sendEvent({ delta: text })
     tail = ''
     return {
-      mood: mood || midMood,
-      photo: photo || midShot.scene,
-      photoSelf: photo ? photoSelf : midShot.self,
-      /* 视角与景别跟着"这一张是谁给的"走:末尾那枚赢了就用它的,否则用中段那枚的 */
-      photoShot: photo ? photoShot : midShot.shot,
-      photoFrame: photo ? photoFrame : midShot.frame
+      mood: meta?.mood || '',
+      photo: meta?.photo || '',
+      photoSelf: meta?.photoSelf === true,
+      photoShot: meta?.photoShot || '',
+      photoFrame: meta?.photoFrame || ''
     }
   }
-
-  /* 角色名要传给两处标签处理:标签里没写前缀时,"描述里点了自己的名字"
-     也算它在画面里(见 chatTags.js 的 parsePhotoIntent) */
-  const who = character && typeof character === 'object' ? character.name : ''
 
   let upstream = null
   let connectErr = null
@@ -501,6 +521,19 @@ app.post('/api/chat', rateLimit, async (req, res) => {
         } catch {
           /* 不是 JSON 就照原文给 */
         }
+      }
+      /* 模型明确拒绝 tools —— 这不是"这条回复失败了",而是"这个模型用不了
+         这一版的新协议"。把它翻成一句能操作的话,而不是让用户对着
+         "Upstream returned an error (400)"去猜。**不做静默降级**:
+         回退到文本标签会把"模型不支持"这件事藏起来,那正是要避免的。 */
+      if (looksLikeToolUnsupported(detail) || looksLikeToolUnsupported(text)) {
+        return res.status(400).json({
+          error: 'This model does not support tool calling',
+          detail:
+            `${detail} — Character chat now sends message metadata through tools. ` +
+            'Pick a model with function calling (for example deepseek-flash or deepseek-v4-pro), ' +
+            'or choose another model that supports tools in API settings.'
+        })
       }
       return res.status(upstream.status).json({
         error: `Upstream returned an error (${upstream.status})`,
@@ -564,54 +597,61 @@ app.post('/api/chat', rateLimit, async (req, res) => {
         const payload = line.slice(5).trim()
         if (!payload) continue
         if (payload === '[DONE]') {
-          sendEvent({ done: true, finish: finishReason, ...flushTail() })
+          const tool = toolMetaFromCalls(toolCalls, who)
+          sendEvent({
+            done: true,
+            finish: finishReason,
+            ...flushTail(tool.meta),
+            ...(tool.issue ? { metaIssue: tool.issue } : {})
+          })
           endStream()
           return
         }
         let delta = ''
         try {
-          const j = JSON.parse(payload)
-          // 只抽正文。各家塞在 delta 里的其他字段(reasoning_content 等)一律不要
-          delta = j?.choices?.[0]?.delta?.content || ''
-          if (j?.choices?.[0]?.finish_reason) finishReason = j.choices[0].finish_reason
+          const choice = JSON.parse(payload)?.choices?.[0]
+          // 正文与工具调用是同一帧里的两个字段;元数据只从后者来
+          delta = choice?.delta?.content || ''
+          if (Array.isArray(choice?.delta?.tool_calls)) {
+            takeToolCallDeltas(toolCalls, choice.delta.tool_calls)
+          }
+          if (choice?.finish_reason) finishReason = choice.finish_reason
         } catch {
           continue
         }
         if (!delta) continue
         gotAny = true
-        /* 扣着尾巴发:只放出"不可能再变出标签"的那部分。
+        /* 扣着尾巴发:只放出"不可能再变出旧标签"的那部分。
            扣多少由 tailHold 按"最后一个没闭合的 [ "算 —— **不是按长度预留**:
-           标签上限是 400 字,按长度预留就意味着整整 400 多字不流式,
-           比一条回复本身还长(见 chatTags.js 的 tailHold) */
+           标签上限是 400 字,按长度预留就意味着整整 400 多字不流式。
+           注意这里**只清理、不取意图**:旧标签不再能顶替 tool call。 */
         tail += delta
         const release = tailHold(tail)
         if (release > 0) {
-          /* 放出去之前先摘掉**独占一行的标签**。
-             尾巴那几枚由 tailHold 扣着、收尾时由 splitTags 收走,走不到这里;
-             能走到这里的是"被正文顶到中间去"的那几枚 —— 模型先说一句、
-             再决定给你看张图、然后又补一句收尾的话。不摘的话那枚 `[photo:…]`
-             会原样流给用户看(用户报过这个)。意图照样记下来,收尾时一起报 */
+          /* 放出去之前先摘掉**独占一行的旧标签**。
+             尾巴那几枚由 tailHold 扣着、收尾时由 splitTags 清走;
+             能走到这里的是"被正文顶到中间去"的那几枚 —— 不摘的话
+             那枚 `[photo:…]` 会原样流给用户看(用户报过这个)。
+             摘掉的意图**丢掉**:新协议只认 tool call。 */
           const cut = stripStandaloneTags(tail.slice(0, release), who)
           if (cut.text) sendEvent({ delta: cut.text })
-          if (cut.photo) {
-            midShot = {
-              scene: cut.photo,
-              self: cut.photoSelf,
-              shot: cut.photoShot,
-              frame: cut.photoFrame
-            }
-          }
-          if (cut.mood) midMood = cut.mood
           tail = tail.slice(release)
         }
       }
     }
 
     if (gotAny) {
-      sendEvent({ done: true, finish: finishReason, ...flushTail() })
+      const tool = toolMetaFromCalls(toolCalls, who)
+      sendEvent({
+        done: true,
+        finish: finishReason,
+        ...flushTail(tool.meta),
+        ...(tool.issue ? { metaIssue: tool.issue } : {})
+      })
     } else {
       /* 一个字都没吐出来 —— 上游只回了 role 那一帧就结束,或回了别的东西。
-         这时候回 done 会让前端以为"它就是这么沉默",而其实是一次失败 */
+         这时候回 done 会让前端以为"它就是这么沉默",而其实是一次失败。
+         只调了工具、没写正文也算这一类:聊天框里没有话可说,不该留一个空气泡 */
       sendEvent({ error: 'The model returned nothing to say.' })
     }
     endStream()
@@ -620,8 +660,10 @@ app.post('/api/chat', rateLimit, async (req, res) => {
     /* 流已经开了:只能按事件收场,再回 HTTP 错误码没有意义 */
     if (res.headersSent) {
       /* 手里那截还没发的尾巴先放出去 —— 见 tail 的声明处。
-         收在半截标签上时它正好被剪掉,这正是我们要的 */
-      flushTail()
+         收在半截标签上时它正好被剪掉,这正是我们要的。
+         工具调用若在断流前已经收全,元数据也一并带上;没收到就是空的 */
+      const tool = toolMetaFromCalls(toolCalls, who)
+      flushTail(tool.meta)
       if (aborted && !idleTimedOut) {
         // 用户点了 Stop —— 静默收场,前端按"停住了"处理,不报错
         endStream()

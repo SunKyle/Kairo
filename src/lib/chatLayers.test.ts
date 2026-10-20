@@ -15,16 +15,27 @@ describe('layerRules · 两种模式都带着的那几条', () => {
     expect(out).toContain('noise, not intimacy')
   })
 
-  it('明说这是"no narration"的一个受控例外,且是除 photo/mood 外唯一允许的方括号', () => {
+  it('明说这是"no narration"的受控例外,且 [think]/[act] 是末尾标签之外唯一允许的方括号', () => {
     const out = layerRules(true)
     expect(out).toContain('no narration')
-    expect(out).toContain('only brackets allowed besides the [photo:...] and [mood:...]')
+    expect(out).toContain('the only brackets you may use')
+    /* 不再逐字点 [photo:] / [mood:] 的名:canDraw 为假时发图那段根本不注入,
+       这里提一个没教过的标签只会误导 —— 改成泛指"上面那几段放到末尾的标签行" */
+    expect(out).not.toContain('[photo:')
+    expect(out).not.toContain('[mood:')
+    expect(out).toContain('tag lines the sections above')
   })
 
-  it('把 mood / photo 的位置钉死在所有区域标记闭合之后', () => {
+  it('只管区域与末尾标签的相处,不重排标签彼此顺序(那归 photo/mood 两段 owns)', () => {
     const out = layerRules(true)
-    expect(out).toContain('[mood:...]')
-    expect(out).toContain('after every region marker is closed')
+    // 交互这一层还在:正文里的区域必须在末尾标签前收干净、不许包标签、不许越到结尾之外
+    expect(out).toContain('close every [think] and [act]')
+    expect(out).toContain('never put a marker inside a tag')
+    expect(out).toContain('run past the end of your message')
+    /* 标签彼此的位置(mood 最后、photo 在其前一行)不在这里重说一遍 —— 那是重复、会漂移。
+       这句断言把"别再抄回来"钉住 */
+    expect(out).not.toContain('very last line')
+    expect(out).not.toContain('the line just before it')
   })
 
   it('普通话保持裸写,不被包进任何标记', () => {

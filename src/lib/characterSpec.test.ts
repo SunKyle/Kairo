@@ -72,9 +72,6 @@ const PERSONA_KEYS_TYPED: Record<keyof CharacterPersona, true> = {
   voice: true,
   address: true,
   boundaries: true,
-  present: true,
-  drive: true,
-  shared: true,
   samples: true
 }
 

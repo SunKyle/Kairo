@@ -33,6 +33,10 @@ export const CHAT_MEMORY_MAX_LINES = 12
 /** 单行上限。客户端那边一条记忆最多 240 个字符(见 MEMORY_TEXT_MAX),
  *  200 是给手搓请求留的余地 */
 export const CHAT_MEMORY_LINE_CHARS = 200
+/** 长期记忆简报那一段的字符上限(整段一条,不是逐行)。与 chat.js 里消息、
+ *  记忆简报共用的那道 8000 同量级 —— 一份压好的摘要远够不到,这个数只是
+ *  防公开入口被超长输入放大。memoryBrief 的默认值,调用点会显式传 CHAT_MAX_CHARS */
+export const CHAT_MEMORY_BRIEF_MAX_CHARS = 8000
 
 /**
  * 摊成 system 里的那一段。认不出 / 空 → 空串(调用方据此整段不插)。
@@ -64,5 +68,67 @@ export function memorySection(raw) {
     'never state it as a fact they gave you. ' +
     'If one of these reached you through another conversation, keep that to yourself — ' +
     'never say who told you or how you came to know it.'
+  )
+}
+
+/* ===== 长期记忆简报那一段(成篇叙述)================================
+   与上面 memorySection 的"一条条事实"是两样东西:简报是**一段连贯的叙述**
+   (这段关系的来龙去脉,由 ENHANCE_PROMPTS.summary 生成、经前端存一圈再发回来),
+   收不成行,所以它走的是"折叠空白 + 单条上限"而非逐行白名单。
+
+   两条纪律(与逐行那段的理由一脉相承):
+
+   1. **折叠换行**:它是模型生成、又经前端转了一圈的文本,原样带着换行塞回
+      system 等于让上一轮的输出有机会伪造提示词结构。折成一行就把这个口子关掉;
+
+   2. **截断要留痕**:上限是防御性的(正常一份压好的摘要远够不到,只有病态或
+      手搓的超长输入才会撞上)。原来直接 slice 会**无声**腰斩 —— 模型以为看到了
+      全部记忆,而末尾那一段(常是最新的待办、未兑现的承诺)被悄悄丢掉。
+      撞上限时在末尾补一句标记,让它知道"这只是记忆的一部分",别把残缺当完整。
+      判断按**折叠后**的长度:折叠只会变短,按原始长度判会让一堆纯空白蒙混过关。
+
+   纯函数、无 IO、无状态 —— 与 memorySection 同一条路,单测直接引(见 chatMemory.d.ts)。
+   -------------------------------------------------------------------- */
+
+/** 截断标记。写成一句给模型读的话,而不是一个省略号 ——
+ *  省略号会被当成"话没说完",而这里要说清"是记忆被截了,不是它在斟酌" */
+const BRIEF_TRUNCATED_MARK =
+  ' …(your memory runs longer than this — what comes after the cut is not shown here)'
+
+/**
+ * 摊成 system 里"你记得的这些事"那段简报正文(不含标题行)。
+ * 空 / 坏输入 → 空串(调用方据此整段不出现);超上限 → 截断 + 留痕。
+ */
+export function memoryBrief(raw, max = CHAT_MEMORY_BRIEF_MAX_CHARS) {
+  const one = (typeof raw === 'string' ? raw : '').replace(/\s+/g, ' ').trim()
+  if (!one) return ''
+  return one.length > max ? one.slice(0, max) + BRIEF_TRUNCATED_MARK : one
+}
+
+/* ===== "你记得的这些事"那一段的框架(标题 + 一句会出错的交代)========
+   memoryBrief 只管把摘要**正文**折好、封顶、留痕;这一段负责给它套上标题、
+   再补一句"它是靠不住的"。补这一句是补 doc §4 点名的缺口(摘要无 fallible 声明):
+   摘要是**模型压出来的二手回忆**,会漏、会串、偶尔还会记错,而它读起来却像一段
+   盖了章的历史 —— 不点破这一层,模型就会把"上次好像说要陪他去看展"当成一条板上钉钉
+   的当下事实去执行(哪怕那其实是压丢了上下文的旧话)。
+
+   刻意**不**在这里重说两件事,免得和别处复读:
+   - "本轮对话 > 记忆"这个**权威顺序**归 chatPriority.js 的 priorityRules(它统一裁决
+     各层谁说了算);这里只交代"这段文字本身的性质",不排座次。
+   - "（inferred）不等于用户说过"归上面 memorySection 的开场白;那是记忆条目那一摊,
+     与这段成篇简报是两样东西。
+
+   标题必须**以 "What you remember" 起头** —— scripts/probe-chat-photo.mjs 拿这个子串
+   当"时间/心情排在记忆之前"的定位锚,别改这前七个词。 */
+
+/** 摊成 system 里"你记得的这些事"那一段。入参是 memoryBrief 折好的正文(不再折一次)。
+ *  空 / 坏输入 → 空串(调用方据此整段不出现,与 memorySection / memoryBrief 同一手法)。 */
+export function memoryBriefSection(brief) {
+  const one = typeof brief === 'string' ? brief.trim() : ''
+  if (!one) return ''
+  return (
+    'What you remember, as best you can recall it:\n' +
+    one +
+    '\nThis is a compressed recollection, not a transcript - it can be incomplete or partly wrong. Lean on it, do not quote it back as their exact words.'
   )
 }

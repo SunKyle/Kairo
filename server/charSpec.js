@@ -267,49 +267,12 @@ export const CHAR_SPEC_LINES = [
     label: 'Boundaries',
     desc: 'what this character would never do or say'
   },
-  /* —— 驱动量那三栏(2026-10-17)——
-     上面 traits/voice 那些是**描述**:一堆形容词,读它的模型只能"模仿"这个性格,
-     于是产出的是"这个性格的 AI",不是"这个性格的人"。这三栏换一个方向 ——
-     它给的不是"他是什么样",而是**此刻正在发生什么、推着他开口的是什么、
-     你们之间已经沉淀了什么**。状态与动因会**生成**话,形容词不会。
-
-     三栏都**允许留空,而且刻意不是必答**:处境可以由设定推一个(所以 character
-     档允许编、标 [pending]),但"想要什么"与"我们之间有过什么"是**用户的历史与意图**,
-     模型凭空编等于读用户没写的心 —— 与 Identity 不许从照片推职业是同一条纪律。
-     所以 drive / shared 两档都强偏留空,只有用户自己写给的内容会进这里。 */
-  {
-    group: 'persona',
-    key: 'present',
-    label: 'Situation',
-    desc: {
-      character:
-        'what they are usually doing or going through when they reach out — a standing situation the roleplay can draw on for "what I am doing right now", e.g. on the night shift at the docks, training for a fight he keeps losing. Invent one only if it fits the rest and tag it [pending]; it is a live situation, not a permanent trait',
-      vision:
-        'what they seem to be doing here — read it only off the setting actually visible in the image (a workplace, a street, a stage); leave empty when the picture shows nothing but the person'
-    }
-  },
-  {
-    group: 'persona',
-    key: 'drive',
-    label: 'Want',
-    desc: {
-      character:
-        'what pushes them to speak and what they want from the user right now — a want, a worry, something they are after. Write it only when the idea clearly points at one; otherwise leave it empty: inventing a desire the user never described reads a mind they did not write',
-      vision:
-        'what they want from the user — leave empty: a photograph cannot show what someone wants out of a conversation'
-    }
-  },
-  {
-    group: 'persona',
-    key: 'shared',
-    label: 'History',
-    desc: {
-      character:
-        'the specific texture of what is already between the two of them — a running bit, an inside reference, something owed, a grudge, a promise. Write it only when the idea states one; otherwise leave empty: this is the user\'s history to supply, not yours to invent',
-      vision:
-        'what is already between the two of them — leave empty: a reference photo says nothing about a shared history with the user'
-    }
-  },
+  /* —— 驱动量那三栏(Situation / Want / History)已删除(2026-10-19)——
+     原话是"状态与动因会生成话,形容词不会"——这没有错,错的是供给的地方:
+     它们的语义是"此刻",存储却挂在角色卡上,建角色那天填一句话就被每轮当
+     "现在"重播,没有任何东西负责更新 —— 一张永不换新的过期说明书。
+     在补出真正的运行时状态归属(前端维护、可随对话更新)之前整体撤下。
+     行数由数组自动算出(CHAR_SPEC_LINE_COUNT),起稿提示词无需另改。 */
   /* 说话样本(2026-10-08):上面那几栏都是**描述**,而描述会被模型平均成"通用口吻" ——
      "简短、偶尔反问"写出来是一回事,照着它打字是另一回事。所以再给一栏**样本**:
      两三组"用户说 X → 它会怎么回 Y"。读它的模型照抄的是**语气**,不是话题

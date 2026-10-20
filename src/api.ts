@@ -157,6 +157,26 @@ export function configKindOf(c: ApiConfig): ConfigKind {
 }
 
 /**
+ * 这条出图配置**缺了什么、还画不画得出图**。返回一句人话报错(缺什么就说缺什么),
+ * 齐了就返回空串 —— 空串 = 能画。这是"出图可用性"的**唯一判法**:
+ * ① useGeneration 生成前拦下、直接把这句当错误回给用户;
+ * ② 对话发这一轮时决定要不要往 system 里注入那 ≈930 token 的发图协议
+ *    (见 server/routes/chat.js 的 canDraw,前端用下面的 imageConfigReady 算好带上去);
+ * ③ 设置页/对话页上"能不能发图"的任何指示灯。
+ * 判法散成几处迟早会漂(一处多查一项、少查一项就分叉),所以收在这一处。
+ */
+export function imageConfigGap(c: ApiConfig | null | undefined): string {
+  if (!c || !c.baseUrl) return 'No image API is configured — set one up in Settings.'
+  if (!c.model) return 'The image API has no model name — fill it in under Settings.'
+  return ''
+}
+
+/** 能不能真的出一张图 —— 就是上面那个 gap 为空。派生自 imageConfigGap,不另立判据 */
+export function imageConfigReady(c: ApiConfig | null | undefined): boolean {
+  return imageConfigGap(c) === ''
+}
+
+/**
  * 挑出某一类里「当前生效」的那条:
  * - 先认存着的 id,但要求它**用途仍然是这一类** —— 用户可能已经把它改成别的用途了;
  * - 对不上就退到这一类里的第一条(只有一条时这是显然的选择,比空着好);
@@ -2570,6 +2590,10 @@ export interface ChatStreamOpts {
      与 nowLocal 不同，它是**这一条对话的状态**、只有前端知道，所以由调用方传。
      不给 / false = 日常模式，那段会明确禁 act、只留 think。 */
   sceneMode?: boolean
+  /* **此刻配不配得出图**（见 api.ts 的 imageConfigReady）。它只喂给服务端的发图协议那一段：
+     配得出才注入那 ≈930 token 的拍照教程（见 server/chatPhoto.js）。由调用方传，因为只有
+     前端知道当前出图配置长什么样。不给 / true = 注入（维持老行为）；false = 那段整块不出现。 */
+  canDraw?: boolean
   cfg: ApiConfig
   /** 每一块增量。调用方拿到就往气泡上追加 */
   onDelta: (delta: string) => void
@@ -2601,6 +2625,9 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
       memories: opts.memories?.length ? opts.memories : undefined,
       relationship: opts.relationship || undefined,
       sceneMode: opts.sceneMode ? true : undefined,
+      /* 只有配不出图时才需要显式传 false(那段就不注入)。undefined 会被 JSON 丢掉
+         这一位 → 服务端按缺省"能画"处理;true 显式传过去也无害 */
+      canDraw: opts.canDraw === false ? false : undefined,
       textModel: opts.cfg.model,
       baseUrl: opts.cfg.baseUrl,
       apiKey: opts.cfg.apiKey

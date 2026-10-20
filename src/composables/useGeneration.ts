@@ -5,6 +5,7 @@ import {
   chatExtraParams,
   enhancePrompt,
   generate,
+  imageConfigGap,
   imageSrc,
   photoFailureText,
   makeThumb
@@ -174,13 +175,9 @@ export function useGeneration(deps: GenerationDeps) {
    *  还是模型问题,也不知道下一步该改什么。 */
   type ChatPhotoResult = ChatWorkOut | { blob?: undefined; error: string }
 
-  /* 出图那条配置**缺在哪儿**,说成人话。比"没配好"具体得多 ——
-     用户看到"缺模型名"就知道去哪儿补,看到"生成失败"只能来问你 */
-  function imageConfigGap(cfg: ApiConfig): string {
-    if (!cfg.baseUrl) return 'No image API is configured — set one up in Settings.'
-    if (!cfg.model) return 'The image API has no model name — fill it in under Settings.'
-    return ''
-  }
+  /* imageConfigGap("这条出图配置缺在哪儿")现在住在 api.ts —— 它同时是对话发图协议
+     按需注入的判据(经 imageConfigReady),不能再是这里的私有函数,否则两处口径迟早分叉。
+     上面那两行从 api.ts 直接 import。 */
 
   /** 上游确实回了一张图,我们却把它落不成 Blob 时该说什么。
    *

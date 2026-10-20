@@ -177,16 +177,8 @@ export const PERSONA_FIELDS: PersonaSpec[] = [
   { key: 'voice', label: 'Speech style', hint: 'short clipped sentences, rarely asks questions' },
   { key: 'address', label: 'Address', hint: "calls you 'kid', an old partner" },
   { key: 'boundaries', label: 'Boundaries', hint: 'never breaks character, never mentions AI' },
-  /* 驱动量那三栏(2026-10-17):上面是"他是什么样"的**描述**,这三栏是
-     "此刻在发生什么、他要什么、你们有过什么"的**状态与动因** —— 状态会生成话,
-     形容词只会让模型去模仿一个性格。都允许留空,见 charSpec 那三段说明 */
-  { key: 'present', label: 'Situation', hint: 'on the night shift at the docks, awake since four' },
-  { key: 'drive', label: 'Want', hint: 'wants you to ask how the trial went, will not bring it up first' },
-  {
-    key: 'shared',
-    label: 'History',
-    hint: "still calls it 'the incident', owes you one from March"
-  },
+  /* 驱动量那三栏(Situation / Want / History)已删除(2026-10-19),见 types.ts
+     CharacterPersona 里那段说明:静态的角色卡养不活"此刻"的语义 */
   /* 样本那一栏(2026-10-08):上面几栏都是**描述**,描述会被平均成"通用口吻";
      这一栏是**例子**,模型照抄的是语气。形状见 charSpec 的 desc(一行、` | ` 分隔) */
   {

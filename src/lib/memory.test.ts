@@ -146,6 +146,25 @@ describe('sortMemories · 重要的在前', () => {
     sortMemories(list)
     expect(list.map((m) => m.text)).toEqual(['x', 'y'])
   })
+
+  /* 这条锁的是**注入路径上的组合不变量**,不是 sortMemories 本身:
+     服务端按收到的顺序只留前 12 行(chatMemory.js 的 slice(0,12)),而 selectMemories
+     回的是入库序 —— 于是一条后来才被标为重要的旧事实会落在末尾,被一堆新琐事挤到
+     第 13 名之后,模型永远看不到。useChatFlow 在 memoryLines 之前先过一层 sortMemories
+     就是为了这个。这里把"排序 + 截断"当一条链验:不排直接截它被挤出去(=原 bug),
+     排完再截它一定在 survivors 里。 */
+  it('注入前排序,才能让重要的旧条目挤进服务端那 12 行', () => {
+    const kept = (list: MemoryItem[]) => memoryLines(list).slice(0, 12)
+    /* 15 条较新的闲聊,后面才追加一条"最近被标为重要"的旧事实(updatedAt 很小) */
+    const manyNewer = Array.from({ length: 15 }, (_, i) => mem({ text: `新闲聊 ${i}`, updatedAt: 500 + i }))
+    const lateImportant = mem({ text: '妈妈生日在下周', important: true, updatedAt: 2 })
+    const store = [...manyNewer, lateImportant] // 入库序:重要那条落在尾巴
+
+    /* 不排序直接截 —— 重要那条在第 16 位,被 slice(0,12) 砍掉 */
+    expect(kept(store).some((l) => l.includes('妈妈生日在下周'))).toBe(false)
+    /* 排序后截 —— important 顶到最前,稳在 survivors 里 */
+    expect(kept(sortMemories(store))[0]).toContain('妈妈生日在下周')
+  })
 })
 
 describe('memoryLines · 推断的必须标出来', () => {

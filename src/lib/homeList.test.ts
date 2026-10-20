@@ -40,9 +40,6 @@ function blankPersona(): CharacterPersona {
     voice: '',
     address: '',
     boundaries: '',
-    present: '',
-    drive: '',
-    shared: '',
     samples: ''
   }
 }

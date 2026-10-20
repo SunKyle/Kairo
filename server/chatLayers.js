@@ -31,14 +31,20 @@
  * `sceneMode` 为真才邀请 `[act]`；为假时明确禁止。think 两种模式下都可以有
  * （内心与是否在场景里无关），但一律要求稀缺、只在"说的 ≠ 想的"时才漏一句。
  *
- * 结尾那句把 `[mood:]` / `[photo:]` 的位置钉死在**所有区域标记闭合之后**——
- * 那两枚值标签由服务端 `splitTags` 从末尾剪走，落在同一条 `say` 消息上；
- * 若被包在 `[think]…[/think]` 里面就剪不出来（脊柱 A 的两套机制必须互不打架）。
+ * 结尾那句只管**区域标记与末尾标签的相处**：`[think]` / `[act]` 是正文里的东西，
+ * 必须在那几枚末尾标签之前收干净、更不许把标签包进区域里（`splitTags` 从末尾剪走
+ * 那两枚值标签落在同一条 `say` 消息上，一旦被包在 `[think]…[/think]` 里面就剪不出来
+ * —— 脊柱 A 的两套机制必须互不打架）。
+ *
+ * 标签**彼此**怎么排（mood 在最后、photo 在其前一行）不在这里重说一遍 —— 那归
+ * `chatPhoto.js` 与 `CHAT_MOOD_RULE` 那两段各自 owns，这里再抄一份就是重复、还会漂移。
+ * 也正因如此这里不点 `[photo:]` 的名：`canDraw` 为假时发图那段根本不注入，
+ * 提一个没教过的标签只会让模型犯迷糊。
  */
 export function layerRules(sceneMode) {
   const lines = [
     'Inner life — what you say, what you keep to yourself, and what you do:',
-    '- The "no narration" rule above is about not dressing up your speech with *sighs* or (frowns). There is now one deliberate exception, and these two region markers are the only brackets allowed besides the [photo:...] and [mood:...] tags at the very end.',
+    '- The "no narration" rule above is about not dressing up your speech with *sighs* or (frowns). There is now one deliberate exception: [think] and [act] are the only brackets you may use, apart from the tag lines the sections above place at the very end.',
     '- Most of what you write is just speech. Leave speech bare - do not wrap it in anything.',
     '- You may reveal a thought the character does NOT say out loud: wrap that stretch in [think] and [/think]. First person, one short line, and only when there is something real being kept back - what they think differs from what they let slip, or a feeling strong enough to leak. When there is nothing like that, leave it out entirely; an inner life in every single message is noise, not intimacy. Never explain the marker, never mention it exists.',
   ]
@@ -52,7 +58,7 @@ export function layerRules(sceneMode) {
     )
   }
   lines.push(
-    '- The [mood:...] tag still goes on the very last line, and any [photo:...] tag stays on the line just before it - both after every region marker is closed. Never put a marker inside the photo or mood text, and never let a [think] or [act] region run past the end of your message.'
+    '- These regions belong in the body of your message: close every [think] and [act] before you write those final tag lines, never put a marker inside a tag, and never let a region run past the end of your message.'
   )
   return lines.join('\n')
 }

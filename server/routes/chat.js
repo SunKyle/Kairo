@@ -16,7 +16,9 @@ import { moodContext } from '../chatMood.js'
    (逐行白名单 + 边界话必须留在服务端),所以各自单独成文件、单独可测 ——
    见 chatGuidance.js 与 chatMemory.js 顶上那两段说明 */
 import { guidanceSection } from '../chatGuidance.js'
-import { memorySection } from '../chatMemory.js'
+import { memoryBrief, memoryBriefSection, memorySection } from '../chatMemory.js'
+import { photoRules } from '../chatPhoto.js'
+import { priorityRules } from '../chatPriority.js'
 import { relationshipSection } from '../relationship.js'
 import { layerRules } from '../chatLayers.js'
 
@@ -45,10 +47,16 @@ const CHAT_RULES = `Rules:
 - If you happen to know what time it is, or how long it has been since you two last spoke, mention it only when it is actually relevant. Someone who announces the time in every single message is not a person, it is a clock.
 - That clock is the real world's, not the story's. The story keeps its own time, and only the conversation moves it: if they say it is the next morning, it is; if nobody says anything, you are still in the same moment, however many real hours went by. Never advance the story just because the clock did.
 - Whatever has already happened in this conversation has happened. Never offer to do it again, and never talk about it as if it were still ahead. If you cannot tell whether it happened, do not treat it as pending.
-- It is fine to be brief, blunt, evasive or in a bad mood - a real person is not always helpful.
-- Most of your messages have no picture in them, and that is normal. Send one only when the picture is the point of the message: they asked to see you, or something is happening right now that you would actually take a photo of. Being somewhere is not a reason by itself - do not attach one just because you can. When you do send one, put a photo tag on its own line at the very end, after everything else you have to say (the mood tag goes after it): [photo:a description of the scene from your point of view]. Nothing may come after it - if you have more to say, say it before the tag. Up to 400 characters, one line. You send these the way anyone sends a picture on a phone, and the prefix says whose phone it was. Leave it off when it is only what you are looking at: nobody is in that picture, and it is drawn without your reference sheet. If you are in the picture, the prefix says who is holding the phone, and you must pick one: "selfie:" when it is your own phone in your own hand - arm's length, or a mirror, for example [photo:selfie:me leaning on the balcony rail at dusk, hair down]; "third:" when somebody else is holding their phone and took the picture of you, for example [photo:third:me on stage, taken from the crowd]. If you are in the picture and you are not sure which one it is, write "selfie:". Never use the tag as a substitute for actually saying something. Do not comment on the tag or explain it.
-- How close the picture is, is a separate thing, and you only have to say it when it is not the usual distance. The usual distance - your face and shoulders, or an ordinary view of the place - needs no word at all. When the picture is about one thing rather than the whole of you or the whole place, write "close:" right after the phone prefix: your own eyes [photo:selfie:close:my eyes, looking straight at you]; somebody else's shot of your hands [photo:third:close:my hands wrapped around the mug, steam rising]; a detail of the place, with nobody in it [photo:close:rain running down the window pane]. When the whole of you and the room around you is the point, write "full:": [photo:third:full:me on the pier, the whole harbour behind me]. Stopping around the waist rather than at the shoulders is "medium:" - [photo:third:medium:me at my desk, the lamp still on behind me] - but that is the usual distance too, so you can always leave it out. **A close-up of a thing is not a selfie** - a mug, a book, a window, a room: when nothing of your own body is in that frame, leave the phone prefix off and write "close:" alone. But **any part of your own body in the frame is still you** - your hands, your nails, your shoulder, your hair, your neck, your legs, your feet - so those keep the phone prefix ("selfie:" or "third:") like any other picture of you, even when the thing that hand is holding or resting on is the point of the shot. If they ask for a close-up, that is what they mean: a tight shot of the one thing, not a picture of your face held out at arm's length. And when it is a part of your body, the rest of you stays out of the frame: a foot is a foot, not you with one foot in the picture.
-- That description is the only thing the picture is drawn from, and whoever draws it cannot see this conversation. So put in what only you know: what time it is and what the light is doing, the weather, what is around you, and what you are doing right now. "me on the balcony" is not enough; "self:me leaning on the balcony rail at dusk, the rain just stopped, streetlights coming on below, hair still wet" is. Write it as plain description, never as an instruction to a machine. Keep it in the same place, at the same hour, as the last one you sent - unless something actually happened in between.
+- It is fine to be brief, blunt, evasive or in a bad mood - a real person is not always helpful.`
+
+/* 发图协议(原 Rules 的第 14-16 条)已拆到 chatPhoto.js 的 photoRules(),由调用方
+   按 canDraw 决定注不注入 —— 发不出图的角色,提示词里就不该提"图"这件事(见那边
+   文件头)。原第 16 条例子里的 "self:" 是笔误(教的只有 selfie:/third:),已在那里改掉。
+
+   收尾那枚 [mood:] 标签单独成块放这儿:它必须排在 photoRules **之后**(标签顺序是
+   photo 在前、mood 在后,而第 14 条"the mood tag goes after it"要能被兑现)。
+   这条不由 canDraw 门控 —— 只要还在聊,它每轮都该报一个心情词(服务端剪下来喂下一轮)。 */
+const CHAT_MOOD_RULE = `Ending a message:
 - After everything you say, put a mood tag on the very last line, in exactly this form: [mood:word]. One lowercase English word for how you feel as you send this message. Pick the word that actually fits, for example: arrogant, amused, wary, bored, angry, tired, warm, cold, proud, uneasy, delighted. Do not comment on the tag or explain it - just end with it.`
 
 /** 换行与连续空白收敛成单个空格。这些值在表单里是可换行的 textarea,
@@ -109,23 +117,19 @@ function chatOneLine(v, max = CHAT_FIELD_CHARS) {
  * 而它排在相处偏好之前 —— 先讲"熟到哪了"(一个既定状态),再讲"希望被怎么对待"(一个意愿)。
  * 它同样过逐行白名单,而"这只改温度、不改你是谁"那句边界留在服务端。
  *
- * **驱动量那三栏(persona 里的 present / drive / shared)** 与上面那些"描述"不是一类。
- * traits / voice 是形容词,模型读它只能模仿一个性格,回出来是"这个性格的 AI";
- * 而"此刻在干嘛、想要什么、你们之间有过什么"是**会生成这句话**的状态。
- * 所以 present + drive 摊成一段"你现在正发生什么",排在人格描述**之前** ——
- * 让当下这句先从处境与想要出发,再去查"我是什么样的人";
- * shared 摊成"你们之间已经有的东西",排在关系数值**之前** —— 先给它有得可指的过去,
- * 再给温度档,才不至于把"很熟"演成对谁都暖的通用腔。三栏都可留空:
- * 没填就那两段整段不出现 —— 一个从没用过这几栏的角色,prompt 里不会多出任何新东西。
- * (另:traits 那一行的措辞本次按 05 的"只改话术"改了,那是对所有角色都生效的
- * 一处有意改动,不属于这三栏的开关,见上面 `how` 里那行)
+ * **驱动量那三栏(persona 里的 present / drive / shared)已删除(2026-10-19)**。
+ * 它们本意是对的 —— "状态与动因会生成话,形容词不会";错的是供给的地方:
+ * 语义是"此刻",存储却是建角色那天填死的一句话,每轮被当"现在"原样重播,
+ * 没有任何东西负责更新 —— 一张永不换新的过期说明书。在补出真正的运行时
+ * 状态归属(前端维护、可随对话更新)之前,这段注入("What's going on with
+ * you right now")与 shared 那段("What's already between you two")整体撤下。
  *
  * sceneMode 是**这一条对话此刻在不在"场景"里**(由前端带上,见 lib/prefs 的 sceneModeFor)。
  * 它只喂给分层产出纪律那一段(见 chatLayers.js):**开着才邀请 `[act]` 旁白**,关着时那段
  * 明确禁 act、只留 `[think]`。它是"信号灯跟着状态走、不跟着标签频率闪"的那个状态位 ——
  * 服务端不因此改变任何别的东西,也不解析标记本身(脊柱 A:扇出在前端)。
  */
-function chatSystemPrompt(character, memory, time, mood, guidance, memories, relationship, sceneMode) {
+function chatSystemPrompt(character, memory, time, mood, guidance, memories, relationship, sceneMode, canDraw) {
   const char = character && typeof character === 'object' ? character : {}
   const p = char.persona && typeof char.persona === 'object' ? char.persona : {}
 
@@ -136,16 +140,8 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
   if (chatOneLine(char.outfit)) who.push(`- Wearing: ${chatOneLine(char.outfit)}`)
   if (chatOneLine(char.marks)) who.push(`- ${chatOneLine(char.marks)}`)
 
-  /* 驱动量那两栏(present / drive)单独成一段,而且**排在人格描述之前**。
-     理由是整个改动的核心:traits / voice 那一组是形容词,模型读它只能"模仿"一个性格,
-     于是回出来是"这个性格的 AI";而此刻正在发生什么、推着他开口的是什么,是**会生成话**的状态。
-     把它摆在描述前面,是让模型先从"我现在在干嘛、我要什么"出发,再去查"我是什么样的人",
-     顺序本身就在提示它哪一份才是当下这句的来处。空的整段丢掉,老角色不受任何影响 */
-  const state = []
-  if (chatOneLine(p.present))
-    state.push(`- Where you are and what you are doing: ${chatOneLine(p.present)}`)
-  if (chatOneLine(p.drive))
-    state.push(`- What you want from them right now: ${chatOneLine(p.drive)}`)
+  /* 驱动量那一段(present / drive → "What's going on with you right now")已删除
+     (2026-10-19)—— 理由见函数头那段说明 */
 
   const how = []
   /* 语言排在最前,而且写成一条**指令**而不是一个标签:这一栏的值是
@@ -163,17 +159,11 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
   if (chatOneLine(p.address)) how.push(`- How you address the user: ${chatOneLine(p.address)}`)
   if (chatOneLine(p.boundaries)) how.push(`- You never do this: ${chatOneLine(p.boundaries)}`)
 
-  const parts = [CHAT_OPENING]
+  /* 信息优先级(冲突时谁说了算)紧跟开场白:它是"读法"层不是"事实"层,先给模型这把
+     尺子,再让它带着往下读 Who you are / 此刻 / 记忆 各段(见 chatPriority.js)。
+     刻意排在规则之前 —— 规则里的 photoRules/CHAT_MOOD_RULE/layerRules 要留在末尾当收束 */
+  const parts = [CHAT_OPENING, priorityRules()]
   if (who.length) parts.push(`Who you are:\n${who.join('\n')}`)
-  /* 这段排在"你是谁"之后、人格描述之前:先给出当下这个状态,再谈他是什么样的人。
-     标题那句"start from this"是整件事的落点 —— 让当下的处境与想要,成为这句话的来处,
-     而不是让模型去复述一遍形容词 */
-  if (state.length)
-    parts.push(
-      `What's going on with you right now — start from this, not from the description below:\n${state.join(
-        '\n'
-      )}`
-    )
   if (how.length) parts.push(`How you behave:\n${how.join('\n')}`)
   /* 说话样本(2026-10-08):它与上面的规则不是一类 —— 规则是"要求",这几句是
      **照着抄口吻的样本**。所以单独成段,而且读法要写成命令式的"跟着语气、
@@ -201,16 +191,18 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
   if (feel) parts.push(feel)
   /* 长期记忆压在"你是谁"之后、规则之前:它讲的是"发生过什么",
      与"你是什么人"属同一层,而规则要留在最后当收束。
-     这里同样过一遍 chatOneLine 把换行收掉 —— 它是模型生成的文本,
+     这里同样过一遍 memoryBrief 把换行收掉 —— 它是模型生成的文本,
      原样带着换行塞回 system 里,等于让上一轮的输出有机会伪造提示词结构。
      上限要显式给:摘要是一段成篇的文字,按单字段那档 400 截会拦腰砍断。
+     截断不再无声(撞上限时末尾留一道标记,见 chatMemory.js 的 memoryBrief)——
+     模型不该把一份被腰斩的记忆当成完整历史,尤其末尾那几笔常是最新的待办。
 
      **标签是 "What you remember" 而不是 "What has happened so far"**(2026-10-08):
      摘要从那一天起还带一句"它是怎么说话的"(见 ENHANCE_PROMPTS.summary),
      而口吻不属于"发生过什么" —— 标签得与内容对得上,否则模型会把那句口吻
      当成一件事实去读 */
-  const past = chatOneLine(memory, CHAT_MAX_CHARS)
-  if (past) parts.push(`What you remember:\n${past}`)
+  const past = memoryBriefSection(memoryBrief(memory, CHAT_MAX_CHARS))
+  if (past) parts.push(past)
   /* 记忆条目压在简报之后、相处偏好之前。
      与简报同属"你记得什么"那一层,但它是一条条事实而不是一段叙述 ——
      所以先铺叙述再列清单,反过来会把叙述切碎(与 time/mood 那两段的排法同一条理由)。
@@ -221,29 +213,34 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
      与记忆同属"你们之间现在是什么状态"这一层(先记得什么、再熟到什么程度),
      而它排在偏好之前:先铺一个既定状态,最后才是"希望被怎么对待"这类意愿。
      同样过一遍逐行白名单:它也是外部输入 */
-  /* 默契与沉淀(shared)压在关系数值之前。关系那段是"熟到哪了"的**刻度**,
-     这里是那刻度背后的**具体东西** —— 一个梗、一句欠着的、一段旧账。
-     先给它有得可指,再给温度档,模型才不至于把"很熟"演成对谁都暖的通用腔。
-     写成"别说破",是要它像真有过去那样**顺手引用**,而不是介绍一遍 */
-  const between = chatOneLine(p.shared)
-  if (between)
-    parts.push(
-      `What's already between you two — allude to it like someone who has history, never explain it:\n${between}`
-    )
+  /* 默契与沉淀那一段(shared → "What's already between you two")已删除
+     (2026-10-19)—— 与 present / drive 同批撤下,理由见函数头那段说明 */
   const closeness = relationshipSection(relationship)
   if (closeness) parts.push(closeness)
   /* 相处偏好压在规则之前:它是最后一条软指令,离硬规则最近。
      与上面几段一样,空串时整段不出现 —— 用户一项都没表态,就不该有任何指导 */
   const guide = guidanceSection(guidance)
   if (guide) parts.push(guide)
-  /* 分层产出纪律**紧跟在 CHAT_RULES 之后**是有意的:CHAT_RULES 里那句
-     "Write only what the character would say out loud. No narration..." 会挡掉
-     `[act]` 旁白(它正是 narration),而 layerRules 要在这条之上开一个受控的例外。
-     排在后面 = 后说的覆盖先说的,模型读到的是"通用禁止 + 这一条具体豁免",而不是两条互相打脸。
-     sceneMode 由前端带上来(见 src/lib/prefs 的 sceneModeFor):关着时这段会明确禁 act。
-     think 与 photo/mood 的标记在这里都只作为**提示文字**写进 system,
-     服务端不解析它们 —— 把一轮扇成多条是前端 parseLayers 的活(脊柱 A)。 */
+  /* 规则三段分开 push,顺序是有讲究的:**通用规则 → 发图协议 → 收尾心情 → 分层纪律**。
+
+     - 发图协议(chatPhoto.js)只在 **canDraw** 为真时注入。canDraw = 前端那条出图配置
+       可用(有 baseUrl 且有 model,与 generateChatPhoto 的 imageConfigGap 同一个判法)。
+       没配出图模型时这段整块消失:既省掉每轮 ≈930 token,又不引着模型去写画不出来的
+       [photo:] 标签。缺省按"能画"处理(见调用处),老前端/手搓请求不传时维持原行为。
+
+     - 心情标签排在发图之后,因为标签顺序就是 photo 在前、mood 在最后;发图那段里
+       "the mood tag goes after it" 要读得到下面这条才成立。
+
+     - 分层产出纪律**紧跟其后**也是有意的:CHAT_RULES 里那句
+       "Write only what the character would say out loud. No narration..." 会挡掉
+       `[act]` 旁白(它正是 narration),而 layerRules 要在这条之上开一个受控的例外。
+       排在后面 = 后说的覆盖先说的,模型读到的是"通用禁止 + 这一条具体豁免",而不是两条互相打脸。
+       sceneMode 由前端带上来(见 src/lib/prefs 的 sceneModeFor):关着时这段会明确禁 act。
+       think 与 photo/mood 的标记在这里都只作为**提示文字**写进 system,
+       服务端不解析它们 —— 把一轮扇成多条是前端 parseLayers 的活(脊柱 A)。 */
   parts.push(CHAT_RULES)
+  if (canDraw) parts.push(photoRules())
+  parts.push(CHAT_MOOD_RULE)
   parts.push(layerRules(sceneMode))
   return parts.join('\n\n')
 }
@@ -286,8 +283,10 @@ const CHAT_IMAGE_CHARS = 4 * 1024 * 1024
 
 export function registerChatRoute(app) {
 app.post('/api/chat', rateLimit, async (req, res) => {
-  const { character, messages, memory, memories, images, nowLocal, lastAt, mood, guidance, relationship, sceneMode, textModel, baseUrl, apiKey } =
-    req.body || {}
+  const {
+    character, messages, memory, memories, images, nowLocal, lastAt, mood,
+    guidance, relationship, sceneMode, canDraw: canDrawIn, textModel, baseUrl, apiKey
+  } = req.body || {}
 
   if (!baseUrl) {
     return res.status(400).json({ error: 'Configure your Base URL first' })
@@ -295,9 +294,17 @@ app.post('/api/chat', rateLimit, async (req, res) => {
   if (!textModel) {
     return res.status(400).json({ error: 'Set a text model in API settings first' })
   }
-  /* 记忆也是外部输入(它由上游生成、经前端存了一圈再发回来),
-     照消息那样收一道长度 */
-  const memoryText = typeof memory === 'string' ? memory.slice(0, CHAT_MAX_CHARS) : ''
+  /* 记忆也是外部输入(它由上游生成、经前端存了一圈再发回来)。这里只做**类型收口**,
+     不再抢先 slice —— 长度那道限制(与截断标记)统一由 chatSystemPrompt 里的
+     memoryBrief 负责。在这里先默默砍到 8000,memoryBrief 就永远看不到超长串,
+     那道"截断留痕"的标记也就永远不会出现(等于把腰斩藏回无声)。 */
+  const memoryText = typeof memory === 'string' ? memory : ''
+
+  /* 能不能发图 —— 决定要不要注入那 ≈930 token 的发图协议(见 chatPhoto.js)。
+     由前端按"当前出图配置是否可用"算好带上来。这里**缺省按能画**处理:
+     只有显式传 false 才关掉 —— 老前端、手搓请求不传这一位时,维持原行为,
+     不该因为没带这个字段就悄悄把发图能力从提示词里摘掉 */
+  const canDraw = canDrawIn !== false
 
   /* 时间那一块。**认不出来就整块丢掉**,不报错 ——
      它是锦上添花的一层(角色不知道时间也能聊),而手搓的请求、
@@ -374,7 +381,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
      这里没这个问题,所以可以算好一份直接用 */
   const body = JSON.stringify({
     model: textModel,
-    messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood, guidance, memories, relationship, !!sceneMode) }, ...history],
+    messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood, guidance, memories, relationship, !!sceneMode, canDraw) }, ...history],
     temperature: CHAT_TEMPERATURE,
     max_tokens: CHAT_MAX_TOKENS,
     stream: true

@@ -16,6 +16,8 @@ import {
   extraParamsFor,
   extraViews,
   getProvider,
+  imageConfigGap,
+  imageConfigReady,
   mergeHistory,
   normalizeSize,
   PHOTO_ERROR_CHARS,
@@ -42,6 +44,47 @@ import { PHOTO_SCENE_CHARS } from '../server/chatTags.js'
 function cfg(id: string, kind?: ApiConfig['kind']): ApiConfig {
   return { id, name: id, baseUrl: 'https://example.com/v1', apiKey: 'k', model: 'm', kind }
 }
+
+describe('imageConfigGap / imageConfigReady · 出图可用性的唯一判法', () => {
+  /* 这是"能不能画一张图"的单点真值 —— 生成前的拦截、对话发图协议的按需注入(chat.js
+     的 canDraw)、以及任何"能不能发图"的指示灯都走它。判法一旦分叉,就会出现"这里说
+     能画、真点却画不出",所以把它钉死。 */
+  it('baseUrl 与 model 都在 → 没有缺口、算 ready', () => {
+    expect(imageConfigGap(cfg('a'))).toBe('')
+    expect(imageConfigReady(cfg('a'))).toBe(true)
+  })
+
+  it('缺 baseUrl → 一句"没配出图接口"、不 ready', () => {
+    const noBase = { ...cfg('a'), baseUrl: '' }
+    expect(imageConfigGap(noBase)).toContain('No image API')
+    expect(imageConfigReady(noBase)).toBe(false)
+  })
+
+  it('有 baseUrl 但缺 model → 一句"缺模型名"、不 ready', () => {
+    const noModel = { ...cfg('a'), model: '' }
+    expect(imageConfigGap(noModel)).toContain('model name')
+    expect(imageConfigReady(noModel)).toBe(false)
+  })
+
+  it('null / undefined 也当"没配",不抛', () => {
+    expect(imageConfigGap(null)).toContain('No image API')
+    expect(imageConfigReady(undefined)).toBe(false)
+  })
+
+  /* ready 恒等于 gap 为空 —— 两者是同一个判断的两种写法,不许各自演化 */
+  it('ready ⟺ gap 为空,对所有边界组合成立', () => {
+    for (const c of [
+      cfg('a'),
+      { ...cfg('a'), baseUrl: '' },
+      { ...cfg('a'), model: '' },
+      { ...cfg('a'), baseUrl: '', model: '' },
+      null,
+      undefined
+    ]) {
+      expect(imageConfigReady(c as ApiConfig)).toBe(imageConfigGap(c as ApiConfig) === '')
+    }
+  })
+})
 
 describe('configKindOf · 用途归一', () => {
   it('缺省(加 kind 之前存下来的老配置)按出图算', () => {

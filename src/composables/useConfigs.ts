@@ -4,6 +4,7 @@ import {
   configKindOf,
   defaultSizeFor,
   getProvider,
+  imageConfigReady,
   loadActiveChatId,
   loadActiveId,
   loadActiveTextId,
@@ -139,6 +140,11 @@ export function useConfigs(deps: ConfigDeps) {
   function configured() {
     return !!config.value.baseUrl
   }
+  /* 当前那条出图配置**能不能真的画一张**(有 baseUrl 且有 model)。与 generateChatPhoto
+     的 imageConfigGap 同一个判法(都走 api.ts 的 imageConfigReady),所以"这里说能画"
+     与"真去点会画得出来"是一回事。对话发图协议的按需注入(chat.js 的 canDraw)靠它:
+     没配出图模型时,那 ≈930 token 的拍照教程就不该塞进每一轮,也别引着模型写画不出来的标签 */
+  const imageReady = computed(() => imageConfigReady(config.value))
 
   /* —— 挑「当前生效」 ——
      五类各挑各的。挑法统一在 api.ts 的 pickActiveByKind:认「id 对得上且用途
@@ -547,6 +553,7 @@ export function useConfigs(deps: ConfigDeps) {
     activeConfigName,
     activeTextName,
     imageConfigs,
+    imageReady,
     textConfigs,
     chatConfigs,
     visionConfigs,

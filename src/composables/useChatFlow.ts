@@ -27,8 +27,12 @@ import { interactionGuidanceFor, sceneModeFor } from '../lib/prefs'
 import { hasLayerMarkers, parseLayers } from '../lib/messageLayers'
 /* 记忆条目:发这一轮时把"它记得的、且这个角色看得到的"摊成几行事实(见 lib/memory)。
    走 selectMemories 而不是直接过滤 —— **隐私边界就在那个函数里**
-   (角色专属记忆不跨角色、共享画像要用户授权),这一层不该有第二套判法 */
-import { memoryLines, selectMemories } from '../lib/memory'
+   (角色专属记忆不跨角色、共享画像要用户授权),这一层不该有第二套判法。
+   再加一层 sortMemories:服务端只留前 12 行、且**按收到的顺序**留(chatMemory.js 的
+   slice(0,12))。不先排的话,顺序就是入库序 —— 一条重要的旧记忆会永远排在末尾,
+   每一轮都被新的琐事挤到 12 名之外,模型压根看不到它。排序把"重要 + 最近"顶到前面,
+   让截断砍掉的是最不相干的那批 */
+import { memoryLines, selectMemories, sortMemories } from '../lib/memory'
 /* 关系:发这一轮时把"你俩此刻熟到什么程度"摊成几行 "- …"(见 lib/relationship)。
    与偏好、记忆同一条:前端只摊行,加标签与那句边界由服务端做 */
 import { relationshipLinesFor } from '../lib/relationship'
@@ -74,6 +78,9 @@ export interface ChatFlowDeps {
   chatConfig: ConfigsApi['chatConfig']
   chatConfigs: ConfigsApi['chatConfigs']
   visionConfig: ConfigsApi['visionConfig']
+  /* 出图配置此刻可用与否(见 api.ts 的 imageConfigReady)。发这一轮时带上它,
+     服务端据此决定要不要注入那 ≈930 token 的发图协议 —— 没配出图模型就不注入 */
+  imageReady: ConfigsApi['imageReady']
   cfgSeed: ConfigsApi['cfgSeed']
   cfgView: ConfigsApi['cfgView']
   newConfig: ConfigsApi['newConfig']
@@ -118,6 +125,7 @@ const {
   chatConfig,
   chatConfigs,
   visionConfig,
+  imageReady,
   cfgSeed,
   cfgView,
   newConfig,
@@ -386,8 +394,10 @@ async function runChat(id: string) {
          简报是这段对话的来龙去脉,这一份是一条条事实。
          走 selectMemories —— 它同时就是 PRD §3.2-F 那条隐私边界:
          角色专属记忆只喂给本角色,共享画像要用户明确勾过才出现在这里。
+         再套一层 sortMemories:服务端按收到的顺序只留前 12 行,所以"该让谁进这 12 行"
+         是这一层决定的 —— 排在前面的是重要 + 最近,被截掉的是最不相干的旧琐事。
          没记住任何东西时是空数组,服务端据此整段不出现 */
-      memories: memoryLines(selectMemories(memories.value, id)),
+      memories: memoryLines(sortMemories(selectMemories(memories.value, id))),
       /* **你俩走到哪一步了**(关系,见 lib/relationship)。与偏好、记忆同一条退路:
          从没评估过时 relationshipLinesFor 回空串,服务端据此整段不出现。
          它只改**亲疏与温度**,不碰角色是谁 —— 那句边界同样写在服务端的提示词里 */
@@ -396,6 +406,11 @@ async function runChat(id: string) {
          用户刚从选项菜单开了场景模式,下一句就该带上 `[act]`。它只 gate 服务端**产不产出**
          act,与"界面上显不显示"是另一根杆(见 ChatPage 的 showAct)。未设 = 关(保守) */
       sceneMode: sceneModeFor(id),
+      /* **此刻配不配得出图**(见 api.ts 的 imageConfigReady)。发请求这一刻现读——
+         用户刚在设置页配好/删掉出图模型,下一轮就该跟着变。服务端据此决定要不要往
+         system 里注入那 ≈930 token 的发图协议:配不出图就不注入,既不烧 token、也不引着
+         模型写画不出来的 [photo:] 标签。缺省(手搓请求不传)按"能画"处理,不改老行为 */
+      canDraw: imageReady.value,
       images,
       lastAt,
       cfg: useCfg,

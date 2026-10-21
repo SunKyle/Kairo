@@ -98,7 +98,11 @@ describe('同步范围 · 与源码里的写入点保持一致', () => {
     /* 存量简报的一次性地标(见 lib/memoryMigrate.ts)。它答的是"这台设备
        搬过没",不是一份数据目录 —— 没有"重载哪一份"这回事,所以不进 SYNC_KEYS。
        另一个标签页要不要知道?不必:库是共享的,它自己下次启动会读到同一个地标 */
-    MIGRATED_KEY: { key: 'kimage.memoryMigrated', synced: false }
+    MIGRATED_KEY: { key: 'kimage.memoryMigrated', synced: false },
+    /* 元数据工具"这个模型已经提醒过一次"的地标(见 composables/useChatFlow.ts)。
+       它记的是"那句话对用户说过了",不是数据目录 —— 不该触发任何重载。
+       也不必进 SYNC_KEYS:两个标签页读的是同一份,一边说过另一边就不说了 */
+    META_WARNED_KEY: { key: 'kimage.metaToolWarned', synced: false }
   }
 
   /* 用 Vite 的 import.meta.glob 把 src 下的源码按原文读进来,而不是 node:fs ——

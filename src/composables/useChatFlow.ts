@@ -53,22 +53,65 @@ import type { useGeneration } from './useGeneration'
 import type { useHistory } from './useHistory'
 import type { useMemories } from './useMemories'
 
-/* "这个模型压根没在用工具调用"这一条整个会话只提示一次。
-   它每一轮都会发生,每轮弹一遍等于把界面变成一块常驻警告牌;
-   而用户真正要做的动作(去设置里换个模型)一次就够听清。
-   参数坏掉那两种是偶发的,不受这个开关管,每次都说 */
-let warnedMetaTool = false
+/* "这个模型这一轮没调元数据工具"这件事按**模型**提示一次,而且记在 localStorage 里。
+   从前它是模块里的一个 boolean:改一次代码,HMR 换掉模块,开关跟着复位 ——
+   于是每次热更新后的第一条回复都会把同一句警告再弹一遍,读起来像"又出问题了",
+   其实只是同一件已知的事被重新说了一次(用户报的就是这个)。
+   而这句话真正该说的对象是模型,不是"这一次对话":同一个模型漏一次就够了,
+   刷新页面、换一段对话都该记得。
+   参数坏掉那两种是偶发的,不受这个开关管,每次都说。 */
+const META_WARNED_KEY = 'kimage.metaToolWarned'
+
+/** localStorage 不可用时的兜底。与落盘那份合起来回答"这个模型说过没有" */
+const metaWarnedMemory = new Set<string>()
+
+function metaWarnedKey(cfg: ApiConfig): string {
+  return `${cfg.baseUrl.trim()}|${cfg.model.trim()}`
+}
+
+function metaWarnedAlready(cfg: ApiConfig): boolean {
+  const key = metaWarnedKey(cfg)
+  if (metaWarnedMemory.has(key)) return true
+  try {
+    const raw = localStorage.getItem(META_WARNED_KEY)
+    const seen = raw ? JSON.parse(raw) : null
+    if (seen && typeof seen === 'object' && seen[key]) {
+      metaWarnedMemory.add(key)
+      return true
+    }
+  } catch {
+    /* 存储读不出来就只认内存那次 */
+  }
+  return false
+}
+
+function rememberMetaWarned(cfg: ApiConfig) {
+  const key = metaWarnedKey(cfg)
+  metaWarnedMemory.add(key)
+  try {
+    const raw = localStorage.getItem(META_WARNED_KEY)
+    const seen = raw ? JSON.parse(raw) : null
+    const map = seen && typeof seen === 'object' && !Array.isArray(seen) ? seen : {}
+    map[key] = Date.now()
+    localStorage.setItem(META_WARNED_KEY, JSON.stringify(map))
+  } catch {
+    /* 存不下也不影响这次提示本身 */
+  }
+}
 
 /** 收尾元数据缺了时的提示。空串 = 不必说 */
-function metaIssueNote(issue: string): string {
+function metaIssueNote(issue: string, cfg: ApiConfig): string {
   switch (issue) {
     case 'not_called':
     case 'unknown_tool':
-      if (warnedMetaTool) return ''
-      warnedMetaTool = true
+      if (metaWarnedAlready(cfg)) return ''
+      rememberMetaWarned(cfg)
+      /* 点名是哪个模型,并且**不说成"它不支持工具调用"** —— 这两种模型都支持,
+         只是偶尔一整轮没调(auto 档下很常见)。把它说成能力缺失会把人赶去
+         换一个同样会漏的模型(用户实测:换过去只是不再提示,元数据照样缺) */
       return (
-        'That model did not use tool calling, so the mood, picture and shared link for this reply are missing. ' +
-        'Choose a model with function calling (for example deepseek-flash or deepseek-v4-pro) in AI connections.'
+        `"${cfg.name || cfg.model}" skipped the metadata call on that reply, so it has no mood, ` +
+        'picture or shared link. The reply itself is unaffected — this happens intermittently with some models.'
       )
     case 'invalid_arguments':
       return (
@@ -632,10 +675,12 @@ async function runChat(id: string) {
     reply.attachment = attachment
     void fillAttachmentPreview(id, reply)
   }
-  // 整轮到底有没有留下可见文字(扇出后要看这一轮的全部消息,不能只看 spine)
-  if (!turn.some((m) => m.content.trim() || m.attachment) && !stopped) {
-    /* 一个字都没收到(上游出错,或它真的什么都没说):
+  // 整轮到底有没有留下可见内容(扇出后要看这一轮的全部消息,不能只看 spine)
+  if (!turn.some((m) => m.content.trim() || m.attachment || m.photo) && !stopped) {
+    /* 一个字都没收到,也没有图或卡(上游出错,或它真的什么都没说):
        把这轮的空壳摘掉,免得消息流里留一个空气泡。
+       **只有图、没有字**是正常的一轮 —— 用户让它发张照片时最常见,
+       界面本来就给这种消息留了骨架位与重画入口,不能在这里摘掉。
        摘掉之后最后一条又回到用户那句 —— 界面上因此会给出"重试",
        它走的就是 regenerateChat(见那边的注释) */
     const gone = new Set(turn.map((m) => m.id))
@@ -670,9 +715,10 @@ async function runChat(id: string) {
   if (stopped) notice.value = 'Stopped.'
   else if (failure) notice.value = failure
   /* 元数据缺了只是少一颗药丸、少一张图,不该盖掉"这条没存下来"那种更要紧的提示。
-     metaIssueNote 有副作用(把"只提醒一次"的开关拨掉),所以只在真要说的时候调 */
+     metaIssueNote 有副作用(第一次说的时候把"这个模型已提醒过"记下来),所以只在真要说的时候调。
+     传的是**这一轮实际用的那条配置**(带了图就可能是识图那条),提示里点名的才是真正的模型 */
   else if (!saveFailed) {
-    const note = metaIssueNote(metaIssue)
+    const note = metaIssueNote(metaIssue, useCfg)
     if (note) notice.value = note
   }
   /* 收尾之后顺手看一眼要不要压记忆。放在最末是有意的:

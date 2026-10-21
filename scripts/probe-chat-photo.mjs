@@ -602,6 +602,32 @@ async function main() {
       JSON.stringify({ error: out.error, done: out.done })
     )
 
+    /* —— 用例 1i：只发一张图、一个字不说 ——
+       用户说"发张照片"时，模型可能只调工具、正文为空。图就是这一轮的内容，
+       不能按"没话说"报错 —— 界面本来就给"只发图"留了骨架位与重画入口。 */
+    console.log('\n用例 1i · 只发一张图、一个字不说')
+    chatReply = ''
+    chatTool = {
+      name: 'emit_message_meta',
+      args: metaArgs({
+        mood: 'warm',
+        photo: { scene: 'me on the balcony, phone in hand', shot: 'selfie' }
+      })
+    }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: '发张照片' }] })
+    out = await readChat(r)
+    ok(
+      '只带一张图也算一轮（不报"没话说"）',
+      !out.error && !!out.done,
+      JSON.stringify({ error: out.error, done: out.done })
+    )
+    ok(
+      '图带出来了',
+      out.done?.photo === 'me on the balcony, phone in hand',
+      String(out.done?.photo)
+    )
+    ok('正文确实是空的', out.text === '', JSON.stringify(out.text))
+
     // 恢复默认值，后面的用例还要用
     chatReply = 'Sure.'
     chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'calm' }) }

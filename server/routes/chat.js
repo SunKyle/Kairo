@@ -52,7 +52,7 @@ const CHAT_RULES = `Rules:
 - Do not use markdown. No lists, no bold, no headings - this is a chat, not a document.
 - Emoji are fine: this is typing, not speaking. Use them the way people do in texts - now and then, one or two, where a face says it better than a sentence. Not in every message, and never a run of them.
 - Keep it short: one to three sentences. Real people type short messages.
-- Never leave a blank line inside a reply: one paragraph, no gaps. If you have two things to say, say them back to back in the same paragraph. A blank line in the middle of a bubble does not read as a pause, it reads as a glitch.
+- Usually one short paragraph. If you really have two or three separate things to say, send two or three bubbles separated by one blank line - the whole reply still fits the one-to-three-sentence limit, each bubble is complete on its own, and never split a single sentence across bubbles. Do not chop every reply into fragments just to look chatty.
 - Never end every reply with a question. Let the conversation breathe.
 - When they only send a word or two back ("ok", "haha", "yeah"), it is on you to carry it: say something of your own - what you are doing right now, or where the thing you were talking about left off. Do not answer a shrug with a shrug. If they are clearly trying to end the conversation, let them.
 - If you happen to know what time it is, or how long it has been since you two last spoke, mention it only when it is actually relevant. Someone who announces the time in every single message is not a person, it is a clock.
@@ -438,8 +438,8 @@ app.post('/api/chat', rateLimit, async (req, res) => {
     stream: true,
     /* 元数据走 tool calling。`auto` 是**有意**的:
        - DeepSeek 的思考模式不接受 `required` 或点名具体工具(会 400);
-       - 强制 required 时有些模型会只回一个 tool_call、一个字的正文都不写,
-         聊天框里就只剩一个空气泡。
+       - 强制 required 时有些模型会只回一个 tool_call、一个字的正文都不写;
+         若它只带 mood,聊天框里就只剩一个空气泡（带图或卡则另有内容可看）。
        每轮都调用一次由 System Prompt 的 CHAT_META_RULE 负责;模型没调用时
        done 会带 metaIssue,前端据此提示,而不是偷偷回退到文本标签。 */
     tools: [metaTool(canDraw)],
@@ -637,11 +637,11 @@ app.post('/api/chat', rateLimit, async (req, res) => {
        以前只有后者走空轮判断,于是**一条被丢掉的内网链接卡片**(归一化后
        attachment 为空)配上零正文,会从 [DONE] 那条路直接回 `done` —— 界面
        收到一条什么都没有的空气泡,把"这一轮其实失败了"当成了正常沉默。
-       判据:有正文,或有归一化后仍然活着的 attachment,才算这一轮有东西可看;
-       两者都没有就是"没话说",回 error。 */
+       判据:有正文,或有归一化后仍然活着的 attachment / photo,才算这一轮
+       有东西可看;三者都没有就是"没话说",回 error。 */
     const finishTurn = () => {
       const tool = toolMetaFromCalls(toolCalls, who)
-      if (gotAny || tool.meta.attachment) {
+      if (gotAny || tool.meta.attachment || tool.meta.photo) {
         sendEvent({
           done: true,
           finish: finishReason,

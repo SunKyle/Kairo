@@ -60,6 +60,21 @@ const railList = computed(() => {
     (c) => c.name.toLowerCase().includes(q) || lastLine(c).toLowerCase().includes(q)
   )
 })
+/* 置顶单独成组 —— 不再靠行上的边框/底色去说明状态,而是把它挪到另一段里:
+ *  同一件事由"位置 + 分组标题"承担,扫一眼就知道这一段是置顶的。
+ *  没有置顶时**不出现任何标题**:列表保持原来那种干净的一串,
+ *  不为一个空组预留标签;有置顶时才补一个"Conversations"给剩下的人,
+ *  否则第二个组没有名字,会显得像置顶组的下半截。
+ *  组内顺序沿用 railList(最近活跃在前),分组只做切分,不重排。 */
+const railGroups = computed(() => {
+  const pinned = railList.value.filter((c) => c.pinned)
+  const rest = railList.value.filter((c) => !c.pinned)
+  if (!pinned.length) return [{ key: 'all', label: '', items: rest }]
+  return [
+    { key: 'pinned', label: 'Pinned', items: pinned },
+    ...(rest.length ? [{ key: 'rest', label: 'Conversations', items: rest }] : [])
+  ]
+})
 function clearRailQuery() {
   railQuery.value = ''
 }
@@ -139,47 +154,58 @@ function lastLine(c: Character): string {
     No conversation matches that. Try a name, or a word from what they said.
   </p>
   <div v-if="characters.length" class="rail-list" :class="{ 'no-bar': hideScrollbar }">
-    <!-- 一行 = 一个"选它"按钮 + 一枚图钉(两个兄弟节点)。
-         **不能把图钉嵌在行按钮里**:按钮不能套按钮,那是无效 HTML,
-         读屏与键盘也会跟着乱 -->
+    <!-- 置顶与其余对话分成两段(见 railGroups)。
+         没有置顶时只有一个不带标题的组,模板上仍是原来那一串行。 -->
     <div
-      v-for="c in railList"
-      :key="c.id"
-      class="rail-item"
-      :class="{ on: c.id === active, pinned: c.pinned }"
+      v-for="g in railGroups"
+      :key="g.key"
+      class="rail-group"
+      :role="g.label ? 'group' : undefined"
+      :aria-label="g.label || undefined"
     >
-      <button
-        class="rail-row"
-        :aria-current="c.id === active ? 'true' : undefined"
-        @click="emit('select', c.id)"
+      <p v-if="g.label" class="rail-group-h">{{ g.label }}</p>
+      <!-- 一行 = 一个"选它"按钮 + 一枚图钉(两个兄弟节点)。
+           **不能把图钉嵌在行按钮里**:按钮不能套按钮,那是无效 HTML,
+           读屏与键盘也会跟着乱 -->
+      <div
+        v-for="c in g.items"
+        :key="c.id"
+        class="rail-item"
+        :class="{ on: c.id === active }"
       >
-        <span class="rail-ava">
-          <img v-if="avatarOf(c)" :src="avatarOf(c)" alt="" />
-          <PhMaskHappy v-else aria-hidden="true" />
-        </span>
-        <span class="rail-text">
-          <!-- 名字与时间同一行:时间在流里,**按构造就不会压到右边那枚图钉** ——
-               行的右内边距已经为图钉留出 42px,时间自然止在那条线之前 -->
-          <span class="rail-top">
-            <span class="rail-name">{{ c.name }}</span>
-            <time v-if="lastAt(c)" class="rail-time" :datetime="stampOf(lastAt(c))">
-              {{ railStamp(lastAt(c)) }}
-            </time>
+        <button
+          class="rail-row"
+          :aria-current="c.id === active ? 'true' : undefined"
+          @click="emit('select', c.id)"
+        >
+          <span class="rail-ava">
+            <img v-if="avatarOf(c)" :src="avatarOf(c)" alt="" />
+            <PhMaskHappy v-else aria-hidden="true" />
           </span>
-          <span class="rail-last">{{ lastLine(c) }}</span>
-        </span>
-      </button>
-      <!-- 置顶就在这一行上做:要置顶的念头多半是"在聊天列表里找不到它"
-           的那一刻冒出来的,逼人先切去角色页再回来是绕路。
-           置顶的那一枚常驻(它是状态),其余悬停才浮出 -->
-      <button
-        class="rail-pin"
-        :aria-label="c.pinned ? `Unpin ${c.name}` : `Pin ${c.name}`"
-        :aria-pressed="!!c.pinned"
-        @click="emit('pin', c.id)"
-      >
-        <PhPushPin aria-hidden="true" />
-      </button>
+          <span class="rail-text">
+            <!-- 名字与时间同一行:名字吃掉剩余宽度,时间按自身宽度靠右收口。
+                 图钉在头像上,离这一行很远,不会压到 -->
+            <span class="rail-top">
+              <span class="rail-name">{{ c.name }}</span>
+              <time v-if="lastAt(c)" class="rail-time" :datetime="stampOf(lastAt(c))">
+                {{ railStamp(lastAt(c)) }}
+              </time>
+            </span>
+            <span class="rail-last">{{ lastLine(c) }}</span>
+          </span>
+        </button>
+        <!-- 置顶就在这一行上做:要置顶的念头多半是"在聊天列表里找不到它"
+             的那一刻冒出来的,逼人先切去角色页再回来是绕路。
+             图钉平时不出现(置顶与否由分组标题说明),悬停或键盘聚焦才浮出 -->
+        <button
+          class="rail-pin"
+          :aria-label="c.pinned ? `Unpin ${c.name}` : `Pin ${c.name}`"
+          :aria-pressed="!!c.pinned"
+          @click="emit('pin', c.id)"
+        >
+          <PhPushPin aria-hidden="true" />
+        </button>
+      </div>
     </div>
   </div>
   <p v-else class="rail-empty">No characters yet.</p>
@@ -192,11 +218,31 @@ function lastLine(c: Character): string {
 .rail-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
   min-height: 0;
   overflow-y: auto;
 }
-/* 一行 = 选它 + 置顶。定位上下文在这一层,图钉才能贴住行右缘 */
+/* 一组 = 一枚小标题 + 它下面那串行。没有标题的组(没有置顶时的全部对话)
+   只剩行本身,和原来的列表长得一模一样 */
+.rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rail-group + .rail-group {
+  margin-top: var(--sp-3);
+}
+/* 与简报、表单那边同一套 eyebrow 写法:全大写微标签 + 放宽的字距。
+   它只负责把"这一段是置顶"说清楚,不占一整行的高度 */
+.rail-group-h {
+  margin: 0;
+  padding: 2px 8px 4px;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* 一行 = 选它 + 置顶。定位上下文在这一层,图钉才能贴住头像右上角 */
 .rail-item {
   position: relative;
 }
@@ -225,20 +271,8 @@ function lastLine(c: Character): string {
 .rail-item.on .rail-row {
   background: var(--accent-soft);
 }
-/* —— 置顶 = **行底加深一档**,不再有角标 ——
- *
- *  取值是"墨 8% 混进面",不是直接取某个现成档:现有那几档在浅色下彼此只差
- *  一两级(#EFEFEA 与 #F0F0F0 几乎看不出差别),而这一档要**单独承担
- *  "这行置顶了"**,必须和悬停、常态都分得开。
- *  用 --text 而不是写死的黑:它在深色主题下会反相,于是两套主题都得到
- *  "离底再重一档"的同一种效果 —— 浅色更深、深色更亮,而两者都是"更重"。
- *  三档在两种主题下的顺序一致:常态 < 悬停 < 置顶。
- *
- *  写在 .on 之后:**又置顶又正开着**的那一行,底色按置顶走。
- *  "正开着"不会因此丢掉 —— 它还有一条 .rail-item.on .rail-name 的字重与深色 */
-.rail-item.pinned .rail-row {
-  background: color-mix(in oklab, var(--text) 8%, var(--surface));
-}
+/* 置顶在行上**不留任何记号**:它已经搬到独立分组与那枚标题里(见 railGroups),
+   再给行加边框或底色,只会把"选中"和"置顶"又混回同一套视觉。 */
 /* 名字那一行:名字吃掉剩余宽度,时间按自身宽度靠右收口 */
 .rail-top {
   display: flex;
@@ -246,8 +280,8 @@ function lastLine(c: Character): string {
   gap: 6px;
   min-width: 0;
 }
-/* 每行名字右侧那一刻。**在流里** —— 行的右内边距已为图钉留出 42px,
-   它自然落在图钉左边,不需要绝对定位,也就没有"压到图钉"这回事。
+/* 每行名字右侧那一刻。**在流里** —— 图钉已经挪到头像上,
+   时间只按行的右内边距收口,不需要绝对定位,也就没有"压到图钉"这回事。
    等宽数字:一列时间右对齐时才不会抖 */
 .rail-time {
   flex: none;
@@ -285,7 +319,7 @@ function lastLine(c: Character): string {
 .rail-item:focus-within .rail-pin {
   opacity: 1;
 }
-/* **置顶不再有角标** —— 那件事已经由行底承担(见 .rail-item.pinned)。
+/* **置顶不再有角标** —— 那件事已经由独立分组与标题承担(见 .rail-group-h)。
    这枚图钉于是退回成**纯动作**:平时不出现,悬停(或键盘聚焦)才浮出来,
    点了就是"置顶 / 取消置顶"。
    触屏没有悬停,那边仍靠 @media (hover: none) 让它常驻一份淡的,

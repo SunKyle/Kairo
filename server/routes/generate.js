@@ -52,7 +52,7 @@ app.post('/api/generate', rateLimit, async (req, res) => {
   }
   // baseUrl 必须由用户显式提供;apiKey 允许为空(部分本地服务无需鉴权)
   if (!baseUrl) {
-    return res.status(400).json({ error: 'Configure your Base URL first' })
+    return res.status(400).json({ error: 'The Image generation config has no Base URL — add one in AI connections.' })
   }
 
   /* 参考图:新前端发 images(数组)—— 角色的设定图就是"多张视图一起当参考";
@@ -65,7 +65,7 @@ app.post('/api/generate', rateLimit, async (req, res) => {
   const isGemini = protocol === 'gemini'
 
   if (isGemini && !model) {
-    return res.status(400).json({ error: 'Set an image model in API settings first' })
+    return res.status(400).json({ error: 'Add an Image generation model in AI connections first.' })
   }
 
   /* 两条协议的路径不一样。谁走哪条由前端按 (厂商, 模型) 判定 ——
@@ -313,7 +313,7 @@ app.post('/api/generate', rateLimit, async (req, res) => {
         upstream.status === 401 || upstream.status === 403
           ? apiKey
             ? ` Sent ${String(apiKey).length} characters to ${PROD_LIKE ? targetUrl.host : target}. If the key on your other device differs in length, this one was typed or pasted wrong.`
-            : ' No API key was sent: the active config in this browser has none. Configs are stored per browser and do not sync across devices — open Interface Settings on this device and add the key.'
+            : ' No API key was sent: the Image generation config has none. Configs stay in this browser, so open AI connections on this device and add the key.'
           : ''
       return res.status(upstream.status).json({
         error: `Upstream returned an error (${upstream.status})`,
@@ -332,7 +332,7 @@ app.post('/api/generate', rateLimit, async (req, res) => {
         detail:
           `HTTP ${upstream.status} from ${PROD_LIKE ? targetUrl.host : target}` +
           (title ? ` (page title: ${title})` : '') +
-          '. The path is probably wrong — check the Base URL in API settings.'
+          '. The path is probably wrong — check the Base URL in AI connections.'
       })
     }
 

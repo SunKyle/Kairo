@@ -21,10 +21,11 @@
  */
 
 import type { ChatAttachment } from '../types'
-import { attachmentContextLine } from './chatAttachments'
 
 /** 带图但一个字没写 */
 export const EMPTY_WITH_IMAGE = '(sent a photo)'
+/** 带了一张卡(链接/歌曲)但一个字没写 */
+export const EMPTY_WITH_CARD = '(sent a card)'
 /** 什么都空的消息:理论上前端不该产生,但 stopped 的空回复会落到这里 */
 export const EMPTY_WITHOUT_IMAGE = '(said nothing)'
 
@@ -39,9 +40,11 @@ function hasImage(m: { imageId?: string; photoId?: string }): boolean {
  * 不空的原样返回(**不 trim**:正文里的首尾空白是用户自己打的,
  * 上游那边本来也不会因为它报错)。
  *
- * 带附件的消息在正文后面补一行**给模型看的**转述 —— 否则它下一轮不记得
- * 自己转过什么(附件本身不重发,与图同一条理由)。补的那一行只在这份请求里,
- * 库里的消息与导出包都不含它。
+ * 空正文换一句占位。附件/图片**不再把细节补进正文** —— 旧版这里会补一行
+ * `(a song was shared — …)`,而那一行是助手消息的正文,模型会把它当成自己
+ * 写过的台词照抄,宁可写字也不去调工具(实测)。"发过哪几张卡"改由
+ * useChatFlow 随请求带 `shares`,在服务端拼进 system 的一份简报里;
+ * 这里只说"这一轮发过一张卡",不给任何可模仿的格式。
  */
 export function contextText(m: {
   content: string
@@ -50,11 +53,10 @@ export function contextText(m: {
   attachment?: ChatAttachment
 }): string {
   const text = String(m?.content ?? '')
-  const share = m.attachment ? `(${attachmentContextLine(m.attachment)})` : ''
-  if (text.trim()) return share ? `${text}\n${share}` : text
+  if (text.trim()) return text
   const parts = []
   if (hasImage(m)) parts.push(EMPTY_WITH_IMAGE)
-  if (share) parts.push(share)
+  if (m.attachment) parts.push(EMPTY_WITH_CARD)
   return parts.length ? parts.join('\n') : EMPTY_WITHOUT_IMAGE
 }
 

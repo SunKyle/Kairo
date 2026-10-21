@@ -297,9 +297,9 @@ app.post('/api/tts', rateLimit, async (req, res) => {
      却在上游看来是一个无效的 key(401)—— 那是最难自查的一类失败 */
   const key = typeof apiKey === 'string' ? apiKey.trim() : ''
   if (!say) return res.status(400).json({ error: 'Nothing to say' })
-  if (!baseUrl) return res.status(400).json({ error: 'Configure your Base URL first' })
+  if (!baseUrl) return res.status(400).json({ error: 'The Voice config has no Base URL — add one in AI connections.' })
   if (!key) {
-    return res.status(400).json({ error: 'Set the API key for your TTS config first' })
+    return res.status(400).json({ error: 'The Voice config has no API key — add one in AI connections.' })
   }
 
   const v = voice && typeof voice === 'object' ? voice : {}
@@ -451,7 +451,7 @@ app.post('/api/tts', rateLimit, async (req, res) => {
         [sent, upstreamText].filter(Boolean).join(' ')
       ).slice(0, 400)
       return res.status(502).json({
-        error: `The TTS service refused this request${failed.code ? ` (code ${failed.code})` : ''}`,
+        error: `The Voice provider refused this request${failed.code ? ` (code ${failed.code})` : ''}`,
         detail: detail || 'It returned no audio and no explanation.'
       })
     }
@@ -502,8 +502,8 @@ app.post('/api/voice/clone', rateLimit, async (req, res) => {
   if (typeof sample !== 'string' || !sample.startsWith('data:audio/')) {
     return res.status(400).json({ error: 'Attach an audio file (wav, mp3, m4a or ogg)' })
   }
-  if (!baseUrl) return res.status(400).json({ error: 'Configure your Base URL first' })
-  if (!key) return res.status(400).json({ error: 'Set the API key for your TTS config first' })
+  if (!baseUrl) return res.status(400).json({ error: 'The Voice config has no Base URL — add one in AI connections.' })
+  if (!key) return res.status(400).json({ error: 'The Voice config has no API key — add one in AI connections.' })
 
   /* 代号有格式要求(上游会拦):8~256 字符、只能数字字母与 - _、
      必须以字母开头、结尾不能是 - 或 _,也不能撞官方前缀。

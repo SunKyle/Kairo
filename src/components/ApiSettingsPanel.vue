@@ -545,7 +545,7 @@ function onImportFile(e: Event) {
 </script>
 
 <template>
-  <section class="pg" aria-label="API settings">
+  <section class="pg" aria-label="AI connections">
     <header class="pg-head">
       <!-- 页面名不在这儿写第二遍:顶部横条的字标已经在说"Settings"。
            这里留的是这一页特有的说明 —— 它跟哪类接口配合、数据放在哪 -->
@@ -652,7 +652,7 @@ function onImportFile(e: Event) {
         <!-- 空态:不是「什么都没有」,而是四条能一键预填的入口 -->
         <div v-else class="sheet">
           <div class="empty">
-            <h2>Add your first API</h2>
+            <h2>Add your first AI connection</h2>
             <p class="empty-sub">
               Pick a provider and the address and model get filled in for you. You only need to paste your key.
             </p>
@@ -688,7 +688,7 @@ function onImportFile(e: Event) {
             <!-- 识图那类单独起一排:它解决的是另一个问题(把上传的参考图读成角色设定),
                  与"出图用哪家"不是同一件事,混在同一排里会被当成又一个出图选项 -->
             <p class="quick-sep">
-              Or add a vision model — it reads an uploaded reference image into a character spec.
+              Or add an Image recognition model — it reads an uploaded reference image into a character spec.
             </p>
             <div class="quick">
               <button
@@ -735,7 +735,7 @@ function onImportFile(e: Event) {
                 />
                 <span class="pm">
                   <b>Image generation</b>
-                  <span>Used when you press Generate. Fill in an image model.</span>
+                  <span>Used for every image the app draws.</span>
                 </span>
                 <span class="tick" aria-hidden="true"><PhCheck /></span>
               </label>
@@ -764,7 +764,7 @@ function onImportFile(e: Event) {
                 />
                 <span class="pm">
                   <b>Prompt enhancing</b>
-                  <span>Used by Quick / Creative. Fill in a chat model.</span>
+                  <span>Used by the Photography director, and to draft a character from one line.</span>
                 </span>
                 <span class="tick" aria-hidden="true"><PhCheck /></span>
               </label>
@@ -777,7 +777,7 @@ function onImportFile(e: Event) {
                 />
                 <span class="pm">
                   <b>Image recognition</b>
-                  <span>Fills a character spec from a reference image. Needs a vision model.</span>
+                  <span>Reads a reference image into a character spec.</span>
                 </span>
                 <span class="tick" aria-hidden="true"><PhCheck /></span>
               </label>

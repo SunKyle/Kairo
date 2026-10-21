@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { strToU8, zipSync } from 'fflate'
 import {
   CHARACTER_VIEWS,
   CHAT_PHOTO_QUALITY,
   FREE_SIZES,
   REF_IDENTITY_ONLY,
+  chatStream,
   acceptableSize,
   asConfigKind,
   characterViewPrompt,
@@ -45,6 +46,10 @@ function cfg(id: string, kind?: ApiConfig['kind']): ApiConfig {
   return { id, name: id, baseUrl: 'https://example.com/v1', apiKey: 'k', model: 'm', kind }
 }
 
+/* 这个文件里唯一会碰 fetch 的一组(见文件末尾)。放在顶上统一收口 ——
+   忘了还原会把后面所有用例都换成"没有网络"的世界 */
+afterEach(() => vi.unstubAllGlobals())
+
 describe('imageConfigGap / imageConfigReady · 出图可用性的唯一判法', () => {
   /* 这是"能不能画一张图"的单点真值 —— 生成前的拦截、对话发图协议的按需注入(chat.js
      的 canDraw)、以及任何"能不能发图"的指示灯都走它。判法一旦分叉,就会出现"这里说
@@ -54,9 +59,9 @@ describe('imageConfigGap / imageConfigReady · 出图可用性的唯一判法', 
     expect(imageConfigReady(cfg('a'))).toBe(true)
   })
 
-  it('缺 baseUrl → 一句"没配出图接口"、不 ready', () => {
+  it('缺 baseUrl → 点名哪条配置、缺哪一格、不 ready', () => {
     const noBase = { ...cfg('a'), baseUrl: '' }
-    expect(imageConfigGap(noBase)).toContain('No image API')
+    expect(imageConfigGap(noBase)).toContain('"a" is missing its Base URL')
     expect(imageConfigReady(noBase)).toBe(false)
   })
 
@@ -67,7 +72,7 @@ describe('imageConfigGap / imageConfigReady · 出图可用性的唯一判法', 
   })
 
   it('null / undefined 也当"没配",不抛', () => {
-    expect(imageConfigGap(null)).toContain('No image API')
+    expect(imageConfigGap(null)).toContain('Add an Image generation model')
     expect(imageConfigReady(undefined)).toBe(false)
   })
 
@@ -1001,5 +1006,51 @@ describe('readCharacterZip · 场景串完整读回来', () => {
       })
     )
     expect(rows[0].chat?.messages[0].photoFrame).toBeUndefined()
+  })
+})
+
+/* 发图频率是设置页里的一档倾向(见 lib/prefs)。服务端**缺省就是 normal**,
+   所以这一层只在 rare / often 时把字段带上去 —— 少一个字段,就少一处
+   "两边默认值要对齐"的暗礁。 */
+describe('chatStream · 发图频率随请求走', () => {
+  function captureBodies(): Array<Record<string, unknown>> {
+    const bodies: Array<Record<string, unknown>> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+        return new Response('{"done":true}\n', { status: 200 })
+      })
+    )
+    return bodies
+  }
+
+  async function send(photoFrequency?: 'rare' | 'normal' | 'often'): Promise<Record<string, unknown>> {
+    const bodies = captureBodies()
+    await chatStream({
+      character: {
+        name: 'A',
+        identity: '',
+        outfit: '',
+        marks: '',
+        persona: { language: '', traits: '', voice: '', address: '', boundaries: '', samples: '' }
+      },
+      messages: [{ role: 'user', content: 'hi' }],
+      memory: '',
+      cfg: cfg('chat'),
+      photoFrequency,
+      onDelta: () => {}
+    })
+    return bodies[0]
+  }
+
+  it('normal / 没设时不发这一位(服务端缺省就是 normal)', async () => {
+    expect((await send()).photoFrequency).toBeUndefined()
+    expect((await send('normal')).photoFrequency).toBeUndefined()
+  })
+
+  it('rare / often 显式带上', async () => {
+    expect((await send('rare')).photoFrequency).toBe('rare')
+    expect((await send('often')).photoFrequency).toBe('often')
   })
 })

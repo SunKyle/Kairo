@@ -81,6 +81,12 @@ describe('同步范围 · 与源码里的写入点保持一致', () => {
        另一个标签页拨了跟着一起变反而突兀,所以不同步 */
     SHOW_THINK_KEY: { key: 'kimage.showThink', synced: false },
     SHOW_ACT_KEY: { key: 'kimage.showAct', synced: false },
+    /* 出图偏好(见 lib/prefs.ts 的 savedPhotoDirector/savedPhotoFrequency)。
+       与上面几个同一类:摄影指导开关、发图频率都是"这台设备上这个人想要
+       什么样的图",不是一份会被整份覆盖写的数据目录 —— 另一个标签页拨了
+       跟着变反而突兀,所以不进 SYNC_KEYS */
+    PHOTO_DIRECTOR_KEY: { key: 'kimage.photoDirector', synced: false },
+    PHOTO_FREQUENCY_KEY: { key: 'kimage.photoFrequency', synced: false },
     /* 场景位(见 lib/prefs.ts 的 sceneModeFor)。它是"这一段对话此刻在不在场景里"的
        状态位,按 charId 分条存在同一把键里。每次保存先重读盘上那份再合并单个角色,
        两个标签页各切各的不会互相覆盖 —— 与相处偏好同一条理由,不进 SYNC_KEYS */

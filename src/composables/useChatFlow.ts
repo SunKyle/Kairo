@@ -21,8 +21,9 @@ import {
 import { stopSpeaking } from '../lib/speech'
 import { contextText, withLayerMarkers } from '../lib/chatContext'
 import { effectiveLayer } from '../lib/messageLayers'
-/* 相处偏好:按角色读出来摊成 system 里那几行"希望被怎么对待"(见 lib/prefs) */
-import { interactionGuidanceFor, sceneModeFor } from '../lib/prefs'
+/* 相处偏好与出图偏好:按角色读出来摊成 system 里那几行"希望被怎么对待",
+   以及设置页 Photos 那一档发图频率(见 lib/prefs) */
+import { interactionGuidanceFor, savedPhotoFrequency, sceneModeFor } from '../lib/prefs'
 /* 心理层次扇出:把带 `[think]`/`[act]` 区域标记的一轮拆成多条带 layer 的消息
    (见 lib/messageLayers 与 doc/对话体验.md,脊柱 A/B)。
    hasLayerMarkers 是那道"普通一轮一个字节都不动"的闸。 */
@@ -67,7 +68,7 @@ function metaIssueNote(issue: string): string {
       warnedMetaTool = true
       return (
         'That model did not use tool calling, so the mood, picture and shared link for this reply are missing. ' +
-        'Choose a model with function calling (for example deepseek-flash or deepseek-v4-pro) in API settings.'
+        'Choose a model with function calling (for example deepseek-flash or deepseek-v4-pro) in AI connections.'
       )
     case 'invalid_arguments':
       return (
@@ -273,17 +274,17 @@ async function runChat(id: string) {
   const cfg = chatConfig.value
   if (!c || chatBusy.value[id]) return
   if (!cfg) {
-    notice.value = 'Add a chat model in API settings before chatting.'
+    notice.value = 'Add a Role chat model in AI connections first.'
     return
   }
   /* **有配置 ≠ 配全了**。少了模型名就是一条发不出请求的配置 ——
      而它在设置页里照样顶着「Current」,界面这边也一直是可用的样子。
-     不拦的话请求会一路走到服务端,由它回一句 "Set a text model in API settings first":
+     不拦的话请求会一路走到服务端,由它回一句 "Add a Role chat model in AI connections first":
      那句话既没说是哪条配置,也和用户看到的界面矛盾(他明明配了一条)。
      所以在这里就说清楚是**哪一条**、缺的是**哪一样**(与对话页那块提示同一件事) */
   const gap = configGap(cfg)
   if (gap) {
-    notice.value = `"${cfg.name || 'The chat model'}" is missing its ${gap} — set it in API settings.`
+    notice.value = `"${cfg.name || 'The Role chat model'}" is missing its ${gap} — fix it in AI connections.`
     return
   }
 
@@ -296,9 +297,16 @@ async function runChat(id: string) {
      ② withLayerMarkers —— 把"想/做"那几条重新裹上 `[think]`/`[act]` 区域标记再发。
         库里它们已按层次分成一条条,若不回裹,下一轮模型看到的是一串**都说出口的话**,
         会把心里话当台词接、把旁白当台词接。say 原样通过,普通一轮一个字节都不动。 */
-  const context = (chatMessages.value[id] || [])
-    .slice(-CHAT_WINDOW)
+  const windowMessages = (chatMessages.value[id] || []).slice(-CHAT_WINDOW)
+  const context = windowMessages
     .map((m) => ({ role: m.role, content: withLayerMarkers(contextText(m), effectiveLayer(m)) }))
+  /* 这一窗口里发过的卡。**不进正文**,由服务端拼成 system 里的一段简报 ——
+     写进助手正文的那行括号会被模型当成自己写过的台词照抄,于是只写字、
+     不调工具(实测;见 lib/chatContext 与 server/chatNotes.js 开头) */
+  const shares = windowMessages
+    .filter((m) => m.attachment)
+    .slice(-8)
+    .map((m) => ({ role: m.role, attachment: m.attachment! }))
   // 最后一句必须是用户说的,否则这一轮本来就不该发
   if (!context.length || context[context.length - 1].role !== 'user') return
 
@@ -323,7 +331,11 @@ async function runChat(id: string) {
      上面那道闸只管对话那条,这里是第二条 */
   const visionGap = configGap(useCfg)
   if (visionGap) {
-    notice.value = `The vision model "${useCfg.name || 'untitled'}" is missing its ${visionGap} — set it in API settings.`
+    /* 没有识图配置时这一轮借的是对话那条(见上面 useCfg),别把它叫成
+       "Image recognition model" —— 缺的那一格在对话配置里,话就得照着它说 */
+    const label =
+      useCfg.name || (visionConfig.value ? 'The Image recognition model' : 'The Role chat model')
+    notice.value = `"${label}" is missing its ${visionGap} — fix it in AI connections.`
     return
   }
   let images: string[] | undefined
@@ -417,6 +429,8 @@ async function runChat(id: string) {
     const out = await chatStream({
       character: chatPayloadOf(c),
       messages: context,
+      /* 这一窗口里发过的卡,给服务端拼 system 简报用。空数组就不占请求体 */
+      shares: shares.length ? shares : undefined,
       /* 长期记忆随请求带上。它是"这一整段对话的状态",
          与角色资料分开传 —— 同一个角色换一段对话,记忆不该跟着走 */
       memory: chatSummary.value[id]?.text || '',
@@ -451,6 +465,10 @@ async function runChat(id: string) {
          system 里注入那 ≈930 token 的发图协议:配不出图就不注入,既不烧 token、也不引着
          模型写画不出来的 [photo:] 标签。缺省(手搓请求不传)按"能画"处理,不改老行为 */
       canDraw: imageReady.value,
+      /* **发图频率的倾向**(设置页 Photos)。发请求这一刻现读 —— 改完下一轮就生效。
+         它只改服务端发图说明第一段的口吻,是 lean 不是 quota:没有 N 轮拦截,
+         模型仍然按"这张图是不是这句话的重点"自己决定(见 doc/角色出图.md §4.1.2) */
+      photoFrequency: savedPhotoFrequency(),
       images,
       lastAt,
       cfg: useCfg,
@@ -923,14 +941,14 @@ async function regenerateChat(id: string) {
   if (!c) return
   const cfg = chatConfig.value
   if (!cfg) {
-    notice.value = 'Add a chat model in API settings before chatting.'
+    notice.value = 'Add a Role chat model in AI connections first.'
     return
   }
   /* 与 runChat 同一道闸:缺字段的配置发不出请求,而这条路上后果更重 ——
      旧回复已经被删了,补不回来(见上面那段的取舍) */
   const gap = configGap(cfg)
   if (gap) {
-    notice.value = `"${cfg.name || 'The chat model'}" is missing its ${gap} — set it in API settings.`
+    notice.value = `"${cfg.name || 'The Role chat model'}" is missing its ${gap} — fix it in AI connections.`
     return
   }
   const list = chatMessages.value[id] || []
@@ -975,7 +993,7 @@ function stopChat(id: string) {
  * - **在用的一条没配全**(典型是缺模型名)→ 直接开**它**的编辑表单。
  *   这时"去看列表"只会让他再找一遍:他手里那条就顶着 Current,而问题就在那一格里;
  * - 已经有专配的对话配置 → 去看列表(点它多半是想换一条);
- * - 还没有(用药丸上那句 `from enhancing` 认出来)→ 直接开一张「用途 = 对话」的空表单。
+ * - 还没有(用借用状态认出来)→ 直接开一张「用途 = 对话」的空表单。
  *   这才是这条路最常见的用法:用户点它的动机就是"配一条自己的"。
  *
  * 空表单给的是空白草稿而不是某家预设:填哪家只有用户知道,

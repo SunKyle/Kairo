@@ -9,6 +9,8 @@
    用户向的在前、技术向的在后(PRD §5.6 把接口那类归进"其他管理入口",
    而 §11.12 的示例导航里"外观"排在最后 —— 顺序本身不是硬要求,
    这里按"这一页的主体是用户自己的设置"来排)。
+   Photos 紧挨着 Getting along:两区都在回答"它跟你相处时是什么样",
+   只是前者管全部角色、后者按角色分条。
    AI connections 排在最后一名,但它是**唯一有引导入口**的一区:
    对话页那些"先配一个模型"的提示都直接跳到它(见 App 的 openChatConfigSettings)。
 
@@ -21,7 +23,7 @@
    -------------------------------------------------------------------- */
 
 /** 设置页里的分区。key 同时也是地址栏里的那一段(见 lib/router 的说明) */
-export type SettingsSection = 'appearance' | 'interaction' | 'memory' | 'api'
+export type SettingsSection = 'appearance' | 'interaction' | 'photos' | 'memory' | 'api'
 
 export interface SettingsSectionMeta {
   key: SettingsSection
@@ -39,6 +41,11 @@ export const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
     key: 'interaction',
     label: 'Getting along',
     hint: 'How each character treats you in Chat. Per character.'
+  },
+  {
+    key: 'photos',
+    label: 'Photos',
+    hint: 'How often they send pictures, and how each one gets planned.'
   },
   {
     key: 'memory',

@@ -530,8 +530,8 @@ const nothingAtAll = computed(() => props.memories.length === 0)
             </button>
           </div>
           <p v-if="activeGroup.isCharacter && !canExtract" class="look-warn">
-            Set up a chat model first — this re-reads the recent messages with the same model your
-            character talks with.
+            Add a Role chat model in AI connections first — this re-reads recent messages with the
+            same model your character talks with.
           </p>
 
           <!-- 对话简报(Briefing)。只在选中某个角色、且它确实压过一段纪要时出现。

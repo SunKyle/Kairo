@@ -141,13 +141,3 @@ export function coerceChatAttachment(v: unknown): ChatAttachment | undefined {
     ...(preview ? { preview } : {})
   }
 }
-
-/** 拼给模型看的那一行。**只活在请求里**，消息本身一个字不动 */
-export function attachmentContextLine(att: ChatAttachment): string {
-  if (att.kind === 'music') {
-    const artist = att.subtitle ? ` by ${att.subtitle}` : ''
-    const link = att.url ? `: ${att.url}` : ''
-    return `shared a song — "${att.title}"${artist}${link}`
-  }
-  return `shared a link — "${att.title}": ${att.url}`
-}

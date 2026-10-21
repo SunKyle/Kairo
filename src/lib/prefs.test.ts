@@ -8,7 +8,11 @@ import {
   loadInteractionPrefsOf,
   saveInteractionPrefsOf,
   saveImmersive,
-  savedImmersive
+  savePhotoDirector,
+  savePhotoFrequency,
+  savedImmersive,
+  savedPhotoDirector,
+  savedPhotoFrequency
 } from './prefs'
 import type { ComfortMode } from '../types'
 
@@ -67,6 +71,47 @@ describe('沉浸模式的偏好', () => {
     vi.stubGlobal('localStorage', undefined)
     expect(savedImmersive()).toBe(false)
     expect(() => saveImmersive(true)).not.toThrow()
+  })
+})
+
+/* ===== 出图偏好(设置页 Photos) ======================================
+   两条默认值都必须"等于没做这个设置之前的样子":
+   指导是开着(每张图本来就会多跑一跳),频率是 normal(原来那句劝它少发的口吻)。
+   否则升级本身就会替用户改行为 —— 而设置页上并没有人点过任何东西。 */
+describe('出图偏好', () => {
+  it('摄影指导没设过时是开;存过 0 之后才关', () => {
+    const ls = fakeStorage()
+    vi.stubGlobal('localStorage', ls)
+    expect(savedPhotoDirector()).toBe(true)
+    savePhotoDirector(false)
+    expect(savedPhotoDirector()).toBe(false)
+    expect(ls.dump()['kimage.photoDirector']).toBe('0')
+    savePhotoDirector(true)
+    expect(savedPhotoDirector()).toBe(true)
+  })
+
+  it('频率没设过时是 normal;三档存得回来', () => {
+    vi.stubGlobal('localStorage', fakeStorage())
+    expect(savedPhotoFrequency()).toBe('normal')
+    savePhotoFrequency('rare')
+    expect(savedPhotoFrequency()).toBe('rare')
+    savePhotoFrequency('often')
+    expect(savedPhotoFrequency()).toBe('often')
+    savePhotoFrequency('normal')
+    expect(savedPhotoFrequency()).toBe('normal')
+  })
+
+  it('盘上是别的值(旧版本 / 手改)时落回 normal,不猜', () => {
+    vi.stubGlobal('localStorage', fakeStorage({ 'kimage.photoFrequency': 'always' }))
+    expect(savedPhotoFrequency()).toBe('normal')
+  })
+
+  it('存取被禁 / 没有 localStorage 时回默认且不抛', () => {
+    vi.stubGlobal('localStorage', undefined)
+    expect(savedPhotoDirector()).toBe(true)
+    expect(savedPhotoFrequency()).toBe('normal')
+    expect(() => savePhotoDirector(false)).not.toThrow()
+    expect(() => savePhotoFrequency('often')).not.toThrow()
   })
 })
 

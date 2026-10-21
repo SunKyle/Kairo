@@ -241,7 +241,7 @@ async function draftWithAI() {
   if (!text || drafting.value) return
   const cfg = deps.textConfig()
   if (!cfg || !cfg.model || !cfg.baseUrl) {
-    draftError.value = 'Set up prompt enhancing in API settings first.'
+    draftError.value = 'Add a Prompt enhancing model in AI connections first.'
     return
   }
   drafting.value = true
@@ -255,14 +255,14 @@ async function draftWithAI() {
     // 一项都没解出来 = 模型没按那个格式回。如实说,别假装已经填好了
     if (!Object.values(d.fields).some((s) => s.trim())) {
       draftError.value =
-        'The model did not return a usable spec. Fill the fields by hand, or try another text model.'
+        'The model did not return a usable spec. Fill the fields by hand, or try another Prompt enhancing model.'
       return
     }
     applyDraft(d)
   } catch (e) {
     if (seq !== draftSeq) return
     draftError.value =
-      e instanceof Error && e.message ? e.message : 'Could not draft the character'
+      e instanceof Error && e.message ? e.message : 'The Prompt enhancing model returned no draft.'
   } finally {
     // 只有还是自己那一次才复位:新一轮已经在跑时,别把它的 loading 关掉
     if (seq === draftSeq) drafting.value = false
@@ -304,7 +304,7 @@ async function draftFromImage() {
   if (!src || visionBusy.value) return
   const cfg = deps.visionConfig()
   if (!cfg || !cfg.model || !cfg.baseUrl) {
-    visionError.value = 'Set up an image-recognition config in API settings first.'
+    visionError.value = 'Add an Image recognition model in AI connections first.'
     return
   }
   visionBusy.value = true
@@ -316,7 +316,7 @@ async function draftFromImage() {
     if (seq !== visionSeq) return
     if (!Object.values(d.fields).some((s) => s.trim())) {
       visionError.value =
-        'The model did not return a usable spec. Fill the fields by hand, or try another vision model.'
+        'The model did not return a usable spec. Fill the fields by hand, or try another Image recognition model.'
       return
     }
     applyDraft(d)
@@ -324,7 +324,7 @@ async function draftFromImage() {
   } catch (e) {
     if (seq !== visionSeq) return
     visionError.value =
-      e instanceof Error && e.message ? e.message : 'Could not read this image'
+      e instanceof Error && e.message ? e.message : 'The Image recognition model returned no spec.'
   } finally {
     // 只有还是自己那一次才复位:重新挑过图时别把新一轮的 loading 关掉
     if (seq === visionSeq) visionBusy.value = false

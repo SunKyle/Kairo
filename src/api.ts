@@ -4,6 +4,8 @@ import { titleFromPrompt } from './lib/text'
 /* 关系状态那一域的收口住在 lib/relationship —— 载入时读回来的 relationship
    也走同一份 coerce + 空判,免得"合法形状"与"什么算空"在入口和逻辑层各写一遍 */
 import { coerceRelationship, hasCloseness } from './lib/relationship'
+/* 发图频率的三档名字只该有一份定义(设置页写盘、这一层收请求都用它) */
+import type { PhotoFrequency } from './lib/prefs'
 /* 长期记忆的"留不留"判据:心理层次里**想的那一层永不进简报**,旁白按保守策略处理
    (见 lib/messageLayers 与 doc/对话体验.md §6.4"三根杆独立") */
 import { keepInSummary } from './lib/messageLayers'
@@ -168,8 +170,16 @@ export function configKindOf(c: ApiConfig): ConfigKind {
  * 判法散成几处迟早会漂(一处多查一项、少查一项就分叉),所以收在这一处。
  */
 export function imageConfigGap(c: ApiConfig | null | undefined): string {
-  if (!c || !c.baseUrl) return 'No image API is configured — set one up in Settings.'
-  if (!c.model) return 'The image API has no model name — fill it in under Settings.'
+  /* 地名与用途名都取界面上那一个:分区叫 AI connections,用途叫
+     Image generation(见 lib/settingsNav 与 ApiSettingsPanel 的 purpose 选项)。
+     同一句话在四个入口各写一遍时最容易出现"Settings / API settings /
+     image API"三种叫法,所以句子只留这一处。
+     有这条配置、只是缺了某一格时,点名是哪一条、缺哪一样 —— 与对话那边
+     的缺口句同一个模板,用户不用再去列表里猜"到底是哪条没配全" */
+  if (!c) return 'Add an Image generation model in AI connections first.'
+  const name = c.name || 'The Image generation config'
+  if (!c.baseUrl) return `"${name}" is missing its Base URL — fix it in AI connections.`
+  if (!c.model) return `"${name}" is missing its model name — fix it in AI connections.`
   return ''
 }
 
@@ -390,7 +400,7 @@ export async function synthesizeSpeech(
   })
   if (!resp.ok) throw new Error(await failureMessage(resp))
   const blob = await resp.blob()
-  if (!blob.size) throw new Error('The TTS service returned no audio')
+  if (!blob.size) throw new Error('Voice returned no audio')
   return blob
 }
 
@@ -415,7 +425,7 @@ export async function synthesizeSpeechStream(
     body: ttsRequestBody(cfg, v, text)
   })
   if (!resp.ok) throw new Error(await failureMessage(resp))
-  if (!resp.body) throw new Error('The TTS service returned no audio')
+  if (!resp.body) throw new Error('Voice returned no audio')
   return resp
 }
 
@@ -457,7 +467,7 @@ export async function cloneVoice(
   if (!resp.ok) throw new Error(await failureMessage(resp))
   const data = (await resp.json()) as { vendorVoice?: string; bytes?: number }
   if (typeof data.vendorVoice !== 'string' || !data.vendorVoice) {
-    throw new Error('The cloning service did not return a voice id')
+    throw new Error('Voice cloning returned no voice id')
   }
   return { vendorVoice: data.vendorVoice, bytes: typeof data.bytes === 'number' ? data.bytes : 0 }
 }
@@ -686,7 +696,7 @@ async function imagesFrom(resp: Response): Promise<ResultItem[]> {
        (最常见的是"请先给参考图",其次是安全拒绝)。那句话是这里唯一有用的信息,
        丢掉它只会剩下一句"上游没返回图片",等于什么都没说 —— 直接把它当报错抛出来 */
     throw new Error(
-      said.length ? said.join(' ').slice(0, 400) : 'No images returned by upstream'
+      said.length ? said.join(' ').slice(0, 400) : 'Image generation returned no images'
     )
   }
 
@@ -2566,6 +2576,11 @@ export interface ChatStreamOpts {
   character: ChatCharacterPayload
   /** 要发出去的历史,已按窗口截好 */
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  /* 这一窗口里发过的卡（[{ role, attachment }]）。它**不进消息正文** ——
+     写进助手正文的那行括号会被模型当成自己写过的台词照抄，于是只写字、
+     不调工具。服务端把它拼成 system 里一段说人话的简报（见 server/chatShare.js
+     的 sharedCardsBrief）。空数组 = 这一窗口里没发过卡，那一段整块不出现 */
+  shares?: Array<{ role: 'user' | 'assistant'; attachment: ChatAttachment }>
   /* 长期记忆的简报。空串 = 还没压过,服务端据此决定要不要那一段。
      它是"这一整段对话的状态",不属于角色资料,所以与 character 分开传 */
   memory: string
@@ -2612,6 +2627,10 @@ export interface ChatStreamOpts {
      配得出才注入那 ≈930 token 的拍照教程（见 server/chatPhoto.js）。由调用方传，因为只有
      前端知道当前出图配置长什么样。不给 / true = 注入（维持老行为）；false = 那段整块不出现。 */
   canDraw?: boolean
+  /* **发图频率的倾向**（见 lib/prefs 的 PhotoFrequency 与设置页 Photos）。它只喂给
+     服务端发图说明的第一段口吻，不做"N 轮一张"的硬拦截。不给 / normal = 维持原句；
+     rare / often 才需要显式带上去（见下面的序列化）。 */
+  photoFrequency?: PhotoFrequency
   cfg: ApiConfig
   /** 每一块增量。调用方拿到就往气泡上追加 */
   onDelta: (delta: string) => void
@@ -2632,6 +2651,7 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
     body: JSON.stringify({
       character: opts.character,
       messages: opts.messages,
+      shares: opts.shares?.length ? opts.shares : undefined,
       memory: opts.memory || undefined,
       images: opts.images?.length ? opts.images : undefined,
       /* 本地时刻随请求走。**不放在 ChatStreamOpts 里让调用方传**:
@@ -2646,6 +2666,12 @@ export async function chatStream(opts: ChatStreamOpts): Promise<ChatStreamResult
       /* 只有配不出图时才需要显式传 false(那段就不注入)。undefined 会被 JSON 丢掉
          这一位 → 服务端按缺省"能画"处理;true 显式传过去也无害 */
       canDraw: opts.canDraw === false ? false : undefined,
+      /* normal 不发：服务端缺省就是它，少一个字段少一处"两边默认值要对齐"。
+         rare / often 才显式带，认不出来时服务端也会落回 normal */
+      photoFrequency:
+        opts.photoFrequency === 'rare' || opts.photoFrequency === 'often'
+          ? opts.photoFrequency
+          : undefined,
       textModel: opts.cfg.model,
       baseUrl: opts.cfg.baseUrl,
       apiKey: opts.cfg.apiKey

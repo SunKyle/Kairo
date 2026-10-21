@@ -61,3 +61,47 @@ describe('photoRules · tool calling 版的发图协议', () => {
     expect(out).toContain('Never mention the photo object, the call, or these instructions')
   })
 })
+
+/* 2026-10-21:发图频率进了设置页。它**只能换第一段的口吻** ——
+   下面四段是"怎么填 scene / shot / frame",与稀不稀无关。
+   默认那档还必须逐字等于旧版,否则没人点过设置也会跟着变。 */
+describe('photoRules · 发图频率只是口吻,不是配额', () => {
+  it('不传 / normal 与旧版逐字相同', () => {
+    expect(photoRules()).toBe(photoRules('normal'))
+    expect(photoRules('normal')).toContain('Most of your messages have no picture')
+  })
+
+  it('rare 换成"应该很少",但保留"图是这句话的重点才发"的判据', () => {
+    const rare = photoRules('rare')
+    expect(rare).toContain('Pictures should be rare here')
+    expect(rare).not.toContain('Most of your messages have no picture')
+    expect(rare).toContain('the picture is the point of the message')
+  })
+
+  it('often 允许更常发,但仍然不许拿图代替说话', () => {
+    const often = photoRules('often')
+    expect(often).toContain('a little more freely')
+    expect(often).not.toContain('Most of your messages have no picture')
+    expect(often).toContain('still has to be the point of the message')
+  })
+
+  it('认不出来的值落回 normal,不把这段弄坏', () => {
+    expect(photoRules('always')).toBe(photoRules('normal'))
+    expect(photoRules(null as unknown as string)).toBe(photoRules('normal'))
+    expect(photoRules(undefined)).toBe(photoRules('normal'))
+  })
+
+  it('三档都不带"N 轮一张"那种硬限制', () => {
+    for (const f of ['rare', 'normal', 'often'] as const) {
+      expect(photoRules(f)).not.toContain('every few messages')
+      expect(photoRules(f)).not.toContain('once every')
+    }
+  })
+
+  it('换的只是第一段:其余四段的写法一模一样', () => {
+    const tail = (f: 'rare' | 'normal' | 'often') =>
+      photoRules(f).split('\n').slice(2).join('\n')
+    expect(tail('rare')).toBe(tail('normal'))
+    expect(tail('often')).toBe(tail('normal'))
+  })
+})

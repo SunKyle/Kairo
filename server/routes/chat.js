@@ -10,6 +10,8 @@ import {
   safeFetch
 } from '../core.js'
 import { splitTags, stripStandaloneTags, tailHold } from '../chatTags.js'
+/* 转写旁白的清理:入口(历史)与出口(流式正文)各一道。见 chatNotes.js 开头 */
+import { noteHold, stripShareNotes, stripTranscriptNotes } from '../chatNotes.js'
 import {
   META_TOOL_NAME,
   looksLikeToolUnsupported,
@@ -27,7 +29,7 @@ import { guidanceSection } from '../chatGuidance.js'
 import { memoryBrief, memoryBriefSection, memorySection } from '../chatMemory.js'
 import { photoRules } from '../chatPhoto.js'
 import { priorityRules } from '../chatPriority.js'
-import { shareRules } from '../chatShare.js'
+import { shareRules, sharedCardsBrief } from '../chatShare.js'
 import { relationshipSection } from '../relationship.js'
 import { layerRules } from '../chatLayers.js'
 
@@ -71,6 +73,7 @@ const CHAT_META_RULE = `Ending a message:
 - After you finish writing the reply, call the ${META_TOOL_NAME} tool exactly once. It is not part of the message: never write the metadata, the tool name, or a JSON object into the reply text, and never mention the call to the user.
 - "mood" is one lowercase English word for how you feel as you send this message. Pick the word that actually fits, for example: arrogant, amused, wary, bored, angry, tired, warm, cold, proud, uneasy, delighted. Never a phrase, never more than one word.
 - If you are sending a picture and the tool offers a "photo" field, include it. If you are passing along a link or a song, include the "attachment" object. Fill them as described in the tool definition.
+- Parentheses such as "(a song was shared — …)", "(a link was shared — …)", "(sent a photo)", "(sent a card)" and "(said nothing)" are transcript notes, never your words. If an older message contains one, do not copy it: never type one into a reply, and never describe a card in brackets or announce it. If you want to hand something over now, put it in the tool call and let the app draw the card.
 - Never mention this call, comment on it, or explain it to the user. It is a technical envelope, not something you say.`
 
 /** 换行与连续空白收敛成单个空格。这些值在表单里是可换行的 textarea,
@@ -142,8 +145,11 @@ function chatOneLine(v, max = CHAT_FIELD_CHARS) {
  * 它只喂给分层产出纪律那一段(见 chatLayers.js):**开着才邀请 `[act]` 旁白**,关着时那段
  * 明确禁 act、只留 `[think]`。它是"信号灯跟着状态走、不跟着标签频率闪"的那个状态位 ——
  * 服务端不因此改变任何别的东西,也不解析标记本身(脊柱 A:扇出在前端)。
+ *
+ * photoFrequency 是设置页 Photos 里那一档发图倾向(rare / normal / often)，
+ * 只喂给 photoRules 的第一段口吻 —— 不是配额，服务端不数轮次、不拦调用。
  */
-function chatSystemPrompt(character, memory, time, mood, guidance, memories, relationship, sceneMode, canDraw) {
+function chatSystemPrompt(character, memory, time, mood, guidance, memories, relationship, sceneMode, canDraw, shares, photoFrequency) {
   const char = character && typeof character === 'object' ? character : {}
   const p = char.persona && typeof char.persona === 'object' ? char.persona : {}
 
@@ -235,6 +241,11 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
      与上面几段一样,空串时整段不出现 —— 用户一项都没表态,就不该有任何指导 */
   const guide = guidanceSection(guidance)
   if (guide) parts.push(guide)
+  /* 历史里发过的卡。**放在 system 而不是助手消息正文里**:正文里那行括号旁白
+     会被模型当成自己写过的台词照抄,于是只写字、不调工具(实测)。这里换成一段
+     说人话的清单,见 chatShare.js 的 sharedCardsBrief 与 chatNotes.js 开头 */
+  const cards = sharedCardsBrief(shares)
+  if (cards) parts.push(cards)
   /* 规则几段分开 push,顺序是有讲究的:**通用规则 → 发图说明 → 分享链接 → 元数据工具 → 分层纪律**。
 
      - 发图说明(chatPhoto.js)只在 **canDraw** 为真时注入。canDraw = 前端那条出图配置
@@ -260,7 +271,8 @@ function chatSystemPrompt(character, memory, time, mood, guidance, memories, rel
        把一轮扇成多条是前端 parseLayers 的活(脊柱 A)。photo/mood 则完全不走正文,
        由模型通过 tool calling 报给服务端(见 chatTools.js)。 */
   parts.push(CHAT_RULES)
-  if (canDraw) parts.push(photoRules())
+  /* 发图频率只换 photoRules 第一段的口吻(设置页 Photos,见 chatPhoto.js) */
+  if (canDraw) parts.push(photoRules(photoFrequency))
   parts.push(shareRules())
   parts.push(CHAT_META_RULE)
   parts.push(layerRules(sceneMode))
@@ -307,14 +319,20 @@ export function registerChatRoute(app) {
 app.post('/api/chat', rateLimit, async (req, res) => {
   const {
     character, messages, memory, memories, images, nowLocal, lastAt, mood,
-    guidance, relationship, sceneMode, canDraw: canDrawIn, textModel, baseUrl, apiKey
+    guidance, relationship, sceneMode, canDraw: canDrawIn, textModel, baseUrl, apiKey,
+    /* 历史里发过的卡（[{ role, attachment }]）。它只进 system 的一段简报，
+       绝不回填进助手消息正文 —— 那行括号会被模型照抄（见 chatNotes.js） */
+    shares,
+    /* 设置页 Photos 里的发图频率（见 src/lib/prefs 的 savedPhotoFrequency）。
+       认不出来（老前端 / 手搓请求）按 normal —— 与 canDraw 缺省按能画同一条退路 */
+    photoFrequency: photoFrequencyIn
   } = req.body || {}
 
   if (!baseUrl) {
-    return res.status(400).json({ error: 'Configure your Base URL first' })
+    return res.status(400).json({ error: 'The Role chat config has no Base URL — add one in AI connections.' })
   }
   if (!textModel) {
-    return res.status(400).json({ error: 'Set a text model in API settings first' })
+    return res.status(400).json({ error: 'Add a Role chat model in AI connections first.' })
   }
   /* 记忆也是外部输入(它由上游生成、经前端存了一圈再发回来)。这里只做**类型收口**,
      不再抢先 slice —— 长度那道限制(与截断标记)统一由 chatSystemPrompt 里的
@@ -327,6 +345,11 @@ app.post('/api/chat', rateLimit, async (req, res) => {
      只有显式传 false 才关掉 —— 老前端、手搓请求不传这一位时,维持原行为,
      不该因为没带这个字段就悄悄把发图能力从提示词里摘掉 */
   const canDraw = canDrawIn !== false
+
+  /* 发图频率是**提示词倾向**，不是配额：这里只收口成那三个词，
+     不数轮次、不拦调用（2026-10-03 的产品决定，见 doc/角色出图.md §4.1.2） */
+  const photoFrequency =
+    photoFrequencyIn === 'rare' || photoFrequencyIn === 'often' ? photoFrequencyIn : 'normal'
 
   /* 时间那一块。**认不出来就整块丢掉**,不报错 ——
      它是锦上添花的一层(角色不知道时间也能聊),而手搓的请求、
@@ -341,7 +364,13 @@ app.post('/api/chat', rateLimit, async (req, res) => {
       (m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string'
     )
     .slice(-CHAT_MAX_MESSAGES)
-    .map((m) => ({ role: m.role, content: samePlaceholder(m) }))
+    .map((m) => {
+      /* 旧版前端把附件/图片的转写旁白补在**助手正文**里,模型会把它当成
+         自己写过的台词照抄(见 chatNotes.js 开头)。入口先清掉 —— 只清助手
+         消息:用户自己打的字,哪怕长得像旁白,也不该被我们改 */
+      const content = m.role === 'assistant' ? stripShareNotes(m.content) : m.content
+      return { role: m.role, content: samePlaceholder({ ...m, content }) }
+    })
   /* 最后一条必须是用户说的:重新生成时前端会先把那条助手消息删掉再重发,
      所以到这里还落在 assistant 上,说明这个请求本来就不该发 */
   if (!history.length || history[history.length - 1].role !== 'user') {
@@ -403,7 +432,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
      这里没这个问题,所以可以算好一份直接用 */
   const body = JSON.stringify({
     model: textModel,
-    messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood, guidance, memories, relationship, !!sceneMode, canDraw) }, ...history],
+    messages: [{ role: 'system', content: chatSystemPrompt(character, memoryText, time, mood, guidance, memories, relationship, !!sceneMode, canDraw, shares, photoFrequency) }, ...history],
     temperature: CHAT_TEMPERATURE,
     max_tokens: CHAT_MAX_TOKENS,
     stream: true,
@@ -454,12 +483,21 @@ app.post('/api/chat', rateLimit, async (req, res) => {
     }
   }
 
-  /* 新协议下正文不需要扣尾:元数据走 tool_calls,与正文是两条信道。
-     这一截尾巴只剩**清理**用途 —— 模型还可能从历史习惯里漏出旧方括号标签,
-     半截 `[photo:` 闪给用户看很难看。tailHold / stripStandaloneTags 保留,
-     但**不再从里面取意图**:旧标签不是新协议,不能悄悄顶替 tool call。
+  /* 正文分两处扣尾,都是**清理**用途,不再从里面取意图:
+     1. 旧方括号标签(模型可能从历史习惯里漏出 `[photo:…]`),半截闪给用户很难看;
+     2. 转写旁白(`(a song was shared — …)` 等)。模型见过旧版本回放里的这一行,
+        会把它当台词照抄 —— 出口这里整行丢掉,并且**只清、不解析**:
+        它绝不能顶替一次工具调用(见 chatNotes.js)。
      声明在 try 外面是有意的:中途 Stop 或上游断流时,那截尾巴也得放出去 */
   let tail = ''
+  /* 真正发出去过正文没有。**不是"收到过 delta"** —— 只收到一行转写旁白
+     的轮次,清完一个字不剩,那仍算"没话说",不能回一条空气泡 */
+  let gotAny = false
+  const emitText = (text) => {
+    if (!text) return
+    gotAny = true
+    sendEvent({ delta: text })
+  }
   /* 模型这一轮调过的工具。key 是上游给的 index;参数是逐片拼起来的,
      所以必须一路攒到 [DONE] 才能 parse(见 chatTools.js) */
   const toolCalls = newToolCalls()
@@ -469,7 +507,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
   /* 收尾那一下:把尾巴里该发的字发出去,把工具给的元数据摊成旧字段 */
   const flushTail = (meta) => {
     const { text } = splitTags(tail, who)
-    if (text) sendEvent({ delta: text })
+    emitText(stripTranscriptNotes(text))
     tail = ''
     return {
       mood: meta?.mood || '',
@@ -542,7 +580,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
           detail:
             `${detail} — Character chat now sends message metadata through tools. ` +
             'Pick a model with function calling (for example deepseek-flash or deepseek-v4-pro), ' +
-            'or choose another model that supports tools in API settings.'
+            'or choose another model that supports tools in AI connections.'
         })
       }
       return res.status(upstream.status).json({
@@ -564,7 +602,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
         detail:
           `HTTP ${upstream.status} from ${PROD_LIKE ? targetUrl.host : target}` +
           (title ? ` (page title: ${title})` : '') +
-          '. The path is probably wrong — check the Base URL in API settings.'
+          '. The path is probably wrong — check the Base URL in AI connections.'
       })
     }
 
@@ -587,7 +625,7 @@ app.post('/api/chat', rateLimit, async (req, res) => {
     /* 上游一块读进来常常只到半行 —— 按最后一个 \n 切开,剩下半行等下一块拼上。
        少了这个缓冲,长回复里每隔几个词就会掉一次 JSON.parse */
     let buf = ''
-    let gotAny = false
+    /* gotAny 已在上面声明 —— 它跟着真正发出去的正文走,不是"收到过 delta" */
     /* 上游为什么停下:'stop' 是正常说完,'length' 是撞上了 max_tokens。
        它出现在最后一帧(那一帧的 delta 是空的,只带一个 finish_reason),
        所以得一路记着 —— 丢掉它等于把"说完了"和"额度用完了"混成同一件事 */
@@ -648,21 +686,21 @@ app.post('/api/chat', rateLimit, async (req, res) => {
           continue
         }
         if (!delta) continue
-        gotAny = true
-        /* 扣着尾巴发:只放出"不可能再变出旧标签"的那部分。
-           扣多少由 tailHold 按"最后一个没闭合的 [ "算 —— **不是按长度预留**:
-           标签上限是 400 字,按长度预留就意味着整整 400 多字不流式。
-           注意这里**只清理、不取意图**:旧标签不再能顶替 tool call。 */
+        /* 扣着尾巴发:只放出"不可能再变出旧标签 / 转写旁白"的那部分。
+           扣多少由 tailHold 按"最后一个没闭合的 [ "算、noteHold 按"末尾那行
+           是否像旁白"算 —— **不是按长度预留**:标签上限 400 字,按长度预留
+           就意味着整整 400 多字不流式。两个边界取更靠左的那个。
+           注意这里**只清理、不取意图**:旧标签与旁白都不能顶替 tool call。 */
         tail += delta
-        const release = tailHold(tail)
+        const release = Math.min(tailHold(tail), noteHold(tail))
         if (release > 0) {
-          /* 放出去之前先摘掉**独占一行的旧标签**。
-             尾巴那几枚由 tailHold 扣着、收尾时由 splitTags 清走;
-             能走到这里的是"被正文顶到中间去"的那几枚 —— 不摘的话
-             那枚 `[photo:…]` 会原样流给用户看(用户报过这个)。
+          /* 放出去之前先摘掉**独占一行的旧标签与转写旁白**。
+             尾巴里那几枚由两道 hold 扣着、收尾时再清一遍;能走到这里的是
+             "被正文顶到中间去"的那几枚 —— 不摘的话那枚 `[photo:…]`
+             或 `(a song was shared — …)` 会原样流给用户看(后者是用户报过的)。
              摘掉的意图**丢掉**:新协议只认 tool call。 */
           const cut = stripStandaloneTags(tail.slice(0, release), who)
-          if (cut.text) sendEvent({ delta: cut.text })
+          emitText(stripTranscriptNotes(cut.text))
           tail = tail.slice(release)
         }
       }

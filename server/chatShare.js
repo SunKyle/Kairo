@@ -15,6 +15,11 @@
    -------------------------------------------------------------------- */
 
 import { META_TOOL_NAME } from './chatTools.js'
+import { normalizeAttachment } from './chatAttachments.js'
+
+/* 最多交待几张最近的卡。窗口是 20 条消息，卡不会很多；设个上限是因为
+   这个字段来自前端，而入口没有鉴权 —— 不设上限就是一句免费放大的提示词 */
+const SHARED_CARDS_MAX = 8
 
 export function shareRules() {
   return `Sharing something with a message:
@@ -24,5 +29,35 @@ export function shareRules() {
 - A song needs no link to be shared: put the song title in "title" and the artist in "subtitle". Only add a "url" when its exact address is already in front of you — otherwise leave it out and just share the song.
 - "title" is what the thing is, in a few words, the way you would name it to a friend. Do not put the URL in the title.
 - Share at most one thing in a message, and only when the conversation actually calls for it. Do not turn every reply into a link or a playlist.
-- Write the message as something you would say. Do not announce the card ("here is a link", "playing this for you"), and never describe the attachment object to the user.`
+- Write the message as something you would say. Do not announce the card ("here is a link", "playing this for you"), and never describe the attachment object to the user. Never write a parenthetical like "(a song was shared — …)" or "(a link was shared — …)" yourself: a card exists only when it is sent through the tool, and you never narrate one as text.`
+}
+
+/**
+ * 历史里发过的卡 → system 里的一段简报。
+ *
+ * 为什么放在 system 而不是助手消息正文里：回放历史时若把 `(a song was
+ * shared — …)` 补进上一轮的正文，模型会把它当成自己写过的台词照抄，
+ * 宁可写字也不去调工具（实测；见 server/chatNotes.js 开头）。这里改用
+ * 一段**说人话**的清单，不写成括号模板 —— 越不像可复制的格式越好。
+ *
+ * shares 是前端带来的 `[{ role, attachment }]`，属于外部输入：
+ * 逐条过 normalizeAttachment，不合法的那条直接丢；最多交待最近 8 张。
+ */
+export function sharedCardsBrief(shares) {
+  if (!Array.isArray(shares) || !shares.length) return ''
+  const lines = []
+  for (const s of shares.slice(-SHARED_CARDS_MAX)) {
+    const att = normalizeAttachment(s && typeof s === 'object' ? s.attachment : null)
+    if (!att) continue
+    const who = s.role === 'user' ? 'The user' : 'You'
+    if (att.kind === 'music') {
+      const artist = att.subtitle ? ` by ${att.subtitle}` : ''
+      const link = att.url ? ` — ${att.url}` : ''
+      lines.push(`- ${who} put on a song: "${att.title}"${artist}${link}`)
+    } else {
+      lines.push(`- ${who} shared a link: "${att.title}" — ${att.url}`)
+    }
+  }
+  if (!lines.length) return ''
+  return `Cards already sent in this conversation (they are on screen; do not send the same card again, and do not describe them as text):\n${lines.join('\n')}`
 }

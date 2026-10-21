@@ -278,12 +278,12 @@ const chatReady = computed(() => !!props.chatConfig && !chatMissing.value)
    还没有专属配置;已经有专属配置时点它才只是回列表切一条 */
 const chatChipTip = computed(() =>
   !props.chatConfig
-    ? 'No chat model yet — add one in API settings'
+    ? 'No Role chat model yet — add one in AI connections'
     : !chatReady.value
-      ? `${chatModelName.value} is missing its ${chatMissing.value} — click to fix it in API settings`
+      ? `${chatModelName.value} is missing its ${chatMissing.value} — click to fix it in AI connections`
       : props.chatBorrowed
         ? `Using the Prompt enhancing model (${chatModelName.value}) — click to add a dedicated one`
-        : `${chatModelName.value} — click to change it in API settings`
+        : `${chatModelName.value} — click to change it in AI connections`
 )
 /* ⋮ 菜单里那一行模型的补充说明。**同一时刻只说一句**,按"最要紧的那一件"排:
    缺东西(发不出请求)> 借来的(能用,但不是它自己的)。
@@ -296,7 +296,7 @@ const chatModelNote = computed(() =>
     : !chatReady.value
       ? `missing its ${chatMissing.value}`
       : props.chatBorrowed
-        ? 'from enhancing'
+        ? 'Borrowed'
         : ''
 )
 
@@ -1409,15 +1409,15 @@ onBeforeUnmount(() => {
           <div v-if="!chatReady" class="compose-off">
             <PhSlidersHorizontal aria-hidden="true" />
             <template v-if="!chatConfig">
-              <span>Add a chat model in API settings to start talking.</span>
+              <span>Add a Role chat model in AI connections to start talking.</span>
               <!-- 点它直接开一张"用途 = 对话"的表单,不是先落到一串别的用途里挑 ——
                    这句话说的就是"去配一条对话模型",那就该一步到位 -->
-              <button class="ed-btn" @click="emit('configureChatModel')">Add a chat model</button>
+              <button class="ed-btn" @click="emit('configureChatModel')">Add a Role chat model</button>
             </template>
             <template v-else>
               <span>
-                <b>{{ chatModelName }}</b> is missing its {{ chatMissing }} — set it in API
-                settings to start talking.
+                <b>{{ chatModelName }}</b> is missing its {{ chatMissing }} — fix it in AI
+                connections to start talking.
               </span>
               <!-- 这一条就是"改那一份":主界面会把它的表单直接开出来,不用用户再去列表里找 -->
               <button class="ed-btn" @click="emit('configureChatModel')">

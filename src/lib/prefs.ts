@@ -31,6 +31,69 @@ export function saveImmersive(on: boolean): void {
   }
 }
 
+/* ===== 出图偏好(设置页的 Photos 分区) ================================
+   两项都是**这台设备上这个人怎么看待对话里的图**,与具体角色无关 ——
+   所以是全局的一条键,不像相处偏好那样按 charId 分条。
+
+   —— 为什么频率不是"N 轮一张" ——
+
+   2026-10-03 已经定过:发图频率该由对话本身决定,客户端不做"N 轮最多一张"
+   那种硬拦截(任何 N 都是替用户做判断,见 doc/角色出图.md §4.1.2)。
+   但"完全不可控"与"能调个倾向"不是一回事:这一项只改服务端发图说明里
+   那一段的口吻,模型仍然按"这张图是不是这句话的重点"自己决定。
+   所以它是**倾向**,不是配额 —— 关不掉发图,也不会保证第几张一定发。
+
+   —— 摄影指导 ——
+
+   它每张图多冒一次文本调用(见 useGeneration 的 withDirector),失败会退回
+   模板层。默认开 = 维持既有行为;**关掉只是省掉那一跳**,不是关掉出图。
+   与主题/沉浸同一条:存 localStorage 的 '1' / '0',不跨标签页同步,
+   所有函数都不抛异常(调用点在挂载路径与每次出图上)。
+   -------------------------------------------------------------------- */
+
+const PHOTO_DIRECTOR_KEY = 'kimage.photoDirector'
+const PHOTO_FREQUENCY_KEY = 'kimage.photoFrequency'
+
+/** 发图频率的三档。名字与 server/chatPhoto.js 的 photoRules 一一对应 ——
+ *  中间那档就是原来的写法,不是"多出来的一档" */
+export type PhotoFrequency = 'rare' | 'normal' | 'often'
+
+/** 摄影指导开没开。**没设过 = 开**(存量用户维持既有行为) */
+export function savedPhotoDirector(): boolean {
+  try {
+    return localStorage.getItem(PHOTO_DIRECTOR_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+export function savePhotoDirector(on: boolean): void {
+  try {
+    localStorage.setItem(PHOTO_DIRECTOR_KEY, on ? '1' : '0')
+  } catch {
+    /* 见上 */
+  }
+}
+
+/** 发图频率。**没设过 = normal**(与原来那句"大多数消息没有图"同义);
+ *  盘上是别的值(旧版本 / 手改)也落回 normal,不猜 */
+export function savedPhotoFrequency(): PhotoFrequency {
+  try {
+    const v = localStorage.getItem(PHOTO_FREQUENCY_KEY)
+    return v === 'rare' || v === 'often' ? v : 'normal'
+  } catch {
+    return 'normal'
+  }
+}
+
+export function savePhotoFrequency(v: PhotoFrequency): void {
+  try {
+    localStorage.setItem(PHOTO_FREQUENCY_KEY, v === 'rare' || v === 'often' ? v : 'normal')
+  } catch {
+    /* 见上 */
+  }
+}
+
 /* ===== 心理层次的展示开关与场景闸(见 doc/对话体验.md)====
    三根杆里"展示"这一根:think / act 各一个**全局**开关,只管界面上给不给看,
    **不回写记忆、也不回写喂模型的下一轮**(关掉展示 ≠ 删了事件 —— 设计 §5 那条硬规矩)。

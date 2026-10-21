@@ -324,6 +324,15 @@ async function main() {
         systemOf().includes('Only share a URL that already appears somewhere in this conversation') &&
         systemOf().includes('A song needs no link to be shared')
     )
+    /* 转写旁白的清理是两道的:**入口**把旧消息正文里那行括号摘掉,
+       **出口**再从模型回复里清一次。提示词里另有一句兜底。
+       模型见过这行旁白就会照抄（实测）,所以结构上先不给它看到。 */
+    ok(
+      'system 里点名括号旁白不是它的话、不许自己写进正文',
+      systemOf().includes('are transcript notes, never your words') &&
+        systemOf().includes('never type one into a reply') &&
+        systemOf().includes('Never write a parenthetical like "(a song was shared — …)"')
+    )
     ok(
       'system 里没有旧标签 / 哨兵 / 任何文本协议残留',
       !systemOf().includes('[photo:') && !systemOf().includes('[mood:') && !systemOf().includes('%%KAIRO_META%%'),
@@ -517,6 +526,83 @@ async function main() {
     ok('音乐卡还在', out.done?.attachment?.kind === 'music', JSON.stringify(out.done?.attachment))
 
     // 还给后面的用例留一个带正文的默认值
+    chatReply = 'Sure.'
+    chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'calm' }) }
+
+    /* —— 用例 1f：历史里的转写旁白不能回放给模型 ——
+       旧版前端把 "(a song was shared — …)" 补在助手正文里，模型看到就照抄
+       （实测：它宁可写这行括号，也不去调工具）。入口必须先摘掉。 */
+    console.log('\n用例 1f · 历史里的括号旁白要先清掉')
+    r = await post(APP_PORT, '/api/chat', {
+      ...cfg,
+      messages: [
+        { role: 'user', content: '放首歌吧' },
+        { role: 'assistant', content: '这首给你。\n(a song was shared — "道山靓仔" by 五条人)' },
+        { role: 'user', content: '好' }
+      ]
+    })
+    out = await readChat(r)
+    /* 跳过 system:提示词里本来就写着这条规则的名字,它不算"发出去的历史" */
+    const sentHistory = (seen.chat?.messages || []).slice(1).map((m) => String(m.content || ''))
+    ok(
+      '助手历史里的旁白没有发出去',
+      !sentHistory.some((c) => c.includes('(a song was shared')),
+      JSON.stringify(sentHistory)
+    )
+    ok('那句话本身还在', sentHistory.some((c) => c.includes('这首给你。')))
+    ok('用户的话一个字不动', sentHistory.includes('放首歌吧') && sentHistory.includes('好'))
+
+    /* —— 用例 1g：发过的卡改走 system 简报 ——
+       卡本身不重发（与图同一条理由），但模型得知道自己放过什么。
+       简报要说人话：不出现 "(a song was shared — …)" 这种可模仿的括号模板。 */
+    console.log('\n用例 1g · 历史卡进 system 简报')
+    r = await post(APP_PORT, '/api/chat', {
+      ...cfg,
+      messages: [{ role: 'user', content: '刚才那首叫什么' }],
+      shares: [
+        { role: 'assistant', attachment: { kind: 'music', title: '道山靓仔', subtitle: '五条人' } },
+        { role: 'assistant', attachment: { kind: 'link', title: 'A post', url: 'https://example.com/x' } }
+      ]
+    })
+    out = await readChat(r)
+    ok('system 里有"发过的卡"那一段', systemOf().includes('Cards already sent in this conversation'))
+    ok('歌的曲名与歌手交代了', systemOf().includes('You put on a song: "道山靓仔" by 五条人'))
+    ok(
+      '链接的标题与地址交代了',
+      systemOf().includes('You shared a link: "A post" — https://example.com/x')
+    )
+    ok(
+      '简报里没有可模仿的括号旁白',
+      (() => {
+        /* 只看简报这一段:system 末尾的规则本身会提到这行括号,那是另一回事 */
+        const brief = (systemOf().split('Cards already sent in this conversation')[1] || '').split('\n\n')[0]
+        return !!brief && !brief.includes('(a song was shared') && !brief.includes('(a link was shared')
+      })()
+    )
+
+    /* —— 用例 1h：模型自己写出旁白时，出口要清掉 ——
+       旧对话里它已经见过这行，可能还会照抄；不能让用户看到，也不能当成正文存下来。
+       只写一行旁白、没有正文也没有卡：清完就是"没话说"，不能回空气泡。 */
+    console.log('\n用例 1h · 模型照抄旁白时出口清掉')
+    chatReply = '这首给你。\n(a song was shared — "道山靓仔" by 五条人)'
+    chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'warm' }) }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok('正文里没有括号旁白', !out.text.includes('(a song was shared'), JSON.stringify(out.text))
+    ok('正文本身还在', out.text.includes('这首给你。'), JSON.stringify(out.text))
+    ok('这一轮正常收尾', !!out.done && !out.error, out.error)
+
+    chatReply = '(a song was shared — "道山靓仔" by 五条人)'
+    chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'warm' }) }
+    r = await post(APP_PORT, '/api/chat', { ...cfg, messages: [{ role: 'user', content: 'hi' }] })
+    out = await readChat(r)
+    ok(
+      '只剩旁白的轮次按"没话说"收场（空气泡会被前端自己移除）',
+      !!out.error && !out.done,
+      JSON.stringify({ error: out.error, done: out.done })
+    )
+
+    // 恢复默认值，后面的用例还要用
     chatReply = 'Sure.'
     chatTool = { name: 'emit_message_meta', args: metaArgs({ mood: 'calm' }) }
 

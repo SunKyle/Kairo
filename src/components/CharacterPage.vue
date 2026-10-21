@@ -916,7 +916,7 @@ function originBadge(key: SpecFieldKey): string {
                         draft.voice.engine === 'browser'
                           ? 'Played by your system’s own voices. Free and instant — different characters just get different voices.'
                           : !ttsConfig
-                            ? 'Needs a config first: open Interface Settings, add one with the purpose “Voice”. Base URL, API key and Resource ID all live there.'
+                            ? 'Add a Voice model in AI connections first — its Base URL, API key and Resource ID all live there.'
                             : 'Synthesised by your voice provider. Slower and billed per character, but this is the character’s own voice.'
                       }}
                     </p>
@@ -1101,7 +1101,7 @@ function originBadge(key: SpecFieldKey): string {
                         :font-size="12"
                       />
                       <p v-else-if="!visionConfig" class="wz-scan-hint">
-                        Add an image-recognition config in API settings to read the spec from this image.
+                        Add an Image recognition model in AI connections to read the spec from this image.
                       </p>
                       <p v-else class="wz-scan-hint">
                         Read the spec straight from this image — the fields above fill in from it.

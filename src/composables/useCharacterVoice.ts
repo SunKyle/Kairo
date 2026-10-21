@@ -152,7 +152,7 @@ export function useCharacterVoice(deps: CharacterVoiceDeps) {
     }
     const cfg = deps.ttsConfig()
     if (!cfg) {
-      cloneError.value = 'Add a Voice config in Settings first.'
+      cloneError.value = 'Add a Voice model in AI connections first.'
       return
     }
     cloneBusy.value = true

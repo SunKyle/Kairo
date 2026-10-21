@@ -25,6 +25,7 @@ import {
 } from '../lib/chatPhoto'
 import type { ChatPhotoPlan } from '../lib/chatPhoto'
 import { DIRECTOR_SLOTS, applyDirector, directorTask, parseDirector } from '../lib/photoDirector'
+import { savedPhotoDirector } from '../lib/prefs'
 import { urlToBlob } from '../lib/idb'
 import { registerImageJob, unregisterImageJob } from '../lib/imageJobs'
 import type { ApiConfig, Character, HistoryEntry, HistorySource, ResultItem } from '../types'
@@ -96,9 +97,18 @@ export function useGeneration(deps: GenerationDeps) {
    *  这一层从前**完全静默**:没配文本模型、超时、上游报错,在界面上长得一模一样
    *  (都是"图看起来没用上摄影指导"),而这三件事要做的事完全不同 ——
    *  没配要去配,超时要换模型或调时限,报错要去看那一句 detail。
+   *  2026-10-21 起多了一种"跳过":用户在设置页主动把它关了 ——
+   *  那不是故障,不该和上面三条混在一起,所以日志里点名是设置关的。
    *  与 [chat] photo intent 那行同一套:详细级别、不落盘、不上报。
    *  **看之前要把控制台的 Verbose 打开**(debug 默认是折叠的)。 */
   async function withDirector(base: ChatPhotoPlan, cfg: ApiConfig): Promise<ChatPhotoPlan | null> {
+    /* 用户在设置页把它关了(见 lib/prefs 的 savedPhotoDirector)。**先看这一位**:
+       它没配文本模型时也该说"是设置关的",而不是让人去查配置。
+       关掉只是省掉这一跳,退回模板层 —— 与超时/报错同一条降级路径 */
+    if (!savedPhotoDirector()) {
+      console.debug('[chat] photo director skipped: turned off in Settings → Photos')
+      return null
+    }
     const textCfg = deps.textConfig.value
     if (!textCfg?.baseUrl || !textCfg.model) {
       console.debug('[chat] photo director skipped: no text model configured')
@@ -190,8 +200,8 @@ export function useGeneration(deps: GenerationDeps) {
    */
   function unusableImageText(first: ResultItem): string {
     return first.type === 'url'
-      ? 'The upstream returned an image link this browser could not download — blocked cross-origin, or the link has expired. Check the vendor in API Settings: providers that can return base64 are asked for it, and that removes the second hop.'
-      : 'The image API returned something that is not a usable image.'
+      ? 'The image came back as a link this browser could not download — cross-origin blocked, or the link expired. Switch to a provider that returns base64.'
+      : 'Image generation returned something that is not a usable image.'
   }
 
   /* 一条配置下"可以挑的显式尺寸"。厂商不限尺寸时用应用自己那组常用值 ——
@@ -330,7 +340,7 @@ export function useGeneration(deps: GenerationDeps) {
       const first = res?.[0]
       /* 上游 200 但一张图都没有 —— 这是最容易被压成"生成失败"的一种,
          而它其实通常是内容被安全策略拦了,或者中转回了个空壳 */
-      if (!first) return { error: 'The image API returned no image for this prompt.' }
+      if (!first) return { error: 'Image generation returned no image for this prompt.' }
       try {
         return {
           blob: await urlToBlob(imageSrc(first)),
@@ -400,7 +410,7 @@ export function useGeneration(deps: GenerationDeps) {
         ctrl.signal
       )
       const first = res?.[0]
-      if (!first) return { error: 'The image API returned no image for this prompt.' }
+      if (!first) return { error: 'Image generation returned no image for this prompt.' }
       try {
         return {
           blob: await urlToBlob(imageSrc(first)),

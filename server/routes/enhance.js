@@ -90,16 +90,23 @@ app.post('/api/enhance', rateLimit, async (req, res) => {
   if (!prompt && !visionRef) {
     return res.status(400).json({ error: 'Enter a prompt first' })
   }
+  /* 这个端点被三种用途共用,报错时不能笼统说 "a text model" —— 用户手里的配置
+     是按用途分的。按 mode 反推用户该去补哪一格,话才落在他真正要改的地方 */
+  const purpose =
+    enhanceMode === 'vision'
+      ? 'Image recognition'
+      : enhanceMode === 'summary' || enhanceMode === 'memory' || enhanceMode === 'relationship'
+        ? 'Role chat'
+        : 'Prompt enhancing'
   if (!baseUrl) {
-    return res.status(400).json({ error: 'Configure your Base URL first' })
+    return res.status(400).json({
+      error: `The ${purpose} config has no Base URL — add one in AI connections.`
+    })
   }
   // 模型名单独配:出图模型是图像模型,打不通 /chat/completions(识图同理,要的是能看图的对话模型)
   if (!textModel) {
     return res.status(400).json({
-      error:
-        enhanceMode === 'vision'
-          ? 'Set a vision model in API settings first'
-          : 'Set a text model in API settings first'
+      error: `Add a ${purpose} model in AI connections first.`
     })
   }
 

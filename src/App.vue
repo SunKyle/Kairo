@@ -7,6 +7,7 @@ import CharacterPage from './components/CharacterPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import AppearancePanel from './components/AppearancePanel.vue'
 import InteractionSettingsPanel from './components/InteractionSettingsPanel.vue'
+import PhotoSettingsPanel from './components/PhotoSettingsPanel.vue'
 import MemoryPrivacyPanel from './components/MemoryPrivacyPanel.vue'
 import NavSegment from './components/NavSegment.vue'
 import UndoToast from './components/UndoToast.vue'
@@ -17,6 +18,9 @@ import {
   /* 设定图的提示词由 api.ts 那份纯函数拼(设定 + 取景 + 参考图那句)——
      它是那五格提示词的唯一出处,单测直接断言 */
   characterViewPrompt,
+  /* "这条出图配置缺什么、还画不画得出"的唯一判法(见 api.ts)——
+     主界面这两处早先各写了一句近似的话,缺模型名时说法还不一样 */
+  imageConfigGap,
   loadCharacters,
   saveCharacters,
   /* 来源表空不空(见 types 的 FieldOriginMap):空表不写进记录,
@@ -550,9 +554,10 @@ async function drawBackdrop(id: string) {
     notice.value = 'Nothing to draw from yet — let it send you a photo first.'
     return
   }
-  const cfg = config.value
-  if (!cfg.baseUrl) {
-    notice.value = 'Set an image API in Settings first.'
+  /* 与所有出图入口同一个判法:缺地址与缺模型名是两件事,话也分开说 */
+  const gap = imageConfigGap(config.value)
+  if (gap) {
+    notice.value = gap
     return
   }
 
@@ -561,7 +566,7 @@ async function drawBackdrop(id: string) {
   try {
     const out = await generateChatBackdrop(id, scene)
     if (!out.blob) {
-      notice.value = out.error || 'Could not draw a background for this scene.'
+      notice.value = out.error || 'The background could not be drawn — nothing has changed.'
       return
     }
     /* 换掉旧的那张:它不再被界面引用,连同 objectURL 一起放掉 */
@@ -817,7 +822,7 @@ function onStorageSync(e: StorageEvent) {
     repickActiveChat()
     repickActiveVision()
     repickActiveTts()
-    labels.push('API settings')
+    labels.push('AI connections')
   }
   let loadFailed = false
   if (targets.includes('characters')) {
@@ -1254,7 +1259,7 @@ const MAX_CHAR_ZIP = 64 * 1024 * 1024
    渲染和删除都会错乱(与配置的导入同一条理由) */
 async function importCharFile(file: File) {
   if (file.size > MAX_CHAR_ZIP) {
-    notice.value = 'That file is too large to be a character export.'
+    notice.value = `That file is over ${MAX_CHAR_ZIP / 1024 / 1024} MB — too large for a character export.`
     return
   }
   let list: ImportedCharacter[]
@@ -1381,9 +1386,11 @@ async function genCharView(charId: string, kind: CharacterViewKind): Promise<boo
   if (!view || !c || charViewBusy.value[charId]?.includes(kind)) return false
   const cfg = config.value
   /* 这里几个报错都走 notice 而不是 fail:这条流水线只有站在角色页才会触发,
-     而 fail 写的是 home 那条 .err —— 在角色页触发时它不渲染,等于没提示 */
-  if (!cfg.model) {
-    notice.value = 'Set an image model in API settings first.'
+     而 fail 写的是 home 那条 .err —— 在角色页触发时它不渲染,等于没提示。
+     判据与话都借 imageConfigGap:从前这里只看模型名,地址空着会一路撞到上游 */
+  const gap = imageConfigGap(cfg)
+  if (gap) {
+    notice.value = gap
     return false
   }
   /* —— 这一张拿哪几张图当参考 ——
@@ -1842,6 +1849,9 @@ function createAssignCollection(title: string) {
           v-else-if="settingsSection === 'interaction'"
           :characters="characters"
         />
+
+        <!-- 出图偏好是全局的(不按角色),所以面板自带存取,这里不给 props -->
+        <PhotoSettingsPanel v-else-if="settingsSection === 'photos'" />
 
         <MemoryPrivacyPanel
           v-else-if="settingsSection === 'memory'"

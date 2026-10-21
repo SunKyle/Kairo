@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  attachmentContextLine,
   attachmentHost,
   coerceAttachmentPreview,
   coerceChatAttachment,
@@ -147,25 +146,9 @@ describe('coerceAttachmentPreview · 服务端预览那一行', () => {
   })
 })
 
-describe('attachmentHost / attachmentContextLine', () => {
+describe('attachmentHost', () => {
   it('域名去掉 www.,坏地址回空串', () => {
     expect(attachmentHost('https://www.example.com/x')).toBe('example.com')
     expect(attachmentHost('not a url')).toBe('')
-  })
-
-  it('喂给模型的那一行说清"转了一个链接"、标题与地址', () => {
-    expect(
-      attachmentContextLine({ kind: 'link', title: 'A post', url: 'https://example.com/x' })
-    ).toBe('shared a link — "A post": https://example.com/x')
-  })
-
-  it('歌曲那一行报曲名与歌手,没地址就不硬贴链接', () => {
-    expect(attachmentContextLine({ kind: 'music', title: 'Night Changes', subtitle: 'Harry Styles' })).toBe(
-      'shared a song — "Night Changes" by Harry Styles'
-    )
-    expect(attachmentContextLine({ kind: 'music', title: 'Solo' })).toBe('shared a song — "Solo"')
-    expect(attachmentContextLine({ kind: 'music', title: 'x', url: 'https://example.com/s' })).toBe(
-      'shared a song — "x": https://example.com/s'
-    )
   })
 })

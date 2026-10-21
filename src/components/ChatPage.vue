@@ -53,6 +53,9 @@ import { splitAssistantReply } from '../lib/chatSplit'
    给每行认一个生效层(见 lib/messageLayers 与 doc/对话体验.md) */
 import { effectiveLayer, hasLayerMarkers, isVisibleForUI, parseLayers } from '../lib/messageLayers'
 import { speak, speechSupported, speakingId, speakingLoading, stopSpeaking, warmUpSpeech } from '../lib/speech'
+/* 歌卡的声音。与朗读互斥:开始念一条、或离开这一页,都先把还在放的试听停下
+   (反向的互斥在 lib/songPlayback 的 startSong 里:点歌会停朗读) */
+import { stopSongPreview } from '../lib/songPlayback'
 /* 对话流的滚动编排(自动跟随 / 往前读一档时稳住视口)抽到 composable ——
    它是纯 DOM/滚动逻辑,不碰数据与网络,单拎出来既能测也好读 */
 import { useChatStream } from '../composables/useChatStream'
@@ -524,8 +527,11 @@ const mood = computed(() => {
 /* 长期记忆那一块(药丸入口 + 悬浮卡片 + 编辑/忘掉)**整段迁走了**(2026-10-17):
    查看、编辑、忘掉收进记忆中心的 Briefing 区块 —— 记忆中心管"它记得你什么",
    一处管理一处口径,对话页不再留第二个入口。这里只剩一条老规矩:
-   换了人就换了一段对话,正念着的那句得闭嘴 */
-watch(() => props.active, () => stopSpeaking())
+   换了人就换了一段对话,正念着的那句、正放着的那首歌都该闭嘴 */
+watch(() => props.active, () => {
+  stopSpeaking()
+  stopSongPreview()
+})
 
 /* ===== 进 / 出沉浸 ==================================================
    一个动作配一次焦点搬运(与"打开浮层把焦点收进去、关掉再还回去"同一条规矩):
@@ -558,6 +564,9 @@ async function toggleSpeak(msg: ChatMessage) {
   }
   const c = current.value
   if (!c) return
+  /* 先让歌停下来:一次只该有一个声音。点歌那边同样会停朗读
+     (见 lib/songPlayback 的 startSong) */
+  stopSongPreview()
   /* 走哪条路由角色自己的嗓音决定(见 lib/speech):
      没配过的一律走浏览器,配了就走第三方 —— 失败会自己退回来,
      并把"退回来了"和原因一起交回来。
@@ -910,8 +919,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocPointerDown)
   window.removeEventListener('keydown', onKey)
-  /* 离开这一页就把嘴闭上:语音不属于"后台也该继续"的那类东西 */
+  /* 离开这一页就把嘴闭上、把歌停下:声音不属于"后台也该继续"的那类东西 */
   stopSpeaking()
+  stopSongPreview()
   /* 这一页要散了:先把还留在输入框里的那半句存回它自己的格子,
      别跟着组件一起被回收(async 卸载重建后它该还在) */
   if (props.active) saveDraft(props.active, text.value)

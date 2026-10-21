@@ -42,6 +42,12 @@ const TTS_STORE = 'tts_cache'
 /* 声音克隆用的样本音频。它是这一块唯一的二进制资产 ——
    Blob 进不了 localStorage,与设定图(vs charViews)同一条路 */
 const VOICE_SAMPLE_STORE = 'voice_samples'
+/* 音乐卡的试听**地址表**(不是音频字节)。键是 "曲名|歌手" 归一化后的串,
+   值只记 iTunes 给的 30 秒试听地址、曲目信息与时间戳。
+   为什么存地址而不是 Blob:一段试听约 1MB,而同一个地址浏览器自己会缓存;
+   这里要省的只是"每点一次都重新搜一遍",不是替浏览器存媒体。
+   负结果(搜不到)也存 —— 否则每次点同一张卡都要再问一次 Apple */
+const SONG_STORE = 'song_previews'
 /* 聊天里用户附的图。**与消息分开存** —— 消息要一次读一整屏(几十条),
    而图一条就是几百 KB:混在一张表里,"读这一屏消息"就变成"顺便把
    这些图全拖进内存"。消息上只留一个 id(见 types.ts 的 ChatMessage.imageId) */
@@ -101,7 +107,7 @@ export interface PruneResult {
    在用户眼里就是"我的图、我的历史全没了",而数据其实一条都没少。
    所以哪怕这一次没有任何结构要改,号该加也得加。
    ------------------------------------------------------------------ */
-const DB_VERSION = 14
+const DB_VERSION = 15
 
 /* 连接只开一次。
    indexedDB.open 是一次异步握手,而原实现每次读写都重开一遍 ——
@@ -248,6 +254,14 @@ function openDB(): Promise<IDBDatabase> {
         /* 按角色取、按角色删都靠它。共享画像的 charId 是 null,
            而 IDB 不索引非法的键 —— 那几条天然不在索引里,删角色时不会被误删 */
         memories.createIndex('charId', 'charId')
+      }
+      /* v15 新增:音乐卡的试听地址表(见 SONG_STORE)。
+         usedAt 索引是给"最久没用过的那条先走"用的 —— 按 createdAt 淘汰就变成
+         FIFO,而常听的那几首会被不断挤出去。建表 + 建索引都是同步的结构操作,
+         没有整表重建那种中途失败的风险(与 v12 / v13 / v14 同一条理由) */
+      if (!db.objectStoreNames.contains(SONG_STORE)) {
+        const songs = db.createObjectStore(SONG_STORE, { keyPath: 'key' })
+        songs.createIndex('usedAt', 'usedAt')
       }
     }
     req.onsuccess = () => {
@@ -1475,4 +1489,137 @@ export async function deleteMemory(id: string): Promise<void> {
     tx.oncomplete = () => resolve()
     tx.onerror = () => reject(tx.error)
   })
+}
+
+/* ===== 音乐卡的试听地址 =====
+   一条记录 = 一次 iTunes 搜索的结果。三条纪律:
+   - **只存地址,不存音频**:试听流由浏览器直接向 Apple 取,这里不替它存媒体;
+   - **负结果也存**:搜不到就记一笔 missing,否则每次点同一张卡都要再问一次;
+   - **读回来的东西逐项收口**:预览地址会被直接交给 <audio src>,一个非 http(s)
+     的值可能让这一格静默坏掉,所以形状不对的整条当没有(与附件那条同一条理由)。
+   -------------------------------------------------------------------- */
+
+export interface SongPreviewRecord {
+  /** 归一化后的 "曲名|歌手"(见 lib/songPreview 的 songKey) */
+  key: string
+  /** 30 秒试听的地址。missing 为 true 时没有 */
+  previewUrl?: string
+  trackName?: string
+  artistName?: string
+  /** Apple Music 里整首的地址。卡片右上角那枚外链在模型没给地址时用它 */
+  trackViewUrl?: string
+  /** 搜过但没找到合适的版本。与"有地址"互斥 */
+  missing?: boolean
+  createdAt: number
+  /** 最近一次被用到的时间。LRU 淘汰按它走,不按 createdAt */
+  usedAt?: number
+}
+
+/** 缓存条数上限。30 条地址只占几 KB,但足以覆盖一段对话里会出现的歌 */
+const SONG_CACHE_MAX = 30
+
+/** 一条记录从库里出来时的收口。key/createdAt 不合法、或地址不是 http(s) 的,
+ *  整条当没有 —— 交给 <audio> 之前,这里就是最后一道门 */
+export function songPreviewFromRow(row: unknown): SongPreviewRecord | undefined {
+  if (!row || typeof row !== 'object') return undefined
+  const r = row as Partial<SongPreviewRecord>
+  if (typeof r.key !== 'string' || !r.key) return undefined
+  if (typeof r.createdAt !== 'number' || !Number.isFinite(r.createdAt)) return undefined
+  const usedAt = typeof r.usedAt === 'number' && Number.isFinite(r.usedAt) ? r.usedAt : r.createdAt
+  if (r.missing === true) return { key: r.key, missing: true, createdAt: r.createdAt, usedAt }
+  if (typeof r.previewUrl !== 'string' || !/^https?:\/\//i.test(r.previewUrl)) return undefined
+  return {
+    key: r.key,
+    previewUrl: r.previewUrl,
+    ...(typeof r.trackName === 'string' && r.trackName.trim() ? { trackName: r.trackName } : {}),
+    ...(typeof r.artistName === 'string' && r.artistName.trim() ? { artistName: r.artistName } : {}),
+    ...(typeof r.trackViewUrl === 'string' && /^https?:\/\//i.test(r.trackViewUrl)
+      ? { trackViewUrl: r.trackViewUrl }
+      : {}),
+    createdAt: r.createdAt,
+    usedAt
+  }
+}
+
+/** 取一条试听记录。没有、读坏了、形状不对一律 undefined —— 调用方据此去搜 */
+export async function getSongPreview(key: string): Promise<SongPreviewRecord | undefined> {
+  try {
+    const db = await openDB()
+    const row = await new Promise<unknown>((resolve, reject) => {
+      const req = db.transaction(SONG_STORE, 'readonly').objectStore(SONG_STORE).get(key)
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => reject(req.error)
+    })
+    return songPreviewFromRow(row)
+  } catch {
+    return undefined
+  }
+}
+
+/** 记一笔"这条刚被用过"。不 await、失败静默 —— 它只影响淘汰顺序,
+ *  不该让一次播放去等一次写盘 */
+export async function touchSongPreview(key: string): Promise<void> {
+  try {
+    const db = await openDB()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(SONG_STORE, 'readwrite')
+      const store = tx.objectStore(SONG_STORE)
+      const req = store.get(key)
+      req.onsuccess = () => {
+        const row = req.result as SongPreviewRecord | undefined
+        if (row) store.put({ ...row, usedAt: Date.now() })
+      }
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  } catch {
+    /* 见上 */
+  }
+}
+
+/** 存一条(正/负结果都走这里),顺手按 usedAt 淘汰最久没用过的那批。
+ *  写不进去只影响"下次还得再问一次",不该让这次播放失败 */
+export async function putSongPreview(rec: SongPreviewRecord): Promise<void> {
+  try {
+    const db = await openDB()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(SONG_STORE, 'readwrite')
+      const store = tx.objectStore(SONG_STORE)
+      store.put({ ...rec, usedAt: rec.usedAt ?? rec.createdAt })
+      const index = store.index('usedAt')
+      /* 裁在同一个事务里:写完就裁,不开第二趟 */
+      const countReq = index.count()
+      countReq.onsuccess = () => {
+        let over = countReq.result - SONG_CACHE_MAX
+        if (over <= 0) return
+        const cursorReq = index.openCursor()
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result
+          if (!cursor || over <= 0) return
+          cursor.delete()
+          over--
+          cursor.continue()
+        }
+      }
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  } catch {
+    /* 见上 */
+  }
+}
+
+/** 作废一条。试听地址过期(CDN 拒绝)时用 —— 下一次还能重新搜到新的 */
+export async function deleteSongPreview(key: string): Promise<void> {
+  try {
+    const db = await openDB()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(SONG_STORE, 'readwrite')
+      tx.objectStore(SONG_STORE).delete(key)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  } catch {
+    /* 作废失败最多是下次还拿到旧地址,不该打断播放这一侧 */
+  }
 }

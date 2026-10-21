@@ -7,6 +7,7 @@ import {
   referencedChatImages,
   retryOnDeadConnection,
   shouldCheckStorage,
+  songPreviewFromRow,
   type PruneCandidate
 } from './idb'
 
@@ -361,5 +362,60 @@ describe('chatMessageFromRow · 只收会被渲染的那一项', () => {
   it('退化输入不抛', () => {
     expect(chatMessageFromRow(null)).toBe(null)
     expect(chatMessageFromRow(undefined)).toBe(undefined)
+  })
+})
+
+/* ===== 试听地址从库里出来时的收口 ======================================
+ *  这条地址会被直接设成 <audio> 的 src,所以它是这一层最该管住的一项:
+ *  一个 javascript: / file: 地址不该有机会走到播放器面前。其余字段只是
+ *  显示与外链,坏了就丢那一项,不该把整条缓存判死 —— 判死的代价是
+ *  每次打开对话都要重新搜一遍。 */
+
+describe('songPreviewFromRow · 试听记录只留能用的部分', () => {
+  const row = {
+    key: '晴天|周杰伦',
+    previewUrl: 'https://audio.example/a.m4a',
+    trackName: '晴天',
+    artistName: '周杰倫',
+    trackViewUrl: 'https://music.apple.com/hk/song/1',
+    createdAt: 1_700_000_000_000
+  }
+
+  it('正常的行原样收下,usedAt 缺省时用 createdAt 补', () => {
+    expect(songPreviewFromRow(row)).toEqual({ ...row, usedAt: row.createdAt })
+  })
+
+  it('负结果(只记了 missing)是合法的一条,不需要地址', () => {
+    expect(songPreviewFromRow({ key: 'x|y', missing: true, createdAt: 5 })).toEqual({
+      key: 'x|y',
+      missing: true,
+      createdAt: 5,
+      usedAt: 5
+    })
+  })
+
+  it('key 或 createdAt 不合法时整条作废 —— 没有主键就无从谈起', () => {
+    expect(songPreviewFromRow(null)).toBeUndefined()
+    expect(songPreviewFromRow(undefined)).toBeUndefined()
+    expect(songPreviewFromRow('x')).toBeUndefined()
+    expect(songPreviewFromRow({ ...row, key: '' })).toBeUndefined()
+    expect(songPreviewFromRow({ ...row, createdAt: Number.NaN })).toBeUndefined()
+    expect(songPreviewFromRow({ ...row, createdAt: '1' })).toBeUndefined()
+  })
+
+  it('不是 http(s) 的试听地址整条丢掉 —— 它会被交给 <audio>', () => {
+    expect(songPreviewFromRow({ ...row, previewUrl: 'javascript:alert(1)' })).toBeUndefined()
+    expect(songPreviewFromRow({ ...row, previewUrl: 'file:///etc/passwd' })).toBeUndefined()
+    expect(songPreviewFromRow({ ...row, previewUrl: '' })).toBeUndefined()
+  })
+
+  it('trackViewUrl 坏掉只丢这一项,卡本身仍然有效', () => {
+    expect(songPreviewFromRow({ ...row, trackViewUrl: 'file:///x' })?.trackViewUrl).toBeUndefined()
+    expect(songPreviewFromRow({ ...row, trackViewUrl: 42 })?.trackViewUrl).toBeUndefined()
+  })
+
+  it('曲名/歌手不是非空字符串时不带出去(显示回落由调用方负责)', () => {
+    expect(songPreviewFromRow({ ...row, trackName: '   ' })?.trackName).toBeUndefined()
+    expect(songPreviewFromRow({ ...row, artistName: 99 })?.artistName).toBeUndefined()
   })
 })

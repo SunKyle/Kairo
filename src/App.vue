@@ -91,7 +91,6 @@ import {
   savedShowAct,
   savedShowThink
 } from './lib/prefs'
-import { keepInSummary } from './lib/messageLayers'
 /* 对话背景图:沉浸页铺满屏幕的那一张。**单独一张表**(见 idb.ts 的 BACKDROP_STORE) */
 import {
   deleteChatBackdrop,
@@ -271,6 +270,7 @@ const {
   setChatMood,
   dropChatLast,
   loadChatMessages,
+  loadAllChatSummaries,
   loadEarlierChat,
   maybeSummarize,
   editChatSummary,
@@ -289,13 +289,11 @@ const {
      先摆两个可替换的入口,下面各自创建出来之后再接上。它们都是**调用时才读**这两个变量,
      所以先后顺序不影响 */
   onSummarized: (charId, batch) => {
-    /* 抽事实这一路:先摘掉"想"那一层。心里话没打算说出口,不该被当成"关于你的事实"
-       永久记进记忆中心(与 summarizeChat 内部同一道 keepInSummary,同一口径)。
-       关系评估这一路**照旧看整批** —— 想的那一层恰恰透露亲疏,它是第三根杆,不受这条限制。 */
-    void autoExtractMemories(
-      charId,
-      batch.filter((m) => keepInSummary(m))
-    )
+    /* 抽事实这一路**整批递进去**:摘掉"想"那一层、给空正文补占位、按字符预算截,
+       现在都在 useMemories.runExtract 里统一做(自动与手动两条路共用一个口)。
+       关系评估这一路**照旧看整批** —— 想的那一层恰恰透露亲疏,
+       它是第三根杆,不受"不进长期记忆"这条限制。 */
+    void autoExtractMemories(charId, batch)
     void autoEvaluateRelationship(charId, batch)
   }
 })
@@ -353,6 +351,16 @@ const page = ref<Page>(initialRoute.page)
 if (initialRoute.id && initialRoute.page === 'chat') {
   chatCharId.value = initialRoute.id
 }
+/* 记忆中心要看**所有角色**的简报,而简报平时是按角色懒加载的 ——
+   不补这一趟,冷启动直接进 #/memory 会看到满页"没有记忆",
+   连用户改过的那份都看不见。immediate 管深链那一次,watch 管从导航进来 */
+watch(
+  page,
+  (p) => {
+    if (p === 'memory') void loadAllChatSummaries()
+  },
+  { immediate: true }
+)
 /* 历史页的「只看这个角色」(T12)。与 chatCharId 同一层:它是**地址栏里的一份状态**,
    而不是历史页自己的 ref —— 那样才谈得上刷新不丢、能把链接发给人。
    历史页收到它只当个普通 prop(它不认识路由) */
@@ -690,9 +698,30 @@ function onPageEnter(el: Element, done: () => void) {
     return
   }
   /* 满屏工作台页(聊天)自带固定背景层 + 两个撑满视口的高面板,对它们做位移/缩放
-     会把整块背景一起拽动、高面板缩放又硬弹,看着就"硬"。这类页只淡入,不搬。
-     页面用 data-page-motion="fade" 声明自己走这条路。 */
+     会把整块背景一起拽动、高面板缩放又硬弹,看着就"硬"。这类页**绝不碰 transform**。
+     页面用 data-page-motion="fade" 声明自己走这条路。
+     原先是整块 0.26s 淡入 —— 对一块几乎不透明的满屏面板,纯透明度切换和"瞬间跳过去"
+     差别太小,读起来像"没动画"。这里改成对它的**可见直接子块**做错峰淡入:
+     逐块浮现、彼此拉开一点时序,读起来像这一页在一点点点亮;而每一步只动 opacity,
+     一个字节的几何都不挪,背景与高面板自然不会被拽动。 */
   if ((el as HTMLElement).dataset.pageMotion === 'fade') {
+    /* 只挑当前可见的直接子块:v-show 收起的那一栏(如沉浸态的左栏)display 是 none,
+       把它算进错峰会凭空多一拍空等。chat-bg / chat-rail / chat-main 任意两两组合
+       都落在"≥2"这一档,退不空 */
+    const kids = (Array.from(el.children) as HTMLElement[]).filter(
+      (k) => getComputedStyle(k).display !== 'none'
+    )
+    if (kids.length >= 2) {
+      gsap.from(kids, {
+        autoAlpha: 0,
+        duration: 0.42,
+        ease: 'power1.out',
+        stagger: 0.09,
+        onComplete: done
+      })
+      return
+    }
+    // 只有一块(或全隐藏)时退回整块淡入,别硬拆
     gsap.from(el, { autoAlpha: 0, duration: 0.26, ease: 'power1.out', onComplete: done })
     return
   }
@@ -1998,6 +2027,17 @@ function createAssignCollection(title: string) {
     height: auto;
     overflow: visible;
   }
+}
+
+/* 顶栏跟着 .shell-wide 摊宽,左对齐的"Kairo Chat"就跑到了近窗口左边,
+   而别的页锁在 1080 阅读栏里 —— 只有 chat 的花名位置不一样。
+   面板要铺满是故意的,只把顶栏这一条收回同一根栏:居中到 1080,
+   内边距取其它页 .shell 那一档 clamp,左边缘在任何屏宽下都对得齐。
+   全站 box-sizing: border-box,这圈内边距落在 1080 之内(见 style.css)。 */
+.shell-wide .masthead {
+  max-width: 1080px;
+  margin-inline: auto;
+  padding-inline: clamp(16px, 4vw, 40px);
 }
 
 .masthead {

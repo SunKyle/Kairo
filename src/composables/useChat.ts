@@ -4,6 +4,7 @@ import {
   CHAT_MEMORY_CHARS,
   CHAT_SUMMARIZE_AFTER,
   CHAT_SUMMARY_CAP,
+  CHAT_SUMMARY_INPUT_CHARS,
   CHAT_WINDOW,
   summarizeChat,
   uid
@@ -12,6 +13,7 @@ import {
   CHAT_PAGE,
   countChatMessages,
   deleteChatOf,
+  getAllChatSummaries,
   getCharMood,
   getChatImage,
   getChatMessages,
@@ -22,6 +24,8 @@ import {
   putChatMessage,
   putChatSummary
 } from '../lib/idb'
+import { mergeChatSummaries } from '../lib/chatSummary'
+import { fitInputBudget } from '../lib/summaryInput'
 import { stopSpeaking } from '../lib/speech'
 import { abortCharImages } from '../lib/imageJobs'
 import type {
@@ -282,10 +286,64 @@ function settlePhoto(m: ChatMessage): ChatMessage {
   return { ...m, photoFailed: true, photoError: m.photoError || 'Couldn’t generate that image.' }
 }
 
+/** 读一个角色的记忆并进来。
+ *
+ *  用**合并**而不是直接写:`loadChatMessages` 取消息的同时也会读这份,
+ *  两边谁先回来不一定;盘上那份若更旧,不该把内存里更新的顶掉(见 lib/chatSummary)。
+ *  读失败只留一条日志 —— 记忆读不出来时,对话本身还能照常进行。 */
+async function loadChatSummary(id: string) {
+  try {
+    const sum = await getChatSummary(id)
+    if (sum) chatSummary.value = mergeChatSummaries(chatSummary.value, [sum])
+  } catch (e) {
+    console.warn('[Kairo] load chat summary failed', e)
+  }
+}
+
+/** 记忆中心要一次看到所有角色的记忆 —— 它不像对话页那样只挑一个角色。
+ *
+ *  摘要原本是按角色懒加载的,冷启动时 memory 页拿到的是空表:所有角色都显示
+ *  "没有记忆",连改过的那份也看不见。进记忆中心时补这一趟,把盘上的全部读回来,
+ *  再按 updatedAt 合并(内存里可能有刚编辑过、还没被下一次读取覆盖的版本)。
+ *  失败时不把已有内容清空:这一页退化成"只看得到内存里那几条",好过整页空着。 */
+async function loadAllChatSummaries() {
+  try {
+    const rows = await getAllChatSummaries()
+    if (rows.length) chatSummary.value = mergeChatSummaries(chatSummary.value, rows)
+  } catch (e) {
+    console.warn('[Kairo] load all chat summaries failed', e)
+  }
+}
+
+/** 取"此刻最新"的那份记忆:内存与盘上各可能更新,按 updatedAt 取新的并合回内存。
+ *
+ *  压记忆、编辑、忘掉这三处都要先拿到它 —— 只看内存的话,另一个标签页刚压过
+ *  一段而本页还没收到广播时,这一轮会拿着旧游标把已经压过的消息再压一遍。
+ *  读盘失败退回内存里那份:后台动作不该因为一次读失败而整个放弃。 */
+async function latestChatSummary(id: string): Promise<ChatSummary | undefined> {
+  const local = chatSummary.value[id]
+  try {
+    const disk = await getChatSummary(id)
+    if (disk) {
+      chatSummary.value = mergeChatSummaries(chatSummary.value, [disk])
+      return chatSummary.value[id]
+    }
+  } catch (e) {
+    console.warn('[Kairo] read chat summary failed', e)
+  }
+  return local
+}
+
 /** 取某个角色的对话。与 loadCharViews 同一套懒加载 + 去重:
  *  同一个 id 可能被选角色的 watch 与角色页的入口同时触发 */
 async function loadChatMessages(id: string) {
-  if (!id || chatMessages.value[id]) return
+  if (!id) return
+  /* 消息已经在了(比如刚从记忆中心回来),但摘要可能还没读 —— 上面的提前返回
+     会把它一起跳过。单独补一次:它很便宜,而且缺了它下一轮就没有旧记忆可带 */
+  if (chatMessages.value[id]) {
+    if (!chatSummary.value[id]) await loadChatSummary(id)
+    return
+  }
   const inflight = chatLoading.get(id)
   if (inflight) return inflight
   const task = (async () => {
@@ -299,7 +357,9 @@ async function loadChatMessages(id: string) {
       ])
       chatMessages.value = { ...chatMessages.value, [id]: page.list.map(settlePhoto) }
       chatHasMore.value = { ...chatHasMore.value, [id]: page.hasMore }
-      if (sum) chatSummary.value = { ...chatSummary.value, [id]: sum }
+      /* 并而不是直接盖:记忆中心可能刚读过一份更新的(或用户刚编辑过),
+         盘上这条若更旧就不该把新的顶掉。同一条只留 updatedAt 更新的那份 */
+      if (sum) chatSummary.value = mergeChatSummaries(chatSummary.value, [sum])
       if (mood) chatMood.value = { ...chatMood.value, [id]: mood }
     } finally {
       chatLoading.delete(id)
@@ -365,18 +425,27 @@ async function maybeSummarize(id: string) {
   chatSummarizing.add(id)
   const seq = chatSeq.get(id) || 0
   try {
-    const cur = chatSummary.value[id]
+    /* 内存与盘上取新的那份:刚从记忆中心回来、或另一个标签页刚压过一段,
+       都可能让盘上那份比内存里新。不补这一眼,这一轮会从旧游标重压一遍 */
+    const cur = await latestChatSummary(id)
     const total = await countChatMessages(id)
     const want = total - CHAT_WINDOW - (cur?.covered || 0)
     if (want < CHAT_SUMMARIZE_AFTER) return
 
     /* 由旧往新收。收多少条正是上面那个 want(封顶 CHAT_SUMMARY_CAP),
        这样算出来的边界刚好落在"最近窗口"前面,窗口里的原话一句都不会被压掉 */
-    const batch = await getChatMessagesToSummarize(
+    const fetched = await getChatMessagesToSummarize(
       id,
       cur?.upToAt || 0,
       Math.min(want, CHAT_SUMMARY_CAP)
     )
+    if (!fetched.length) return
+
+    /* 一次最多送这么多字(见 api.ts 的 CHAT_SUMMARY_INPUT_CHARS)。**由旧往新**截:
+       摘要的游标只能落在真正送给模型的那一段末尾 —— 从新的那头截,
+       中间就会留下一段既没压进记忆、下次也不会再取到的空档。
+       预算装不下的部分留着下一轮接着压,消息一条不丢 */
+    const batch = fitInputBudget(fetched, CHAT_SUMMARY_INPUT_CHARS, 'oldest')
     if (!batch.length) return
 
     const text = await summarizeChat(cfg, cur?.text || '', batch)
@@ -388,6 +457,19 @@ async function maybeSummarize(id: string) {
        这一轮就丢掉 —— covered 没动,消息一条不少,下一轮连着他的新版本一起再压 */
     if ((chatSummary.value[id]?.text || '') !== (cur?.text || '')) return
 
+    /* 落笔前再看一眼盘上那份:另一个标签页可能刚压过更后面的一段。
+       **采纳它、丢掉这一轮** —— covered 只进不退,游标更不能退:
+       后写的覆盖先写的,下一轮就会把已经压过的再压一遍 */
+    const onDisk = await getChatSummary(id)
+    if (onDisk && onDisk.updatedAt > (cur?.updatedAt || 0)) {
+      chatSummary.value = mergeChatSummaries(chatSummary.value, [onDisk])
+      return
+    }
+    if ((onDisk?.covered || 0) > (cur?.covered || 0)) {
+      if (onDisk) chatSummary.value = mergeChatSummaries(chatSummary.value, [onDisk])
+      return
+    }
+
     const last = batch[batch.length - 1]
     const next: ChatSummary = {
       charId: id,
@@ -397,20 +479,18 @@ async function maybeSummarize(id: string) {
       covered: (cur?.covered || 0) + batch.length,
       updatedAt: Date.now()
     }
-    /* 落笔前再看一眼盘上那份:另一个标签页可能刚压过更后面的一段
-       (它的 covered 比我们这份新)。covered 只进不退 —— 不看这一眼,
-       双标签页同时压缩时后写覆盖先写,游标回退,下一轮把压过的再压一遍 */
-    const onDisk = await getChatSummary(id)
-    if ((onDisk?.covered || 0) > (cur?.covered || 0)) return
     await putChatSummary(next)
     chatSummary.value = { ...chatSummary.value, [id]: next }
+    /* 另一个标签页可能正开着这个角色:它得知道游标和记忆都往前走了一截 */
+    deps.announce('chat', id)
     /* 纪要写成了,顺手把这一批里"值得长期记住的几条事实"也抽出来
        (PRD §3.2-E)。复用同一批消息 —— 不必再读一遍盘,也不必等下一轮。
        它自己静默失败,这里不 await:压记忆本来就不挡用户看回复,
        多等一次抽取会让这一轮的后台动作拖得更长 */
     deps.onSummarized?.(id, batch)
-  } catch {
-    /* 见上:后台整理失败不打扰用户 */
+  } catch (e) {
+    /* 后台整理失败不打扰用户,但要留痕:全静默的话,记忆停在哪一步永远查不出来 */
+    console.warn('[Kairo] summarize chat failed', e)
   } finally {
     chatSummarizing.delete(id)
   }
@@ -422,7 +502,9 @@ async function maybeSummarize(id: string) {
  *  updatedAt 跟着刷,因为界面拿它显示"多久没动过了":
  *  用户刚写完的这一版,就不该还挂着"3 天前" */
 async function editChatSummary(id: string, text: string) {
-  const cur = chatSummary.value[id]
+  /* 记忆中心是冷启动读的,内存里可能还没有这个键 —— 不能因此把用户这次编辑丢掉。
+     取"最新那份"同时保住盘上更靠后的游标:改正文不该让 covered/upToAt 往回退 */
+  const cur = await latestChatSummary(id)
   if (!cur) return
   const next: ChatSummary = { ...cur, text, updatedAt: Date.now() }
   chatSummary.value = { ...chatSummary.value, [id]: next }
@@ -441,10 +523,17 @@ async function editChatSummary(id: string, text: string) {
  *  记录本身留着(正文为空),因为那个"从哪之后不再记得"的游标得有地方待;
  *  界面据此不再显示记忆块(见 ChatPage 的 hasMemory)。 */
 async function forgetChatSummary(id: string) {
-  const before = chatSummary.value[id]
+  /* 记忆中心是冷启动读的,那里没有"当前角色的消息"这份内存 ——
+     从前这里直接拿 chatMessages[id] 的最后一条,于是在记忆中心点"忘掉"
+     什么都不会发生。改成:摘要内存里没有就读盘,最后一条没加载就问库 */
+  const before = await latestChatSummary(id)
+  if (!before) return
   const list = chatMessages.value[id] || []
-  const last = list[list.length - 1]
-  if (!before || !last) return
+  const last = list.length ? list[list.length - 1] : (await getLastChatLine([id])).get(id)
+  /* 三者都空才是真的无事可做。只看"有没有消息、covered 多少"会漏掉一种:
+     包里带着记忆、却没带消息的导入角色(见 writeImportedChat)—— 它有简报可忘,
+     而两个游标都是零。那种角色在记忆中心就点不动 Forget */
+  if (!last && !before.covered && !before.text.trim()) return
   /* 在途的压缩要是正跑着,回来会把记忆写回来 —— 作废那一轮 */
   bumpChatSeq(id)
   const total = await countChatMessages(id)
@@ -453,10 +542,11 @@ async function forgetChatSummary(id: string) {
     text: '',
     /* covered 与 upToAt 一起推平到"最后一条为止"。
        covered 宁可算多一点:多算了只是下一轮少压一次,
-       算少了会把已经忘掉的那段重新捞回来 */
-    upToId: last.id,
-    upToAt: last.createdAt,
-    covered: total,
+       算少了会把已经忘掉的那段重新捞回来。
+       与已有的进度取大值:两处并发时,后写的那份不能把游标往回拨 */
+    upToId: last?.id || before.upToId,
+    upToAt: Math.max(last?.createdAt || 0, before.upToAt || 0),
+    covered: Math.max(total, before.covered || 0),
     updatedAt: Date.now()
   }
   chatSummary.value = { ...chatSummary.value, [id]: next }
@@ -569,6 +659,7 @@ function clearChat(id: string) {
     dropChatMood,
     dropChatLast,
     loadChatMessages,
+    loadAllChatSummaries,
     loadEarlierChat,
     maybeSummarize,
     editChatSummary,

@@ -9,6 +9,9 @@ import type { PhotoFrequency } from './lib/prefs'
 /* 长期记忆的"留不留"判据:心理层次里**想的那一层永不进简报**,旁白按保守策略处理
    (见 lib/messageLayers 与 doc/对话体验.md §6.4"三根杆独立") */
 import { keepInSummary } from './lib/messageLayers'
+/* 空正文的消息(只发图 / 只转卡)进摘要与抽记忆时也要有一句人能读懂的话,
+   不能让模型读到 `User: ` 这样的空行 —— 口径与拼对话上下文时同一份 */
+import { contextText } from './lib/chatContext'
 /* 角色设定那一份权威定义(键 / 顺序 / 标签 / 必填 / 枚举)住在服务端 ——
    那边拼起稿提示词用的就是它。前端在这里取用它的读法,
    于是"提示词里那几行"与"解析回填的那张表"不可能各走各的 */
@@ -2368,6 +2371,24 @@ export interface ChatCharacterPayload {
  *  20 条大约十轮来回,够撑起一段有来有回的对话 */
 export const CHAT_WINDOW = 20
 
+/* 一轮请求最多带多少条历史。**与 server/routes/chat.js 的 CHAT_MAX_MESSAGES
+   是一对数,改一个要改另一个** —— 那边会切到前 40 条,这里多发只会被丢掉。
+   前端平时只发最近 CHAT_WINDOW 条;只有"摘要游标之后还有没被压过的消息"时,
+   才把这一段补进来,最多补到这个数(见 lib/chatContext 的 chatContextWindow) */
+export const CHAT_CONTEXT_MAX = 40
+
+/* 压摘要时**这一批消息**最多摊多少字符给模型。防的是老用户第一次打开记忆:
+   CHAT_SUMMARY_CAP(300)条 × CHAT_MAX_CHARS(8000)能到 240 万字符,
+   一次请求既贵、上游也多半按上下文超限拒掉。超了就只压得动前面这一段,
+   covered 跟着停在压完的那一条,下一轮接着压 —— 宁可分几次,
+   也不能静默跳过没进摘要的消息(那一段会永远消失) */
+export const CHAT_SUMMARY_INPUT_CHARS = 60000
+
+/* 抽记忆条目时的输入预算。抽取看的是"最近这段关系里有什么值得记",
+   所以超预算时保留**最新**的那些;与摘要相反 —— 摘要要按时间顺序往前追,
+   否则游标没法安全推进 */
+export const CHAT_EXTRACT_INPUT_CHARS = 40000
+
 /* 单条消息的字符上限。与 server 的 CHAT_MAX_CHARS 是一对数,改一个要改另一个。
    放在这里是为了让界面在发之前就能拦下并说清楚 ——
    只由服务端切,用户看到的是"我发了一大段,它只回了前半截" */
@@ -2446,7 +2467,12 @@ export async function summarizeChat(
      它可以被显示、可以在这一轮原样回喂模型,但不该被写进"它长期记得的你" ——
      心里话被记成事实,是把一个人没打算说的话当成了他说过的话。 */
   const keep = messages.filter((m) => keepInSummary(m))
-  const lines = keep.map((m) => `${m.role === 'user' ? 'User' : 'Character'}: ${m.content}`)
+  /* 空正文不是"没说话":只发一张图 / 只转一张卡的那一轮,存下来 content 是空串。
+     直接用会让模型读到一行 `User: ` —— 既丢了"发过东西"这件事,也更容易被
+     当成一条坏记录。占位与拼对话上下文时同一份口径(见 lib/chatContext) */
+  const lines = keep.map(
+    (m) => `${m.role === 'user' ? 'User' : 'Character'}: ${contextText(m)}`
+  )
   const prompt =
     (previous ? `What you already remember:\n${previous}\n\n` : '') +
     `What was said since:\n${lines.join('\n')}`

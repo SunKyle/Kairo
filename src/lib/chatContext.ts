@@ -20,7 +20,7 @@
  *  这个端点没有鉴权,手搓一个空 content 的请求同样会打到上游,那边必须也兜住。
  */
 
-import type { ChatAttachment } from '../types'
+import type { ChatAttachment, ChatMessage } from '../types'
 
 /** 带图但一个字没写 */
 export const EMPTY_WITH_IMAGE = '(sent a photo)'
@@ -78,4 +78,39 @@ export function withLayerMarkers(content: string, layer?: ContextLayer): string 
   if (!content) return content
   if (layer !== 'think' && layer !== 'act') return content
   return `[${layer}]\n${content}\n[/${layer}]`
+}
+
+/**
+ * 这一轮该带哪些历史消息。
+ *
+ * 只取最近 `window` 条会漏掉一段:摘要的游标停在"上一批压完的那条",
+ * 而窗口只覆盖最新 20 条 —— 两者之间可能隔着 1~19 条,既不在摘要里,
+ * 也没随这次请求发出去。模型于是一边"记得"一段旧事、一边看不见紧接着
+ * 它的那几句(用户看到的是"它怎么忘了刚才说的")。
+ *
+ * 所以取并集:**摘要游标之后的全部消息 + 最近 `window` 条**,按 id 去重,
+ * 再按服务端一轮最多收的条数 `max` 封顶。封顶时丢最旧的 ——
+ * 它们离当前最远,而且下一轮 maybeSummarize 会先把它们压进摘要。
+ *
+ * 没有游标(还没压过)时只发最近一窗:那是原来的行为,不该因为补空窗
+ * 把一段正常对话的请求撑大一倍。
+ *
+ * 纯函数、无 IO:窗口怎么算可以单测,不必把整条发送链跑起来。
+ */
+export function chatContextWindow(
+  messages: readonly ChatMessage[],
+  summary: { upToAt: number } | null | undefined,
+  window = 20,
+  max = 40
+): ChatMessage[] {
+  if (!messages.length) return []
+  const take = Math.max(0, Math.floor(window))
+  const cap = Math.max(1, Math.floor(max))
+  const tail = take ? messages.slice(-take) : []
+  const upToAt = typeof summary?.upToAt === 'number' ? summary.upToAt : 0
+  if (upToAt <= 0) return tail.slice(-cap)
+
+  const inTail = new Set(tail.map((m) => m.id))
+  const since = messages.filter((m) => m.createdAt > upToAt && !inTail.has(m.id))
+  return [...since, ...tail].slice(-cap)
 }

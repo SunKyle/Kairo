@@ -1,9 +1,11 @@
 import { reactive, ref, toRaw } from 'vue'
-import { CHAT_WINDOW, extractMemories, uid } from '../api'
+import { CHAT_EXTRACT_INPUT_CHARS, CHAT_WINDOW, extractMemories, uid } from '../api'
 import { deleteMemory, getAllMemories, getChatMessages, getChatSummary, putMemory } from '../lib/idb'
+import { contextText } from '../lib/chatContext'
 import { categoryNeedsChar, freshExtracted, memoryLines, parseExtractedMemories, selectMemories } from '../lib/memory'
 import { keepInSummary } from '../lib/messageLayers'
-import type { ApiConfig, Character, MemoryCategory, MemoryItem } from '../types'
+import { fitInputBudget } from '../lib/summaryInput'
+import type { ApiConfig, Character, ChatMessage, MemoryCategory, MemoryItem } from '../types'
 
 /* ===== 记忆条目这一域(PRD §3.2-E / F) ================================
    非流式的一半:读、写、标记、授权、以及"从对话里抽几条"。
@@ -162,12 +164,25 @@ export function useMemories(deps: MemoryDeps) {
    * 也不影响任何已经落盘的东西(用户不该因为一次整理没成而被打断)。
    * 返回这一次新记了几条(手动触发那条路拿它显示结果)。
    */
-  async function runExtract(charId: string, messages: { role: string; content: string }[]): Promise<number> {
+  async function runExtract(charId: string, messages: ChatMessage[]): Promise<number> {
     const cfg = deps.chatConfig.value
     if (!cfg || !cfg.model.trim() || !cfg.baseUrl.trim()) return 0
     if (extracting.has(charId) || !messages.length) return 0
     extracting.add(charId)
     try {
+      /* 两道收口都在这一处,两条调用路(自动 / 手动)共用:
+         - keepInSummary 摘掉"想"那一层 —— 心里话没打算说出口,不该被永久记下;
+         - contextText 给"只发图 / 只转卡"的空正文补一句人能读懂的话 ——
+           从前这里把空串直接摊成 `User: `,模型只能看见一个空行。
+         过滤放在 runExtract 而不是各调用点:调用点各写一份,迟早只改了一边 */
+      const kept = messages
+        .filter((m) => keepInSummary(m))
+        .map((m) => ({ role: m.role, content: contextText(m) }))
+      /* 抽取要的是"最近这段关系里有什么值得记",所以从**最新**那头留。
+         一次最多这么多字(见 api.ts 的 CHAT_EXTRACT_INPUT_CHARS);
+         从旧的那头截,留下的会是刚压过、最不新鲜的旧话 */
+      const batch = fitInputBudget(kept, CHAT_EXTRACT_INPUT_CHARS, 'newest')
+      if (!batch.length) return 0
       const summary = await getChatSummary(charId)
       /* 把它"已经记得的"一起告诉模型:否则同一件事会被抽第二遍 ——
          抽取是尽力而为,重复入库却会永久留在记忆中心里 */
@@ -177,7 +192,7 @@ export function useMemories(deps: MemoryDeps) {
       ]
         .filter(Boolean)
         .join('\n')
-      const raw = await extractMemories(cfg, messages, known)
+      const raw = await extractMemories(cfg, batch, known)
       const picked = freshExtracted(parseExtractedMemories(raw), memories.value, charId)
       if (!picked.length) return 0
       const now = Date.now()
@@ -207,18 +222,12 @@ export function useMemories(deps: MemoryDeps) {
   /** 手动触发(记忆中心那枚"整理一下"):从库里读最近一窗消息 */
   async function extractNow(charId: string): Promise<number> {
     const { list } = await getChatMessages(charId, EXTRACT_WINDOW)
-    /* 摘掉"想"那一层再抽:心里话没打算说出口,不该被当成关于你的事实永久记下
-       (与 App 里自动那条路同一道 keepInSummary、同一口径;见 lib/messageLayers) */
-    const keep = list.filter((m) => keepInSummary(m))
-    if (!keep.length) return 0
-    return runExtract(
-      charId,
-      keep.map((m) => ({ role: m.role, content: m.content }))
-    )
+    /* 过滤与占位都在 runExtract 里统一做 —— 这一层只负责把消息读出来 */
+    return runExtract(charId, list)
   }
 
   /** 自动触发:压完记忆那一步顺手跑一次,复用同一批消息,不额外读盘 */
-  async function autoExtract(charId: string, batch: { role: string; content: string }[]): Promise<void> {
+  async function autoExtract(charId: string, batch: ChatMessage[]): Promise<void> {
     await runExtract(charId, batch)
   }
 

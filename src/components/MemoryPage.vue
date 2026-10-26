@@ -10,7 +10,8 @@ import {
   PhStack,
   PhCheck,
   PhEye,
-  PhEraser
+  PhEraser,
+  PhNotebook
 } from '@phosphor-icons/vue'
 import {
   MEMORY_CATEGORIES,
@@ -20,7 +21,9 @@ import {
   memoryAudience,
   sortMemories
 } from '../lib/memory'
-import { CHAT_MEMORY_CHARS, coverSrc } from '../api'
+import { CHAT_MAX_CHARS, coverSrc } from '../api'
+import { hasBriefingText } from '../lib/chatSummary'
+import { useCountUp } from '../lib/countUp'
 import type { Character, ChatSummary, MemoryCategory, MemoryItem } from '../types'
 
 /* ===== 记忆中心(PRD §5.5)—— 主从双栏 =================================
@@ -135,9 +138,20 @@ function latest(items: MemoryItem[]): number {
   return items.reduce((n, m) => Math.max(n, m.updatedAt || 0), 0)
 }
 
+/** 有简报的角色数。页头用它把"一条条事实"与"成篇纪要"分别计数 ——
+ *  这两层刻意不合并,数字也不该被合并成一个说不清的"记忆数" */
+const briefingCount = computed(
+  () => props.characters.filter((c) => hasBriefingText(props.summaries[c.id])).length
+)
+/** 整页是否真的什么都没有:没有事实,也没有任何简报。
+ *  只看 memories 会把"只有简报"的记忆中心整个藏掉(见下面 nothingAtAll) */
+const hasAnyBriefing = computed(() => briefingCount.value > 0)
+
 /* —— 左栏的那些分组 ——
-   两个横切视角(All / Important)+ 一个共享画像组(About you)+ 每个**真有记忆**的角色。
-   没有记忆的角色不进栏:摆一行"0"只会稀释导航,那点信息 All 里已经说了。
+   两个横切视角(All / Important)+ 一个共享画像组(About you)+ 每个**有东西**的角色。
+   "有东西"包括只有简报、还没有独立事实的角色:简报本身就是这一段关系记住的内容,
+   把它关在门外等于让用户以为角色什么都没记住。既没事实也没简报的角色仍不进栏 ——
+   摆一行"0"只会稀释导航。
    About you 只收 profile(charId 为 null 那种);角色组只收非 profile 且挂在它名下的 ——
    与 lib/memory 的 selectMemories 是同一口径的"谁的记忆",各写一份迟早走偏 */
 type GroupIcon = 'stack' | 'star' | 'users' | 'mono'
@@ -152,6 +166,8 @@ interface MemGroup {
   isCharacter: boolean
   isProfile: boolean
   items: MemoryItem[]
+  /** 这个角色有没有对话简报(正文非空)。左栏据此在"0 条事实"处换一枚标记 */
+  hasBriefing: boolean
 }
 
 const groups = computed<MemGroup[]>(() => {
@@ -166,6 +182,7 @@ const groups = computed<MemGroup[]>(() => {
       cover: '',
       isCharacter: false,
       isProfile: false,
+      hasBriefing: false,
       items: all
     }
   ]
@@ -180,6 +197,7 @@ const groups = computed<MemGroup[]>(() => {
       cover: '',
       isCharacter: false,
       isProfile: false,
+      hasBriefing: false,
       items: marked
     })
   }
@@ -194,14 +212,22 @@ const groups = computed<MemGroup[]>(() => {
       cover: '',
       isCharacter: false,
       isProfile: true,
+      hasBriefing: false,
       items: profiles
     })
   }
   props.characters
-    .map((c) => ({ c, items: all.filter((m) => !isProfileMemory(m) && m.charId === c.id) }))
-    .filter((x) => x.items.length)
-    .sort((a, b) => latest(b.items) - latest(a.items))
-    .forEach(({ c, items }) =>
+    .map((c) => {
+      const items = all.filter((m) => !isProfileMemory(m) && m.charId === c.id)
+      const hasBriefing = hasBriefingText(props.summaries[c.id])
+      /* 事实与简报都会随时间更新,排序取两者较新的那个:
+         只按事实排的话,一个刚聊完、简报刚重写过的角色会沉到下面 */
+      const updatedAt = Math.max(latest(items), props.summaries[c.id]?.updatedAt || 0)
+      return { c, items, hasBriefing, updatedAt }
+    })
+    .filter((x) => x.items.length || x.hasBriefing)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .forEach(({ c, items, hasBriefing }) =>
       out.push({
         key: c.id,
         label: c.name,
@@ -211,6 +237,7 @@ const groups = computed<MemGroup[]>(() => {
         cover: coverSrc(c.ref),
         isCharacter: true,
         isProfile: false,
+        hasBriefing,
         items
       })
     )
@@ -249,6 +276,11 @@ const currentItems = computed(() =>
 )
 
 const totalMarked = computed(() => props.memories.filter((m) => m.important).length)
+/* 页首总量:进场从 0 数上去(只数一次,增删/换角色不重播,见 lib/countUp)。
+   措辞的单复数仍判真值、不判滚动中的显示值 */
+const { display: memoriesShown } = useCountUp(() => props.memories.length)
+const { display: markedShown } = useCountUp(() => totalMarked.value)
+const { display: briefingsShown } = useCountUp(() => briefingCount.value)
 
 /* —— 手动补充 ——
    三个字段收在一个表单里,常态只占顶部一个按钮。
@@ -348,7 +380,10 @@ const briefClamped = computed(() => briefOverflow.value && !expanded.value)
 const briefEditing = ref(false)
 const briefDraft = ref('')
 const briefLen = computed(() => briefDraft.value.trim().length)
-const briefTooLong = computed(() => briefLen.value > CHAT_MEMORY_CHARS)
+/* 上限必须与**服务端注入**那一刀对齐(server 的 memoryBrief 用 CHAT_MAX_CHARS)。
+   从前这里写的是导出包的上限(20k),用户能存进 12k,而下一轮只送 8k,
+   尾巴静默消失 —— 输入框里明明还有,角色却像没读过 */
+const briefTooLong = computed(() => briefLen.value > CHAT_MAX_CHARS)
 const briefCanSave = computed(() => !!briefLen.value && !briefTooLong.value)
 
 function startBriefEdit() {
@@ -394,7 +429,9 @@ watch([selected, kind], () => {
   expanded.value = false
 })
 
-const nothingAtAll = computed(() => props.memories.length === 0)
+/* 只有"事实与简报都没有"才算整页空。只看 memories 的话,一个只压过简报、
+   还没抽出独立事实的角色会让整页显示成"什么都没记住" —— 简报明明就在库里 */
+const nothingAtAll = computed(() => props.memories.length === 0 && !hasAnyBriefing.value)
 </script>
 
 <template>
@@ -421,8 +458,11 @@ const nothingAtAll = computed(() => props.memories.length === 0)
         <div class="mem-title">
           <h1>Memory</h1>
           <p class="mem-sub">
-            {{ memories.length }} {{ memories.length === 1 ? 'memory' : 'memories' }}
-            <template v-if="totalMarked">· {{ totalMarked }} marked</template>
+            {{ memoriesShown }} {{ memories.length === 1 ? 'memory' : 'memories' }}
+            <template v-if="totalMarked">· {{ markedShown }} marked</template>
+            <template v-if="briefingCount">
+              · {{ briefingsShown }} {{ briefingCount === 1 ? 'briefing' : 'briefings' }}
+            </template>
           </p>
         </div>
         <div class="mem-acts">
@@ -466,7 +506,17 @@ const nothingAtAll = computed(() => props.memories.length === 0)
               <template v-else>{{ g.initials }}</template>
             </span>
             <span class="rail-n">{{ g.label }}</span>
-            <span class="rail-c">{{ g.items.length }}</span>
+            <!-- 只有简报、还没有独立事实的角色:0 条事实会让人以为"它什么都没记住",
+                 换一枚小标记说明"这段关系有纪要,只是还没拆成一条条事实" -->
+            <span
+              v-if="g.isCharacter && g.hasBriefing && !g.items.length"
+              class="rail-brief"
+              title="Has a conversation briefing"
+            >
+              <PhNotebook aria-hidden="true" />
+              <span class="sr-only">Has a conversation briefing</span>
+            </span>
+            <span v-else class="rail-c">{{ g.items.length }}</span>
           </button>
         </aside>
 
@@ -574,10 +624,10 @@ const nothingAtAll = computed(() => props.memories.length === 0)
               ></textarea>
               <div class="brief-meter">
                 <span class="brief-count" :class="{ over: briefTooLong }">
-                  {{ briefLen }} / {{ CHAT_MEMORY_CHARS }}
+                  {{ briefLen }} / {{ CHAT_MAX_CHARS }}
                 </span>
                 <span v-if="briefTooLong" class="brief-warn">
-                  Trim it — past {{ CHAT_MEMORY_CHARS }} characters the tail won't reach
+                  Trim it — past {{ CHAT_MAX_CHARS }} characters the tail won't reach
                   {{ activeGroup.label }}.
                 </span>
               </div>
@@ -699,8 +749,12 @@ const nothingAtAll = computed(() => props.memories.length === 0)
                 kind !== 'all'
                   ? `No ${MEMORY_CATEGORIES.find((c) => c.key === kind)?.label || 'such'} memories in ${activeGroup.label} yet.`
                   : activeGroup.isCharacter
-                    ? `Nothing remembered about your talks with ${activeGroup.label} yet. Talk a while, or add one by hand.`
-                    : 'Nothing under this view yet.'
+                    ? activeGroup.hasBriefing
+                      ? `No separate facts yet — ${activeGroup.label}'s conversation briefing is above. You can also add one by hand.`
+                      : `Nothing remembered about your talks with ${activeGroup.label} yet. Talk a while, or add one by hand.`
+                    : hasAnyBriefing
+                      ? 'No standalone facts yet. Conversation briefings live under each character on the left.'
+                      : 'Nothing under this view yet.'
               }}
             </p>
             <button type="button" class="mem-btn" @click="selected = 'all'; kind = 'all'">
@@ -854,6 +908,17 @@ const nothingAtAll = computed(() => props.memories.length === 0)
   font-size: var(--fs-xs);
   opacity: 0.6;
   font-variant-numeric: tabular-nums;
+}
+/* 简报标记:与条数占同一格,安静到不抢名字,但"这里有东西"一眼可见 */
+.rail-brief {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  opacity: 0.6;
+}
+.rail-brief svg {
+  width: 13px;
+  height: 13px;
 }
 
 /* 右栏:当前一组 */
@@ -1290,7 +1355,7 @@ const nothingAtAll = computed(() => props.memories.length === 0)
   border-color: var(--line-strong);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
-/* 水位:数字右贴、超长那句左占。超过 CHAT_MEMORY_CHARS 时整行转红 ——
+/* 水位:数字右贴、超长那句左占。超过 CHAT_MAX_CHARS 时整行转红 ——
    超出部分到不了模型(server 注入那一路会切),先在这儿拦住,别让它静默掉尾 */
 .brief-meter {
   display: flex;

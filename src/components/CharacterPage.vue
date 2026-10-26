@@ -1956,6 +1956,9 @@ function originBadge(key: SpecFieldKey): string {
 }
 .chars.is-arc .roster-toggle {
   flex: 0 0 auto;
+  /* 容器是 column flex，默认 align-items:stretch 会把这枚 inline-flex 药丸横向拉满；
+     flex:0 0 auto 只锁主轴(高)，够不着交叉轴 → 显式 flex-start 让它按内容宽、与网格态一致 */
+  align-self: flex-start;
 }
 .chars.is-arc .cf-cap,
 .chars.is-arc .cf-dots {

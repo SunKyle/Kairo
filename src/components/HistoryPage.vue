@@ -17,7 +17,12 @@ import { exportImages, imageSrc, thumbSrc, downloadImageUrl } from '../api'
 /* "叫什么、读哪一句、从哪来"的唯一口径。对话里生成的那两张图没有它,
    就只能拿一整段摄影提示词当标题(见 lib/chatWork) */
 import { chatWorkLabel, workText, workTitle } from '../lib/chatWork'
+import { useCountUp } from '../lib/countUp'
 import { matchesHistoryQuery, normalizeQuery, type HistorySearchNames } from '../lib/historySearch'
+/* 历史页第二种看法(穹顶画廊)的持久偏好。与主题/沉浸/展示开关同一类:
+   这台设备上的界面口味,不跨标签页同步 —— 见 lib/prefs.ts 里的那段说明 */
+import { savedHistoryView, saveHistoryView, type HistoryView } from '../lib/prefs'
+import DomeGallery from './DomeGallery.vue'
 import type { Collection, HistoryEntry, ResultItem } from '../types'
 
 /** 读屏念出来的名字用短标题:整段提示词可能有上百字,念完没人记得住,
@@ -65,6 +70,10 @@ const tiles = computed<Tile[]>(() =>
   )
 )
 const imageCount = computed(() => tiles.value.length)
+/* 页首那两个总量:进场时从 0 数上去,给"这一页攒了多少"一点重量感。
+   只数一次,之后搜索/增删让它们实时变也不重播(见 lib/countUp) */
+const { display: recordsShown } = useCountUp(() => props.items.length)
+const { display: imagesShown } = useCountUp(() => imageCount.value)
 
 /* ===== 搜索 =====
    三处匹配:提示词正文、角色名、作品集名(见 lib/historySearch)。
@@ -241,6 +250,45 @@ watch([() => props.collections, activeColl], () => {
     activeColl.value = ''
   }
 })
+
+/* ===== 视图模式:列表(瀑布墙)⇄ 穹顶画廊 ==========================
+   穹顶是**并列的第二种看法**,不是替代品:搜索/筛选/多选下载/懒加载分页
+   这些"办事儿"的动作全部留在列表里。穹顶只负责"看",点一张走同一个
+   emit('open', entry, index) —— 预览、标记、下载都接现成的 ImagePreview。
+
+   持久化:这台设备上次落在哪儿。切换即写,与 theme/immersive/showThink
+   一条链路(见 lib/prefs.ts)。存量用户第一次进来还是那面熟悉的墙。 */
+const mode = ref<HistoryView>(savedHistoryView())
+watch(mode, (v) => saveHistoryView(v))
+
+/* 穹顶的门槛:图太少摆上球壳反而空洞,整池 ≥20 张才给这一颗 pill。
+   按**未筛的总量**算而不是按当前筛后:阈值回答的是"值不值得开画廊这个模式",
+   而不是"当前结果够不够铺满球壳"—— 后者是穹顶自己按 seg 循环填的事。 */
+const GALLERY_MIN = 20
+const galleryAvailable = computed(() => tiles.value.length >= GALLERY_MIN)
+/* 选择态与画廊不同屏:多选是"在图墙上勾一批带走"的动作,而穹顶只是浏览。
+   进了画廊还挂着"选择中"这个态、退出按钮却在另一个视图里,会让人以为卡住了。
+   所以进画廊就把选择态收掉,清空也一并做了。 */
+watch(mode, (v) => {
+  if (v === 'gallery' && selecting.value) endSelect()
+})
+
+/* 穹顶最多铺 130 张(seg=26 → 26×5)。多于 130 时,只喂首批、右上角一句
+   "N more — narrow the filter" 提醒:穹顶不是"翻全部档案"的地方,那是列表的活。 */
+const DOME_CAP = 130
+const domeImages = computed(() =>
+  shownTiles.value
+    .slice(0, DOME_CAP)
+    .map((t) => ({ id: t.key, src: imageSrc(t.item), alt: workTitle(t.entry) }))
+)
+const domeOverflow = computed(() => Math.max(0, shownTiles.value.length - DOME_CAP))
+
+/* 穹顶里点了哪一张。id 就是 Tile.key(`${entry.id}-${index}`),反查回本表
+   拿到 entry/index,再走与图墙完全同一条 open 事件。 */
+function onDomeOpen(id: string) {
+  const t = shownTiles.value.find((x) => x.key === id)
+  if (t) emit('open', t.entry, t.index)
+}
 
 /* —— 多选下载 ——
    下载不写死"已标记的那些":标记是一份长期收藏,而"这次要带走哪几张"
@@ -422,7 +470,7 @@ function fmt(ts: number) {
       <!-- 页面名不在这儿写第二遍:顶部横条的字标已经在说"History"。
            这里留的是只有这一页才有的东西 —— 有多少条记录、多少张图 -->
       <p class="lib-sub">
-        {{ items.length }} {{ items.length === 1 ? 'record' : 'records' }} · {{ imageCount }} {{ imageCount === 1 ? 'image' : 'images' }}
+        {{ recordsShown }} {{ items.length === 1 ? 'record' : 'records' }} · {{ imagesShown }} {{ imageCount === 1 ? 'image' : 'images' }}
       </p>
       <!-- 页级动作:常态是「进入多选」,进了多选就换成那一套动作。
            整个块跟着一起收 —— 空的历史页不该在标题旁留一段空白 -->
@@ -435,6 +483,34 @@ function fmt(ts: number) {
         >
           {{ exportErr || exportMsg || exportProgress }}
         </p>
+        <!-- 视图切换:只有攒够了图才给这一颗 pill(见 galleryAvailable),
+             选择态里也不显示 —— 一边在挑下载、一边切走视图,退出按钮就丢了。
+             小按钮排在这排动作的最左,与 Select/Download 同一列高度同一规格 -->
+        <div
+          v-if="galleryAvailable && !selecting"
+          class="view-toggle"
+          role="group"
+          aria-label="History view"
+        >
+          <button
+            type="button"
+            class="vt-opt"
+            :class="{ on: mode === 'list' }"
+            :aria-pressed="mode === 'list'"
+            @click="mode = 'list'"
+          >
+            List
+          </button>
+          <button
+            type="button"
+            class="vt-opt"
+            :class="{ on: mode === 'gallery' }"
+            :aria-pressed="mode === 'gallery'"
+            @click="mode = 'gallery'"
+          >
+            Gallery
+          </button>
+        </div>
         <template v-if="selecting">
           <button v-if="shownTiles.length" type="button" class="lib-btn" @click="toggleAll">
             {{ allShownSelected ? 'Deselect all' : 'Select all' }}
@@ -550,11 +626,28 @@ function fmt(ts: number) {
       </p>
     </div>
 
+    <!-- ===== 穹顶画廊 =====
+         只在 mode==='gallery' 且当前筛出来有图时挂上。穹顶天生是"看"的地方,
+         点一张走与图墙同一个 open 事件 → ImagePreview 里做标记/下载/删除。
+         超过 130 张时只喂前 130(seg=26 的格数),右上贴一句"N more"提醒 ——
+         翻全部档案是列表的活,这里不是。 -->
+    <div v-if="mode === 'gallery' && shownTiles.length" class="gallery-shell">
+      <DomeGallery :images="domeImages" @open="onDomeOpen" />
+      <p v-if="domeOverflow" class="gallery-hint" aria-live="polite">
+        Showing {{ DOME_CAP }} of {{ shownTiles.length }} images · switch to List for the rest
+      </p>
+    </div>
+
     <!-- —— 命中的图片:一张一块 ——
          与下面的图墙分开,是因为两者答的不是同一件事:图墙是浏览
          (悬停才出提示词与参数,动作按记录),这一条是"就是这张"
-         (动作常驻,标着它从哪条记录来)。只在搜索时出现(见 stripTiles 的说明) -->
-    <section v-if="searching && stripTiles.length" class="strip" aria-label="Matching images">
+         (动作常驻,标着它从哪条记录来)。只在搜索时出现(见 stripTiles 的说明)
+         画廊模式下整段列表 UI 都不挂 —— 穹顶里没勾选这回事 -->
+    <section
+      v-if="mode === 'list' && searching && stripTiles.length"
+      class="strip"
+      aria-label="Matching images"
+    >
       <div class="strip-head">
         <h2 class="strip-title">Images</h2>
         <span class="strip-n">{{ shownTiles.length }}</span>
@@ -611,7 +704,7 @@ function fmt(ts: number) {
     </section>
 
     <!-- 外层用 template 包一层:图墙与"加载更多"是两件东西,而 v-else 要配在同一层 -->
-    <template v-if="shownTiles.length">
+    <template v-if="mode === 'list' && shownTiles.length">
     <div
       class="wall"
       :role="selecting ? 'group' : undefined"
@@ -718,7 +811,7 @@ function fmt(ts: number) {
     </div>
     </template>
 
-    <div v-else class="lib-none">
+    <div v-if="!shownTiles.length" class="lib-none">
       <div class="none-ico" aria-hidden="true">
         <PhMagnifyingGlass v-if="searching" aria-hidden="true" />
         <PhUser v-else-if="charFilter" aria-hidden="true" />
@@ -759,6 +852,69 @@ function fmt(ts: number) {
   justify-content: flex-end;
   align-items: center;
   gap: var(--sp-2) var(--sp-3);
+}
+/* —— 视图切换:List | Gallery ——
+   一颗药丸里两枚小 tab,与页级按钮同高(40px)。选中那枚走反色 ——
+   与全站浅色系一致,不用渐变、不用发光,靠"底色翻转"就够把当前档说清楚。
+   只在图池 ≥ 20 时出现(见 galleryAvailable),小池子不给入口免得点了空穹顶 */
+.view-toggle {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  flex: none;
+}
+.vt-opt {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-2);
+  padding: 0 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+.vt-opt.on {
+  background: var(--text-1);
+  color: var(--bg);
+}
+.vt-opt:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* —— 穹顶容器 ——
+   收到 52vh 一档(而非 70vh 满屏):球壳是圆的,容器越方越大,圆周围那圈
+   纯页面底就越像"贴了块面板"。压住高度让半径自适应跟着收,球体仍饱满、
+   四角留白却小了很多,读起来是"页面里的一段",不是"叠了一层 UI"。 */
+.gallery-shell {
+  position: relative;
+  margin-top: var(--sp-4);
+  min-height: 420px;
+  height: clamp(420px, 52vh, 560px);
+}
+.gallery-hint {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 8;
+  margin: 0;
+  padding: 6px 12px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
 }
 .dl-msg {
   font-size: var(--fs-xs);

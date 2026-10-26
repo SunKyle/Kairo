@@ -94,6 +94,36 @@ export function savePhotoFrequency(v: PhotoFrequency): void {
   }
 }
 
+/* ===== 历史页的视图偏好 ==============================================
+   历史页有两种看法:默认的瀑布墙(能搜、能筛、能多选下载),以及并列的**穹顶画廊**
+   (拖着转的 3D 展陈,只作浏览、点一张进预览)。这一键记的是"这个人上次用哪一种"。
+   与主题/沉浸/展示开关同一类:这台设备上的界面口味,不是一份会被整份覆盖写的
+   数据目录 —— 丢了不影响任何东西,另一个标签页切了跟着变反而突兀,所以不进 SYNC_KEYS。
+   所有函数不抛异常,理由见本文件开头。 */
+
+const HISTORY_VIEW_KEY = 'kimage.historyView'
+
+/** 历史页视图。'list' 是瀑布墙,'gallery' 是穹顶。 */
+export type HistoryView = 'list' | 'gallery'
+
+/** 上次落在哪种视图。**没设过 / 读到别的值一律落回 'list'** ——
+ *  存量用户打开历史页还是那面熟悉的墙,不擅自把他们的档案换成画廊 */
+export function savedHistoryView(): HistoryView {
+  try {
+    return localStorage.getItem(HISTORY_VIEW_KEY) === 'gallery' ? 'gallery' : 'list'
+  } catch {
+    return 'list'
+  }
+}
+
+export function saveHistoryView(v: HistoryView): void {
+  try {
+    localStorage.setItem(HISTORY_VIEW_KEY, v === 'gallery' ? 'gallery' : 'list')
+  } catch {
+    /* 记不住就记不住:这一次的选择照常生效,只是下次回不到这个视图 */
+  }
+}
+
 /* ===== 心理层次的展示开关与场景闸(见 doc/对话体验.md)====
    三根杆里"展示"这一根:think / act 各一个**全局**开关,只管界面上给不给看,
    **不回写记忆、也不回写喂模型的下一轮**(关掉展示 ≠ 删了事件 —— 设计 §5 那条硬规矩)。

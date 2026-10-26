@@ -1,8 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { PhMagnifyingGlass, PhMaskHappy, PhPushPin, PhX } from '@phosphor-icons/vue'
+import { computed, ref, watch } from 'vue'
+import {
+  PhMagnifyingGlass,
+  PhMaskHappy,
+  PhPushPin,
+  PhPushPinSlash,
+  PhX
+} from '@phosphor-icons/vue'
 import type { Character, ChatMessage } from '../types'
 import { coverSrc } from '../api'
+import SwipeRow from './SwipeRow.vue'
 /* 左栏的顺序与"某个角色最后一句"的取法:与主界面进页面时的那一挑**共用同一份**
    (见 lib/chatOrder 的说明) */
 import { lastMessageLookup, orderConversations } from '../lib/chatOrder'
@@ -78,6 +85,22 @@ const railGroups = computed(() => {
 function clearRailQuery() {
   railQuery.value = ''
 }
+
+/* 滑动置顶:抽屉的开合**由这里统一管**,一行一个 id。
+ *  这么做不是客套 —— 左栏是长列表,让两行的抽屉同时开着,
+ *  第二行一开,第一行那条缝就永远留在名单中间,看着像坏了。
+ *  行本身换组/被搜掉时组件会重建,这里的账也要跟着清 */
+const swiped = ref('')
+function setSwiped(id: string, open: boolean) {
+  if (open) swiped.value = id
+  else if (swiped.value === id) swiped.value = ''
+}
+watch(railQuery, () => {
+  swiped.value = ''
+})
+watch(railList, (list) => {
+  if (swiped.value && !list.some((c) => c.id === swiped.value)) swiped.value = ''
+})
 
 function avatarOf(c: Character): string {
   return coverSrc(c.ref)
@@ -164,14 +187,22 @@ function lastLine(c: Character): string {
       :aria-label="g.label || undefined"
     >
       <p v-if="g.label" class="rail-group-h">{{ g.label }}</p>
-      <!-- 一行 = 一个"选它"按钮 + 一枚图钉(两个兄弟节点)。
+      <!-- 一行 = 一个可滑的壳(SwipeRow)+ 壳里的"选它"按钮 + 一枚图钉(两个兄弟)。
            **不能把图钉嵌在行按钮里**:按钮不能套按钮,那是无效 HTML,
-           读屏与键盘也会跟着乱 -->
-      <div
+           读屏与键盘也会跟着乱。
+           置顶现在有两条路:向左滑过提交点直接执行(快),或悬停/聚焦后的图钉(稳,
+           也是键盘与触屏的等价入口 —— SwipeRow 因此不再自带隐藏开关钮)。 -->
+      <SwipeRow
         v-for="c in g.items"
         :key="c.id"
         class="rail-item"
         :class="{ on: c.id === active }"
+        :label="c.name"
+        :action-label="c.pinned ? 'Unpin' : 'Pin'"
+        :action-icon="c.pinned ? PhPushPinSlash : PhPushPin"
+        :open="swiped === c.id"
+        @update:open="(o) => setSwiped(c.id, o)"
+        @commit="emit('pin', c.id)"
       >
         <button
           class="rail-row"
@@ -194,18 +225,7 @@ function lastLine(c: Character): string {
             <span class="rail-last">{{ lastLine(c) }}</span>
           </span>
         </button>
-        <!-- 置顶就在这一行上做:要置顶的念头多半是"在聊天列表里找不到它"
-             的那一刻冒出来的,逼人先切去角色页再回来是绕路。
-             图钉平时不出现(置顶与否由分组标题说明),悬停或键盘聚焦才浮出 -->
-        <button
-          class="rail-pin"
-          :aria-label="c.pinned ? `Unpin ${c.name}` : `Pin ${c.name}`"
-          :aria-pressed="!!c.pinned"
-          @click="emit('pin', c.id)"
-        >
-          <PhPushPin aria-hidden="true" />
-        </button>
-      </div>
+      </SwipeRow>
     </div>
   </div>
   <p v-else class="rail-empty">No characters yet.</p>
@@ -253,8 +273,8 @@ function lastLine(c: Character): string {
   width: 100%;
   /* 触控目标 ≥40px */
   min-height: 52px;
-  /* **不再为图钉留右侧那一格** —— 它已经挪到头像框上了(见 .rail-pin),
-     腾出来的 42px 全给名字与摘要 */
+  /* 行右侧不留图钉那一格 —— 置顶改由 SwipeRow 滑动手势承担,
+     整行宽度都给名字与摘要 */
   padding: 6px 8px;
   border: 0;
   border-radius: var(--r-sm);
@@ -291,52 +311,6 @@ function lastLine(c: Character): string {
   color: var(--text-3);
   font-size: var(--fs-micro);
   font-variant-numeric: tabular-nums;
-}
-.rail-pin {
-  position: absolute;
-  /* 贴在**头像框右上角**,像一枚状态徽章。坐标是从行的几何推出来的,不是随手填的:
-       头像 36px、行高 52px、行左内边距 8px(--sp-2)、行高内边距 6px
-       → 头像占 x 8..44、y 8..44
-       → 徽章 22px 且外沿出头像 3px:left = 44+3-22 = 25,top = 8-3 = 5
-     改头像尺寸或行内边距时,这两个数要跟着重算 */
-  left: 25px;
-  top: 5px;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  /* 压在头像这张图上,得有自己的底与一圈边,否则图形和脸糊在一起 */
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-3);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease),
-    background var(--dur) var(--ease);
-}
-.rail-item:hover .rail-pin,
-.rail-item:focus-within .rail-pin {
-  opacity: 1;
-}
-/* **置顶不再有角标** —— 那件事已经由独立分组与标题承担(见 .rail-group-h)。
-   这枚图钉于是退回成**纯动作**:平时不出现,悬停(或键盘聚焦)才浮出来,
-   点了就是"置顶 / 取消置顶"。
-   触屏没有悬停,那边仍靠 @media (hover: none) 让它常驻一份淡的,
-   否则置顶过的行就没有取消的入口了 */
-.rail-pin:hover {
-  background: var(--accent-soft);
-  color: var(--text);
-}
-.rail-pin svg {
-  width: 11px;
-  height: 11px;
-}
-/* 触屏没有 hover:常驻但压暗一档,免得名单看起来很吵 */
-@media (hover: none) {
-  .rail-pin {
-    opacity: 0.55;
-  }
 }
 .rail-ava {
   flex: none;

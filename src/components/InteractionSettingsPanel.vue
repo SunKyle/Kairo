@@ -53,7 +53,7 @@ const currentName = computed(() => props.characters.find((c) => c.id === picked.
 
     <template v-else>
       <div class="pick">
-        <span class="pick-label">Tuning for</span>
+        <span class="k-eyebrow">Tuning for</span>
         <div class="pick-chips" role="radiogroup" aria-label="Character">
           <button
             v-for="c in characters"
@@ -90,12 +90,6 @@ const currentName = computed(() => props.characters.find((c) => c.id === picked.
   flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2) var(--sp-3);
-}
-.pick-label {
-  font-size: var(--fs-xs);
-  letter-spacing: var(--ls-eyebrow);
-  text-transform: uppercase;
-  color: var(--text-3);
 }
 .pick-chips {
   display: flex;

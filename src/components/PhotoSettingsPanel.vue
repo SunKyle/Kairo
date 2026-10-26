@@ -7,6 +7,7 @@ import {
   savedPhotoDirector,
   savedPhotoFrequency
 } from '../lib/prefs'
+import RubberSegment from './RubberSegment.vue'
 
 /* 出图(设置页的「Photos」分区)。
 
@@ -31,12 +32,20 @@ import {
    最低档 Rarely 仍然保留"图是这句话的重点才发"这条判据,不是禁止。
 
    文字上刻意写 "lean / not a quota":它是提示词倾向,不是客户端硬拦截
-   (2026-10-03 的产品决定,见 doc/角色出图.md §4.1.2)。 */
+   (2026-10-03 的产品决定,见 doc/角色出图.md §4.1.2)。
 
-const FREQUENCIES: ReadonlyArray<{ value: PhotoFrequency; label: string }> = [
+   两行都是平级、短选项 —— 用全站那枚 <RubberSegment> 分段控件;外壳
+   (卡片 / 行 / 卡头)走设置页共享类 `.k-*`(见 styles/settings.css)。 */
+
+const FREQUENCIES: { value: PhotoFrequency; label: string }[] = [
   { value: 'rare', label: 'Rarely' },
   { value: 'normal', label: 'Sometimes' },
   { value: 'often', label: 'Often' }
+]
+
+const DIRECTOR_ITEMS = [
+  { value: 'on', label: 'On' },
+  { value: 'off', label: 'Off' }
 ]
 
 /* 初值现读盘。存取都可能被禁,但 prefs 里的函数一律不抛 ——
@@ -56,178 +65,55 @@ function pickFrequency(v: PhotoFrequency): void {
 </script>
 
 <template>
-  <section class="panel">
-    <div class="panel-head">
-      <h3 class="panel-title">Pictures in Chat</h3>
-      <span class="panel-note">
+  <section class="k-card">
+    <div class="k-card__head">
+      <h3 class="k-card__title">Pictures in Chat</h3>
+      <span class="k-card__note">
         Applies to every character on this device. Both rows only matter once an Image generation
         model is set up in AI connections.
       </span>
     </div>
 
-    <div class="rows">
-      <div class="row">
-        <div class="row-label">
-          <span class="row-name">How often they send pictures</span>
-          <span class="row-hint">
-            A lean in the prompt, not a quota — they still decide when a picture is the point
-            of the message.
+    <div class="k-card__rows">
+      <div class="k-row">
+        <div class="k-row__label">
+          <span class="k-row__name">How often they send pictures</span>
+          <span class="k-row__hint">
+            A lean in the prompt, not a quota — they still decide when a picture is the point of
+            the message.
           </span>
         </div>
-        <div class="row-opts" role="radiogroup" aria-label="How often they send pictures">
-          <button
-            v-for="f in FREQUENCIES"
-            :key="f.value"
-            type="button"
-            class="opt"
-            :class="{ on: frequency === f.value }"
-            role="radio"
-            :aria-checked="frequency === f.value"
-            @click="pickFrequency(f.value)"
-          >
-            {{ f.label }}
-          </button>
+        <div class="k-row__ctl">
+          <RubberSegment
+            :items="FREQUENCIES"
+            :model-value="frequency"
+            :radius="999"
+            :inset="4"
+            aria-label="How often they send pictures"
+            @change="(v) => pickFrequency(v as PhotoFrequency)"
+          />
         </div>
       </div>
 
-      <div class="row">
-        <div class="row-label">
-          <span class="row-name">Photography director</span>
-          <span class="row-hint">
-            One quick text pass per picture, to set framing, light and lens. Off draws the
-            scene exactly as the character wrote it.
+      <div class="k-row">
+        <div class="k-row__label">
+          <span class="k-row__name">Photography director</span>
+          <span class="k-row__hint">
+            One quick text pass per picture, to set framing, light and lens. Off draws the scene
+            exactly as the character wrote it.
           </span>
         </div>
-        <div class="row-opts" role="radiogroup" aria-label="Photography director">
-          <button
-            type="button"
-            class="opt"
-            :class="{ on: director }"
-            role="radio"
-            :aria-checked="director"
-            @click="pickDirector(true)"
-          >
-            On
-          </button>
-          <button
-            type="button"
-            class="opt"
-            :class="{ on: !director }"
-            role="radio"
-            :aria-checked="!director"
-            @click="pickDirector(false)"
-          >
-            Off
-          </button>
+        <div class="k-row__ctl">
+          <RubberSegment
+            :items="DIRECTOR_ITEMS"
+            :model-value="director ? 'on' : 'off'"
+            :radius="999"
+            :inset="4"
+            aria-label="Photography director"
+            @change="(v) => pickDirector(v === 'on')"
+          />
         </div>
       </div>
     </div>
   </section>
 </template>
-
-<style scoped>
-/* 与 AppearancePanel / InteractionPanel 同一套卡(同色面上的同一种卡)。
-   两份而不是共享:那些类是 scoped 的 —— 改这里的值时顺手看一眼那边 */
-.panel {
-  padding: var(--sp-4);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  background: var(--surface);
-}
-.panel-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: var(--sp-3);
-}
-.panel-title {
-  font-size: var(--fs-lg);
-  color: var(--text);
-}
-.panel-note {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-  color: var(--text-3);
-}
-
-.rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-.row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-4);
-}
-.row-label {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-.row-name {
-  font-size: var(--fs-sm);
-  color: var(--text);
-}
-.row-hint {
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-  color: var(--text-3);
-}
-.row-opts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: flex-end;
-}
-/* 档位按钮:选中用淡底 + 墨色字(与相处偏好那边同一套)。
-   一页里全用实心墨底的话会立起好几块黑,而"选中"在这里本该是轻的 */
-.opt {
-  padding: 8px 12px;
-  font-size: var(--fs-xs);
-  font-family: inherit;
-  line-height: 1.2;
-  color: var(--text-2);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  transition:
-    background var(--dur) var(--ease),
-    color var(--dur) var(--ease),
-    border-color var(--dur) var(--ease);
-}
-.opt:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-.opt.on {
-  background: var(--accent-soft);
-  border-color: var(--line-strong);
-  color: var(--text);
-}
-.opt:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* 窄屏落到上下两段:三档按钮挤在半行里会换行,反而更难扫(与外观 / 相处偏好同一条) */
-@media (max-width: 720px) {
-  .row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--sp-2);
-  }
-  .row-opts {
-    justify-content: flex-start;
-  }
-  /* 触屏目标抬到 40px */
-  .opt {
-    min-height: 40px;
-  }
-}
-</style>

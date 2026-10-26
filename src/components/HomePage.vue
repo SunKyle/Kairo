@@ -173,7 +173,8 @@ function coverOf(c: Character): string {
   font-size: var(--fs-sm);
   color: var(--text);
   cursor: pointer;
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    transform var(--dur-spring) var(--spring);
 }
 .home-new svg {
   width: 15px;
@@ -182,6 +183,11 @@ function coverOf(c: Character): string {
 .home-new:hover {
   background: var(--bg-elev);
   border-color: var(--text-3);
+}
+/* 按下弹回:与卡片里的 CTA 同一条手感(压下去快、松手 spring 过冲) */
+.home-new:active {
+  transform: scale(0.94);
+  transition: transform 120ms var(--ease);
 }
 /* 空态里那一颗大一点:那一屏只有它一件事可做 */
 .home-new.big {
@@ -234,13 +240,16 @@ function coverOf(c: Character): string {
    等宽自动排:放得下几列就几列,不再手调"一行三张"那种数
    (与详情页 .sheet 同一条理由 —— 手调的格数排法加一次格子就废一次)。
    最小宽度给到 168px:再窄一档,卡里那行身份文字就会被折成三行。
-   **最大宽度封顶 240px**:这里上一档写的是 1fr,而 auto-fit 会把空列塌缩掉,
+   **最大宽度封顶 232px**:这里上一档写的是 1fr,而 auto-fit 会把空列塌缩掉,
    于是仅剩的那一列会长满整行 —— 只有一个角色时正视图撑满整屏(3:4 取景下
-   宽度即高度),两三个时同样过大。海报该有尺寸上限,不是商品(PRD §11.2);
-   封顶 240px 后配 justify-content: center 把这一墙居中,而不是左贴边拉满。 */
+   宽度即高度),两三个时同样过大。海报该有尺寸上限,不是商品(PRD §11.2)。
+   **封顶取 232 而不是 240**:1440 桌面上内容栏 ≈ 1000px,四张 240 的卡加三道
+   16px 间距正好是 4×240+3×16=1008,超了 8px —— auto-fit 于是退成三列,
+   第四张单独坠到下一行,排成 3+1。232 让四列稳稳排满(4×232+3×16=976)。
+   封顶后再配 justify-content: center 把这一墙居中,而不是左贴边拉满。 */
 .home-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(168px, 240px));
+  grid-template-columns: repeat(auto-fit, minmax(168px, 232px));
   justify-content: center;
   gap: var(--sp-4);
   margin-top: var(--sp-5);
@@ -329,7 +338,12 @@ function coverOf(c: Character): string {
   color: var(--text-2);
   cursor: pointer;
   transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
-    border-color var(--dur) var(--ease);
+    border-color var(--dur) var(--ease), transform var(--dur-spring) var(--spring);
+}
+/* 按下弹回:一张卡上的 Chat / Details 两颗键一起有这个手感,不厚此薄彼 */
+.hcard-act:active {
+  transform: scale(0.94);
+  transition: transform 120ms var(--ease);
 }
 .hcard-act:hover {
   color: var(--text);
@@ -464,8 +478,8 @@ function coverOf(c: Character): string {
 }
 @media (max-width: 640px) {
   .home-grid {
-    /* 上限与桌面同一档 240px:手机上只有一个角色时,1fr 同样会把那一列拉满整屏 */
-    grid-template-columns: repeat(auto-fit, minmax(132px, 240px));
+    /* 上限与桌面同一档 232px:手机上只有一个角色时,1fr 同样会把那一列拉满整屏 */
+    grid-template-columns: repeat(auto-fit, minmax(132px, 232px));
     gap: var(--sp-3);
   }
 }

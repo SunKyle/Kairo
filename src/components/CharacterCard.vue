@@ -380,14 +380,18 @@ const emit = defineEmits<{
   text-shadow: none;
   pointer-events: auto;
   cursor: pointer;
-  transition: background var(--dur) var(--ease), transform var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease),
+    transform var(--dur-spring) var(--spring);
 }
 .ctile-cta:hover {
   background: #fff;
   transform: translateY(-1px);
 }
 .ctile-cta:active {
-  transform: translateY(0);
+  /* 松手时由上面那条 spring 收回(带一点过冲);压下去这半程走快曲线。
+     scale 叠在悬停抬升之上 —— 按下把那一档浮起收掉、再整体压小,像按实了一颗键 */
+  transform: scale(0.94);
+  transition: transform 120ms var(--ease);
 }
 .ctile-cta-ico {
   width: 13px;

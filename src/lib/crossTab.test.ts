@@ -87,6 +87,10 @@ describe('同步范围 · 与源码里的写入点保持一致', () => {
        跟着变反而突兀,所以不进 SYNC_KEYS */
     PHOTO_DIRECTOR_KEY: { key: 'kimage.photoDirector', synced: false },
     PHOTO_FREQUENCY_KEY: { key: 'kimage.photoFrequency', synced: false },
+    /* 历史页视图偏好(见 lib/prefs.ts 的 savedHistoryView/saveHistoryView)。
+       与上面几个同一类:这台设备上的人上次用哪种看法(瀑布墙 / 穹顶画廊),
+       是界面口味,不是覆盖写的数据目录 —— 另一个标签页切了跟着变反而突兀,不进 SYNC_KEYS */
+    HISTORY_VIEW_KEY: { key: 'kimage.historyView', synced: false },
     /* 场景位(见 lib/prefs.ts 的 sceneModeFor)。它是"这一段对话此刻在不在场景里"的
        状态位,按 charId 分条存在同一把键里。每次保存先重读盘上那份再合并单个角色,
        两个标签页各切各的不会互相覆盖 —— 与相处偏好同一条理由,不进 SYNC_KEYS */

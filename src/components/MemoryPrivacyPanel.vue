@@ -62,10 +62,10 @@ const orphans = computed(
 </script>
 
 <template>
-  <section class="panel">
-    <div class="panel-head">
-      <h3 class="panel-title">Memory &amp; privacy</h3>
-      <span class="panel-note">Where it lives, and who gets to know what.</span>
+  <section class="k-card k-card--stack">
+    <div class="k-card__head">
+      <h3 class="k-card__title">Memory &amp; privacy</h3>
+      <span class="k-card__note">Where it lives, and who gets to know what.</span>
     </div>
 
     <!-- 第一句先答"存在哪"。它是最常被问、也最该先说清的一件事 -->
@@ -112,7 +112,7 @@ const orphans = computed(
 
     <!-- 授权出去的到底是哪几条:摆出来,而不是让用户自己去记忆中心里找 -->
     <div class="shared">
-      <p class="shared-title">
+      <p class="k-eyebrow">
         Every character can know
         <span class="shared-n">{{ shared.length }}</span>
       </p>
@@ -135,7 +135,7 @@ const orphans = computed(
     <!-- 各个角色各留了多少条。它回答的是"它到底记得我多少",
          同时也是"哪个角色我聊得多"的一个侧影 -->
     <div v-if="perChar.length" class="per">
-      <p class="per-title">Kept per character</p>
+      <p class="k-eyebrow">Kept per character</p>
       <ul class="per-list">
         <li v-for="p in perChar" :key="p.id" class="per-item">
           <span class="per-name">{{ p.name }}</span>
@@ -158,32 +158,8 @@ const orphans = computed(
 </template>
 
 <style scoped>
-.panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
-  padding: var(--sp-4);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  background: var(--surface);
-}
-.panel-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-.panel-title {
-  font-size: var(--fs-lg);
-  color: var(--text);
-}
-.panel-note {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-  color: var(--text-3);
-}
-
+/* 卡片外壳与 eyebrow 走全局共享类(styles/settings.css):这里只留本区特有的
+   数据块 / 边界说明 / 列表 / 去记忆中心那颗按钮。 */
 .lede {
   max-width: 68ch;
   font-size: var(--fs-sm);
@@ -245,16 +221,6 @@ const orphans = computed(
   gap: var(--sp-2);
   padding-top: var(--sp-3);
   border-top: 1px solid var(--line);
-}
-.shared-title,
-.per-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--fs-xs);
-  letter-spacing: var(--ls-eyebrow);
-  text-transform: uppercase;
-  color: var(--text-3);
 }
 .shared-n {
   padding: 1px 7px;

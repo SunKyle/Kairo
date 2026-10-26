@@ -419,9 +419,15 @@ function bubblePieces(m: ChatMessage): string[] {
      它仍是一整条、`[think]`/`[act]` 还挂在正文上 —— 这些标记绝不该给用户看见。
      普通回复根本没有标记:hasLayerMarkers 为假就原样往下走,splitAssistantReply 看到的
      字节与改之前完全一致(与主界面那条"常态一个字节都不动"同一个闸)。
-     有标记时把各段的干净文字并回来先连着显示(整段说完后会被扇成几条分别成行)。 */
+     有标记时把各段的干净文字并回来先连着显示(整段说完后会被扇成几条分别成行)。
+     **但只并「这一层此刻该给看」的段** —— 与扇出之后 rows 用的同一根展示杆(isVisibleForUI)。
+     否则会出现:关掉 think 时,流式期间整条还是没打 layer 的 say、think 正文被并进来先画上,
+     收尾一扇出变成独立的 layer:'think' 消息、被 rows 那道 isVisibleForUI 过滤掉 ——
+     用户就看到内心戏闪一下又消失。展示开关在合并这一步就得生效,别让隐藏的层先露脸。 */
+  const layerVis = { showThink: props.showThink !== false, showAct: props.showAct !== false }
   const clean = hasLayerMarkers(stripped)
     ? parseLayers(stripped)
+        .filter((s) => isVisibleForUI(s, layerVis))
         .map((s) => s.text)
         .join('\n')
     : stripped
@@ -1071,7 +1077,9 @@ onBeforeUnmount(() => {
                      第一枚是**产出闸**(sceneMode) —— 它决定服务端那套提示词里 [act] 让不让用,
                      拨动只交意图给主界面(它才发请求)。后两枚是**显示杆**(showThink/showAct) ——
                      关掉只是这一页不画,事件还在库里、照样喂下一轮、该记的还记(见 lib/messageLayers 三根杆独立)。
-                     状态一律写在 .mm-state 那块字上,不靠图标或颜色单独表意(色盲与读屏都读得出)。 -->
+                     状态用右侧一枚**胶囊滑动开关**表达:滑块在左=关、在右=开(靠**位置**区分,
+                     不依赖颜色,色盲也读得出);开关本体 aria-hidden,真状态走按钮上的 aria-pressed
+                     交给读屏;显示那两枚另用眼睛图标(睁/闭)再叠一层形状线索。 -->
                 <div class="menu-layers">
                   <span class="mm-label">Inner life</span>
                   <button
@@ -1081,7 +1089,7 @@ onBeforeUnmount(() => {
                   >
                     <PhFilmSlate aria-hidden="true" />
                     <span class="mm-name">Roleplay a scene</span>
-                    <span class="mm-state">{{ sceneMode ? 'On' : 'Off' }}</span>
+                    <span class="mm-switch" aria-hidden="true"><span class="mm-knob" /></span>
                   </button>
                   <button
                     class="menu-layer"
@@ -1091,7 +1099,7 @@ onBeforeUnmount(() => {
                     <PhEyeSlash v-if="showThink === false" aria-hidden="true" />
                     <PhEye v-else aria-hidden="true" />
                     <span class="mm-name">Show inner thoughts</span>
-                    <span class="mm-state">{{ showThink !== false ? 'On' : 'Off' }}</span>
+                    <span class="mm-switch" aria-hidden="true"><span class="mm-knob" /></span>
                   </button>
                   <button
                     class="menu-layer"
@@ -1101,7 +1109,7 @@ onBeforeUnmount(() => {
                     <PhEyeSlash v-if="showAct === false" aria-hidden="true" />
                     <PhEye v-else aria-hidden="true" />
                     <span class="mm-name">Show actions</span>
-                    <span class="mm-state">{{ showAct !== false ? 'On' : 'Off' }}</span>
+                    <span class="mm-switch" aria-hidden="true"><span class="mm-knob" /></span>
                   </button>
                 </div>
                 <button :disabled="!msgs.length" @click="clearChat">
@@ -1462,7 +1470,7 @@ onBeforeUnmount(() => {
                 v-model="text"
                 class="no-bar"
                 rows="1"
-                :placeholder="`Tell ${current.name} something…`"
+                :placeholder="`和 ${current.name} 说点什么`"
                 :aria-label="`Message ${current.name}`"
                 @keydown="onKeydown"
               ></textarea>
@@ -1561,23 +1569,30 @@ onBeforeUnmount(() => {
         />
       </div>
     </div>
-  </div>
 
     <!-- 大图。点背景或 Esc 收起 —— 与历史页那个查看器同一个交互,
-         但这里只有一张图,不值得为它拉起整套 ImagePreview(那条链绑的是记录) -->
-    <div
-      v-if="zoom"
-      class="zoom"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Image preview"
-      @click.self="zoom = null"
-    >
-      <img :src="zoom.url" :alt="zoom.alt" />
-      <button class="zoom-x" type="button" aria-label="Close" @click="zoom = null">
-        <PhX aria-hidden="true" />
-      </button>
-    </div>
+         但这里只有一张图,不值得为它拉起整套 ImagePreview(那条链绑的是记录)。
+         **收进 .chat 这个唯一根里**:ChatPage 从前有两个根(.chat 与 .zoom),而 Vue 的
+         <Transition> 只动画单根 —— 于是切页时对话页不进出场,下一页直接叠上来成残影。
+         **仍要 Teleport 到 body**:离场那一刻 GSAP 会给 .chat 写 transform,而带 transform
+         的元素成了 fixed 后代的包含块,会把这张全屏浮图钉在页面里 —— Teleport 让它挂到
+         body,既是单根、又脱离这层影响。 -->
+    <Teleport to="body">
+      <div
+        v-if="zoom"
+        class="zoom"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Image preview"
+        @click.self="zoom = null"
+      >
+        <img :src="zoom.url" :alt="zoom.alt" />
+        <button class="zoom-x" type="button" aria-label="Close" @click="zoom = null">
+          <PhX aria-hidden="true" />
+        </button>
+      </div>
+    </Teleport>
+  </div>
 </template>
 
 <style scoped>
@@ -1851,8 +1866,8 @@ onBeforeUnmount(() => {
 }
 /* 心理层次那一组:菜单里自成一格。顶上那道线把它与"离开这段对话"那几枚隔开 ——
    这一组改的是"这段对话怎么说、怎么看",不是换个地方。
-   状态那块 On/Off 靠右、压到 --text-3;开着的那一枚提一档到 --text-2,
-   让"拨没拨"不用只靠图标或颜色说(色盲、读屏都读得出这行字)。 */
+   状态用右侧一枚胶囊滑动开关说:滑块在左=关、在右=开(靠**位置**,不靠颜色,色盲读得出);
+   开关本体 aria-hidden,真状态由外层按钮的 aria-pressed 交给读屏。 */
 .menu-layers {
   margin-top: 5px;
   padding-top: 5px;
@@ -1865,14 +1880,38 @@ onBeforeUnmount(() => {
   font-size: var(--fs-micro);
   letter-spacing: 0.02em;
 }
-.chat-menu .menu-layer .mm-state {
+/* 胶囊开关轨道:靠右、不随名字一起被省略号截断。关时是浅底 + 描边,
+   开时按项目"选中=墨底"的既有习惯填 --accent。滑块靠左右位移说状态。 */
+.chat-menu .menu-layer .mm-switch {
+  position: relative;
   flex: none;
   margin-left: auto;
-  color: var(--text-3);
-  font-size: var(--fs-micro);
+  width: 34px;
+  height: 20px;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-hover);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.chat-menu .menu-layer[aria-pressed='true'] .mm-state {
-  color: var(--text-2);
+.chat-menu .menu-layer .mm-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--text-3);
+  transition: transform var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.chat-menu .menu-layer[aria-pressed='true'] .mm-switch {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.chat-menu .menu-layer[aria-pressed='true'] .mm-knob {
+  background: var(--accent-contrast);
+  /* 轨道内宽 32(34-2×1 描边),滑块 14:2 → 16 = 位移 14 恰好右对齐、两侧留同宽 2 */
+  transform: translateX(14px);
 }
 
 /* ===== 消息流 ===== */
@@ -2106,9 +2145,12 @@ onBeforeUnmount(() => {
      从前只有 76%:气泡一放宽(窄屏那一档是 88%)药丸就没了立足之地,
      整排被 .chat-stream 的滚动容器裁掉,末尾那两枚点都点不到。
      走道按"三枚的最大档"算,所以鼠标与触屏两种尺寸都够(见 --ops-lane)。
-     min() 只在真挤的时候才咬:1440 的桌面上 76% 本来就比走道宽,
-     气泡宽度一个像素都不动 */
-  max-width: min(76%, calc(100% - var(--ops-lane)));
+     **68ch 是排版上的"行长"上限**:1440 桌面上 76% ≈ 815px,一行能排到 55~60 个
+     汉字 —— 眼睛扫到行尾再折回下一行开头会丢句。68ch(约 30 多个汉字 / 60 多个
+     拉丁字母)是 Bringhurst 那一档"读得下去"的行长,超宽屏上它比 76% 先到顶。
+     min() 只在真宽的时候才咬:窄一点的窗口 76% 本来就比 68ch 窄,宽度一个像素都不动。
+     (沉浸页不走这条:它另有 --immersive-col 660px 的居中列管着行长) */
+  max-width: min(76%, 68ch, calc(100% - var(--ops-lane)));
   /* 保留换行:角色可能分句写,压成一行就不是它写的样子了 */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2337,6 +2379,13 @@ onBeforeUnmount(() => {
   position: relative;
   /* 底部留得比别处多:输入框是一张浮起来的卡片,投影要有地方落下去 */
   padding: var(--sp-3) var(--sp-4) var(--sp-5);
+  /* 桌面把整块输入区收成一条居中列(内容约 760 宽)。通栏 1038 时输入框比气泡
+     宽出一大截、比例失衡;收到这一档和"读得下去"的行长同量级。窄屏在媒体查询里还原通栏。
+     必须写 width:100% —— 它是 flex 子项,一旦有 auto 外边距就不再拉伸、会缩到
+     textarea 的固有宽度;先填满再被 max-width 封顶,才轮得到居中。 */
+  width: 100%;
+  max-width: 792px;
+  margin-inline: auto;
   /* 这里刻意没有分隔线 —— 卡片的边界由它自己的投影给出,
      再加一条通栏的横线就是两套边界在打架 */
 }
@@ -2432,26 +2481,32 @@ onBeforeUnmount(() => {
   flex: none;
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   border: 0;
   border-radius: 999px;
   background: none;
   color: var(--text-3);
   cursor: pointer;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+    transform var(--dur-spring) var(--spring);
 }
 .img-btn:hover:not(:disabled) {
   color: var(--text);
   background: var(--bg-elev);
+}
+/* 与发送键同一枚弹回手感:同格子里的两颗键要一起动才不会一个活一个死 */
+.img-btn:active:not(:disabled) {
+  transform: scale(0.9);
+  transition: transform 120ms var(--ease);
 }
 .img-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }
 .img-btn svg {
-  width: 19px;
-  height: 19px;
+  width: 17px;
+  height: 17px;
 }
 /* 气泡里的图。圆角比气泡小一档,压在文字上方 */
 /* 消息里的图**不放进气泡**:文字有文字的框,图有图的位置。
@@ -2750,9 +2805,9 @@ onBeforeUnmount(() => {
   flex: 1;
   min-width: 0;
   max-height: 132px;
-  /* 单行时的高度 = 22(行高) + 18(上下内边距) = 40,与发送键一模一样高,
-     两者的中线才对得齐 */
-  padding: 9px 0;
+  /* 单行时的高度 = 22(行高) + 12(上下内边距) = 34,与发送键一模一样高,
+     两者的中线才对得齐(触屏那档键还原成 40,内边距也随之还原,见窄屏媒体查询) */
+  padding: 6px 0;
   border: 0;
   background: none;
   color: var(--text);
@@ -2779,17 +2834,24 @@ onBeforeUnmount(() => {
   flex: none;
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   border: 0;
   border-radius: 999px;
   background: var(--cta);
   color: var(--cta-text);
   cursor: pointer;
-  transition: background var(--dur) var(--ease), opacity var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease), opacity var(--dur) var(--ease),
+    transform var(--dur-spring) var(--spring);
 }
 .send-btn:hover:not(:disabled) {
   background: var(--cta-hover);
+}
+/* 按下去:压小走快曲线(:active 里的 transition 只管"压下去"这半程),
+   松手时落回上面那条 spring —— 过冲一下再定住。按下弹回的手感就分在这两程 */
+.send-btn:active:not(:disabled) {
+  transform: scale(0.9);
+  transition: transform 120ms var(--ease);
 }
 /* 不可用时不给"半透明的黑":叠色之后会发脏,而且那一枚仍然像个实心按钮。
    换成与浅底同族的淡底 —— 它是"还没到能发的时候",不是"坏掉了" */
@@ -2799,7 +2861,7 @@ onBeforeUnmount(() => {
   cursor: default;
 }
 .send-btn svg {
-  font-size: 18px;
+  font-size: 16px;
 }
 /* 停止符号也用 CSS 画(与光标同一条理由) */
 .stop-sq {
@@ -2952,6 +3014,23 @@ onBeforeUnmount(() => {
   .head-pick {
     min-height: 40px;
   }
+  /* 桌面把输入栏的键收到 34 了 —— 触屏这一档必须还原回 40(触控底线),
+     行高内边距也跟着还原,好让单行输入与 40 的键中线对齐 */
+  .img-btn,
+  .send-btn {
+    width: 40px;
+    height: 40px;
+  }
+  .img-btn svg {
+    width: 19px;
+    height: 19px;
+  }
+  .send-btn svg {
+    font-size: 18px;
+  }
+  .compose-box textarea {
+    padding: 9px 0;
+  }
 
   .chat {
     /* 左栏收起,只剩一列。高度算式与桌面同一条,不另写 ——
@@ -2972,6 +3051,8 @@ onBeforeUnmount(() => {
   }
   .chat-compose {
     padding: var(--sp-3) var(--sp-3) var(--sp-5);
+    /* 窄屏回到通栏:桌面那条居中 760 的收束在这里不适用 */
+    max-width: none;
     /* iPhone 底部横条:不加这一段,输入框会被那条横条压住 */
     padding-bottom: calc(var(--sp-5) + env(safe-area-inset-bottom));
   }
@@ -3108,6 +3189,15 @@ onBeforeUnmount(() => {
   font-size: var(--fs-md);
   line-height: 1.45;
   color: var(--text-2);
+  /* 用户那条贴在照片上最吃亏:它是 --text-2 灰、又比角色的字小,照片一亮就糊。
+     垫一片很淡的墨底 —— 向 --bg 混(两种主题都不塌,别写死深色),
+     **不是把气泡加回来**:没有边、没有 --bubble-bg,只是把这一句落在比周围更稳的
+     底色上,保证"读得清"。沉浸页正文靠左(--msg align-items:flex-start),
+     所以负 margin-left 把文字左沿顶回与角色那一列齐平,底只往左多溢一点 */
+  padding: 1px 10px;
+  margin-left: -10px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--bg) 40%, transparent);
 }
 /* 行距放开:这是一段话,不是一串消息 */
 .chat.is-immersive .chat-inner {
@@ -3156,6 +3246,18 @@ onBeforeUnmount(() => {
   position: absolute;
   top: var(--sp-3);
   right: var(--sp-2);
+}
+/* 出口在照片上必须**看得清、点得到**。`.icob` 平时是 40px 圆、`background: none`,
+   图标压在明暗不可控的照片上会糊掉(收起那枚又是唯一的出口,看不见=被关在里面)。
+   给一枚很淡的圆底:向 `var(--bg)` 混 —— 与 .chat-bg 那道朝 --bg 的渐隐同一条方向,
+   所以**两种主题都不塌**(写死深色会在浅色主题上变隐形,踩过的那条坑)。
+   字色也从 --text-2 抬到 --text:出口的分寸可以淡,但不能看不清。 */
+.chat.is-immersive .head-acts .icob {
+  background: color-mix(in srgb, var(--bg) 50%, transparent);
+  color: var(--text);
+}
+.chat.is-immersive .head-acts .icob:hover {
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
 }
 /* 沉浸态里的图**都收小**:正文是一页剧本,图是"它给你看过的东西",
    不该有一块比台词还大的色块横在那儿(参考图那一屏正文里根本没有图块)。

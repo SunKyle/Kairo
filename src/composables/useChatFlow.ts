@@ -1,5 +1,6 @@
 import { nextTick, toRaw, watch, type Ref } from 'vue'
 import {
+  CHAT_CONTEXT_MAX,
   CHAT_WINDOW,
   chatPayloadOf,
   chatStream,
@@ -19,7 +20,7 @@ import {
   putChatMessage
 } from '../lib/idb'
 import { stopSpeaking } from '../lib/speech'
-import { contextText, withLayerMarkers } from '../lib/chatContext'
+import { chatContextWindow, contextText, withLayerMarkers } from '../lib/chatContext'
 import { effectiveLayer } from '../lib/messageLayers'
 /* 相处偏好与出图偏好:按角色读出来摊成 system 里那几行"希望被怎么对待",
    以及设置页 Photos 那一档发图频率(见 lib/prefs) */
@@ -303,6 +304,10 @@ function configGap(cfg: ApiConfig): string {
   return ''
 }
 
+/** 只为"把剩下的字按原节奏继续放完"那一步等一拍(见 runChat 的 revealRest)。
+    不做别用,更不进任何数据链 */
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
 /**
  * 发一轮,一边收一边长。
  *
@@ -331,7 +336,11 @@ async function runChat(id: string) {
     return
   }
 
-  /* 上文现场从内存里取:最近 CHAT_WINDOW 条。
+  /* 上文现场从内存里取:最近 CHAT_WINDOW 条,再补上"摘要游标之后、窗口之前"
+     那一段(见 chatContextWindow)。只取最后 20 条的话,摘要游标与窗口之间
+     可能夹着最多 19 条**既没进摘要、也没进这一轮**的消息 —— 一段真实的空白。
+     合并后封顶 CHAT_CONTEXT_MAX,与服务端的消息上限对齐。
+
      被截掉的旧消息**不从库里删** —— 它们还在,只是这一轮不带。
 
      正文过两道处理:
@@ -340,7 +349,12 @@ async function runChat(id: string) {
      ② withLayerMarkers —— 把"想/做"那几条重新裹上 `[think]`/`[act]` 区域标记再发。
         库里它们已按层次分成一条条,若不回裹,下一轮模型看到的是一串**都说出口的话**,
         会把心里话当台词接、把旁白当台词接。say 原样通过,普通一轮一个字节都不动。 */
-  const windowMessages = (chatMessages.value[id] || []).slice(-CHAT_WINDOW)
+  const windowMessages = chatContextWindow(
+    chatMessages.value[id] || [],
+    chatSummary.value[id],
+    CHAT_WINDOW,
+    CHAT_CONTEXT_MAX
+  )
   const context = windowMessages
     .map((m) => ({ role: m.role, content: withLayerMarkers(contextText(m), effectiveLayer(m)) }))
   /* 这一窗口里发过的卡。**不进正文**,由服务端拼成 system 里的一段简报 ——
@@ -462,6 +476,35 @@ async function runChat(id: string) {
     if (wait > 0) paceTimer = setTimeout(pump, wait)
     else if (pacer.pending > 0) paceTimer = setTimeout(pump, 0)
   }
+  /* 流结束 ≠ 字已放完。节奏器是**故意慢半拍**的(标点后的那一下停顿,正是"像人打字"的来源),
+     而它按 `PACE_BUDGET_MS` 封顶、只在被"多等"时扣额度。从前这里在 finally 里一把 `flush()`,
+     把还压在手里的那一整坨一次贴到 `reply.content` 上 —— 于是**多气泡**的回复里,只有第一个气泡
+     是逐字铺出来的(那部分赶在收尾前被 pump 放掉了),后面几格却在收尾那一帧被整体创建、
+     天生就是填满的(2026-10 修:用户看到"后面的气泡瞬间出来")。
+     改成"按原节奏把剩下的继续放完":段落边界上还会踩到换行那一下停顿,气泡于是**一拍接一拍**地出字,
+     与 `.bubble-in` 注释里的本意对上。
+     两种情况仍立刻冲干净、绝不再拖:用户按了 Stop(那是"说到这儿够了"),或页面被切走
+     (没人在看时攒着毫无意义,回来时一下冒出半屏比慢一点更难看 —— 与 pump 里那条同一个道理)。
+     放完时手里必是空的:`take()` 保证 buf 非空时至少吐一个字,循环自然收敛;Stop/切走那条 `flush()` 也清空。
+     **这条链落盘(下面扇出/存库)读的就是它放完后的完整正文,一个字都不能少。** */
+  async function revealRest() {
+    if (!reply) return
+    if (stopped || unpaced || document.hidden) {
+      reply.content += pacer.flush()
+      return
+    }
+    while (pacer.pending > 0) {
+      // 放的过程中被切走:就地转为"一次性放完",别再一拍拍空等
+      if (document.hidden) {
+        reply.content += pacer.flush()
+        return
+      }
+      const { text, wait } = pacer.take()
+      if (text) reply.content += text
+      // wait === 0:这一批(额度到了或本就无停顿)直接接下一拍,不空等一帧
+      if (wait > 0) await sleep(wait)
+    }
+  }
   try {
     /* 首字节口径。**只进性能面板,不落盘、不上报** ——
        这个项目本地优先、无账号,不该为了一个内部数字把用户的行为发出去。
@@ -566,20 +609,27 @@ async function runChat(id: string) {
     else failure = e instanceof Error ? e.message : 'Request failed'
   } finally {
     chatControllers.delete(id)
-    chatBusy.value = { ...chatBusy.value, [id]: false }
-    /* **先冲节奏再收摊**:下面紧接着就要落盘,手里还扣着字就会存进半句。
-       断流、按 Stop、没收到任何 delta 的轮次全都走这一条 */
+    /* 定时器一停,pump 自己排的下一拍就没了 —— 剩下的字改由下面的 revealRest 接管往下放,
+       二者不能同时改同一条消息(那会把字放乱)。这里只掐定时器,**不再一把 flush**:
+       一把 flush 正是"多气泡里后面几格瞬间出现"的根因(见 revealRest 上面那段)。
+       断流 / 按 Stop / 没收到 delta 的轮次,由 revealRest 里那条 stop/hidden 分支立刻冲干净,
+       落盘读到的仍是完整正文。 */
     if (paceTimer) {
       clearTimeout(paceTimer)
       paceTimer = null
     }
-    if (reply) reply.content += pacer.flush()
     /* 不清会一轮一轮攒在性能面板里(同名标记是叠加的,不是覆盖的)。
        放在 finally 里:断流、按 Stop、没收到任何 delta 的轮次也要收干净 */
     performance.clearMarks('kimage-chat-send')
     performance.clearMarks('kimage-chat-first-delta')
     performance.clearMeasures('kimage-chat-ttfb')
   }
+
+  /* 按原节奏把最后压在手里的字放完(常态),或一次性冲干净(Stop / 页面切走)。
+     跑完这一句,reply.content 才是完整正文 —— 下面紧接着要扇出、落盘,差一个字都不行。
+     在这之前保持 busy:光标继续闪、"还在往下写"的状态别提前收掉 */
+  await revealRest()
+  chatBusy.value = { ...chatBusy.value, [id]: false }
 
   if (!reply) return
   if (stopped) reply.stopped = true

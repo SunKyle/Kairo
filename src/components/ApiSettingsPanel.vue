@@ -1755,10 +1755,16 @@ function onImportFile(e: Event) {
   color: var(--cta-text);
   font-size: var(--fs-sm);
   font-weight: 500;
-  transition: background var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease),
+    transform var(--dur-spring) var(--spring);
 }
 .btn-ink:hover:not(:disabled) {
   background: var(--cta-hover);
+}
+/* 按下弹回:实心墨键是设置页里最常被按的一颗,给它和发送键同一档手感 */
+.btn-ink:active:not(:disabled) {
+  transform: scale(0.94);
+  transition: transform 120ms var(--ease);
 }
 .btn-ink:disabled {
   opacity: 0.45;

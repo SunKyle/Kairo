@@ -27,7 +27,13 @@ import type { InteractionPrefs } from '../types'
    **必须说清它不覆盖人格**。PRD 把这条列进了反目标
    ("所有角色最后都变成同一种温柔、顺从的聊天机器人")——
    而用户看到一排"更直接 / 更幽默"的开关时,最自然的误解就是
-   "我在改它是什么人"。那句说明因此写在卡头,不藏进注释。 */
+   "我在改它是什么人"。那句说明因此写在卡头,不藏进注释。
+
+   —— 控件为什么用淡底档位,而不是顶栏那枚分段控件 ——
+   一屏五组、每组三到四档,而且标签是一句人话("Take my mind off it")。
+   实心滑块的分段在这种密度下会立起一片黑,压过内容;这里"选中"本该是轻的。
+   于是用 `.k-tier` 淡底档位(见 styles/settings.css),选中靠淡底 + 描边加深 +
+   那颗空心圈填实三重信号。外壳(卡片 / 行 / 卡头)同样走共享类,不再各写一份。 */
 
 const props = defineProps<{
   /** 这份偏好属于哪个角色 */
@@ -61,28 +67,28 @@ const isSet = () => !isNeutralInteraction(current.value)
 </script>
 
 <template>
-  <section class="panel">
-    <div class="panel-head">
-      <h3 class="panel-title">How you two get along</h3>
-      <span class="panel-note">
+  <section class="k-card">
+    <div class="k-card__head">
+      <h3 class="k-card__title">How you two get along</h3>
+      <span class="k-card__note">
         How it treats you in Chat. It shapes the manner, never who it is.
       </span>
     </div>
 
-    <div class="prefs">
-      <div v-for="d in INTERACTION_DIMENSIONS" :key="d.key" class="pref">
-        <div class="pref-label">
-          <span class="pref-name">{{ d.label }}</span>
-          <span class="pref-hint">{{ d.hint }}</span>
+    <div class="k-card__rows">
+      <div v-for="d in INTERACTION_DIMENSIONS" :key="d.key" class="k-row">
+        <div class="k-row__label">
+          <span class="k-row__name">{{ d.label }}</span>
+          <span class="k-row__hint">{{ d.hint }}</span>
         </div>
         <!-- 一组单选。用 radiogroup 而不是一排开关:这些档位是互斥的,
              而且读屏要能念出"这一组在选什么" -->
-        <div class="pref-opts" role="radiogroup" :aria-label="d.label">
+        <div class="k-row__opts" role="radiogroup" :aria-label="d.label">
           <button
             v-for="o in d.options"
             :key="o.value"
             type="button"
-            class="pref-opt"
+            class="k-tier"
             :class="{ on: current[d.key] === o.value }"
             role="radio"
             :aria-checked="current[d.key] === o.value"
@@ -105,113 +111,15 @@ const isSet = () => !isNeutralInteraction(current.value)
 </template>
 
 <style scoped>
-/* 与 CharacterPage 的 .panel 同一套:同色面上的同一种卡(见那边的说明)。
-   这里复制一份而不是共享,是因为那个类是 scoped 的 —— 改这里的值时
-   要顺手看一眼那边,别让两处慢慢分叉 */
-.panel {
+/* 外壳与档位都走全局共享类(styles/settings.css)。这里只留两件本地事:
+   ① 卡片在角色详情页里要跟前一张卡拉开一档(设置里则由外层负责间距);
+   ② 卡脚那句状态说明。 */
+.k-card {
   margin-top: var(--sp-4);
-  padding: var(--sp-4);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  background: var(--surface);
-}
-.panel-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: var(--sp-3);
-}
-.panel-title {
-  font-size: var(--fs-lg);
-  color: var(--text);
-}
-.panel-note {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-  color: var(--text-3);
-}
-
-/* 每一维一行:左边是名字与说明,右边是档位。
-   窄屏落到上下两段(见下面的断点)—— 三档按钮挤在半行里会换行成两行,
-   反而比"标题一行、按钮一行"更难扫 */
-.prefs {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-.pref {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-4);
-}
-.pref-label {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-.pref-name {
-  font-size: var(--fs-sm);
-  color: var(--text);
-}
-.pref-hint {
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-  color: var(--text-3);
-}
-.pref-opts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: flex-end;
-}
-/* 档位按钮:选中用**淡底 + 墨色字**,不用实心墨底。
-   一屏五组、每组三档,全用实心的话一页会立起五块黑 ——
-   而"选中"这个语义在这一页本来就该轻(它是相处方式的微调,不是主操作) */
-.pref-opt {
-  padding: 6px 10px;
-  font-size: var(--fs-xs);
-  font-family: inherit;
-  line-height: 1.2;
-  color: var(--text-2);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
-    border-color var(--dur) var(--ease);
-}
-.pref-opt:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-.pref-opt.on {
-  background: var(--accent-soft);
-  border-color: var(--line-strong);
-  color: var(--text);
-}
-/* 全站一致的键盘兜底描边(见 PRODUCT.md 的无障碍要求) */
-.pref-opt:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 .pref-foot {
   margin-top: var(--sp-3);
   font-size: var(--fs-xs);
   color: var(--text-3);
-}
-
-@media (max-width: 720px) {
-  .pref {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--sp-2);
-  }
-  .pref-opts {
-    justify-content: flex-start;
-  }
 }
 </style>

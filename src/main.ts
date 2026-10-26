@@ -3,6 +3,7 @@ import { createApp } from 'vue'
 import '@fontsource/poppins/latin-700.css'
 import '@fontsource/pacifico/latin-400.css'
 import './style.css'
+import './styles/settings.css'
 import App from './App.vue'
 import { applyTheme, currentTheme } from './lib/theme'
 

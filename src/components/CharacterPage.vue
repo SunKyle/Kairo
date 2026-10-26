@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   PhMaskHappy,
   PhPlus,
@@ -56,6 +56,8 @@ import type { CharacterSavePayload } from '../composables/useCharacterDraft'
 import { useCharacterDetail } from '../composables/useCharacterDetail'
 import { STEPS, useCharacterWizard } from '../composables/useCharacterWizard'
 import { useCharacterList } from '../composables/useCharacterList'
+// 弧形封面流（参照 React Bits CircularCarousel 的摆法与动效，卡片本身不动）
+import { useCoverflow } from '../composables/useCoverflow'
 import {
   FORM_GROUPS,
   ORIGIN_BADGES,
@@ -427,6 +429,80 @@ function createFromCard(id: string) {
   emit('chat', id)
 }
 
+/* ===== 角色列表的两种摆法：弧形封面流（默认）⇄ 网格 =====
+   卡片还是那张 CharacterCard，这里只换"这一排怎么排"：
+   · 弧形 —— 默认，逐张端详、自动滚动：居中即焦点、两侧后退渐隐，卡片一张一张
+             自动往前飘（悬停 / 拖拽 / 切后台 / 开了减弱动效都会停下）；整块钉满
+             一屏，不产生页面滚动；
+   · 网格 —— 一屏看全、好扫好找，想要鸟瞰时切过来。
+   那套物理（拖拽惯性、rise 入场、景深渐隐、吸附、自动滚动）收在 useCoverflow 里，
+   它只管把已经渲染好的 .cf-slot 摆到弧上，谁被点到就把焦点移到它。 */
+const rosterView = ref<'grid' | 'arc'>('arc')
+// 弧形那层 DOM：useCoverflow 在它上面找 .cf-slot、绑拖拽
+const arcRoot = ref<HTMLElement | null>(null)
+// 当前焦点序号（标题行 + 页码跟着它走）
+const arcFocus = ref(0)
+const coverflow = useCoverflow({
+  root: arcRoot,
+  onChange: (i) => {
+    arcFocus.value = i
+  }
+})
+// 焦点卡：给弧形下面那行说明用；越界兜回第一张
+const arcFocusChar = computed(() => listedChars.value[arcFocus.value] || listedChars.value[0] || null)
+const arcFocusName = computed(() => arcFocusChar.value?.name || '')
+// 弧形整块钉满一屏（不产生页面滚动）只该作用在“列表态 + 选中弧形 + 有角色”时；
+// 进详情（列表整段卸下）或没角色时不套，免得把详情/空态那一屏也夹成定高。
+const arcOnePage = computed(
+  () => rosterView.value === 'arc' && !detailId.value && listedChars.value.length > 0
+)
+
+/* 弧形这一层的“挂 / 摘”集中到一处，避免各条 watch 各起各的、或角色还没加载完时
+   对着还没进 DOM 的容器空起一次（那样事件和 ResizeObserver 都没绑上）。
+   arcLive 记的是“是否已真正挂上”：只有容器已在 DOM 里（有角色、且不在详情态）、
+   弧形又选中的那一次 activate 之后才置真；之后再变只是 refresh，不重放入场。 */
+let arcLive = false
+function ensureArc() {
+  const wantArc = rosterView.value === 'arc' && !detailId.value
+  if (!wantArc) {
+    if (arcLive) {
+      coverflow.deactivate()
+      arcLive = false
+    }
+    return
+  }
+  nextTick(() => {
+    if (!arcRoot.value) return // 还没角色，容器没渲染出来，等角色来了再试
+    if (!arcLive) {
+      coverflow.activate()
+      arcLive = true
+    } else {
+      coverflow.refresh()
+    }
+  })
+}
+
+function switchRoster(next: 'grid' | 'arc') {
+  if (next === rosterView.value) return
+  // 切摆法先把开着的 ⋮ 收起：菜单是钉在某张卡上的，换了摆法就成了无处附着的浮层
+  closeCardMenu()
+  if (next === 'arc') arcFocus.value = 0
+  rosterView.value = next
+  ensureArc()
+}
+
+// 角色增减、进出详情、切摆法都归到 ensureArc：增删要重排（refresh 会顺带补起自动滚动，
+// 因为初次挂载时可能还没角色、自动没起来）；进详情列表整段卸下就先摘掉，回到列表再起回来。
+watch(() => listedChars.value.length, ensureArc)
+watch(rosterView, ensureArc)
+watch(detailId, ensureArc)
+
+// 新建 / 编辑向导是盖在列表上的模态：开着就暂停自动滚动，别在蒙层底下悄悄漂走焦点，关掉再续。
+watch(editing, (v) => {
+  if (v) coverflow.pauseAuto()
+  else coverflow.resumeAuto()
+})
+
 function backToList() {
   detailId.value = ''
   viewer.value = ''
@@ -458,6 +534,8 @@ function onKey(e: KeyboardEvent) {
 }
 onMounted(() => {
   window.addEventListener('keydown', onKey)
+  // 弧形是默认摆法：进页面就把它挂上（角色还没到时 ensureArc 内部会跳过，等 watch 再补）
+  ensureArc()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
@@ -507,7 +585,7 @@ function originBadge(key: SpecFieldKey): string {
 </script>
 
 <template>
-  <div class="chars">
+  <div class="chars" :class="{ 'is-arc': arcOnePage }">
     <!-- —— 列表 —— -->
     <template v-if="!detailChar">
       <header class="chars-head">
@@ -1318,36 +1396,90 @@ function originBadge(key: SpecFieldKey): string {
       <!-- 列表接着上面被切开的那一段继续(见浮层之前那段说明) -->
       <template v-if="!detailChar">
 
-      <!-- 列表:卡片网格。卡本身在 CharacterCard.vue(顶图全出血 + 底部毛玻璃信息区),
-           这里只管这一排怎么排 —— 每张卡的用量与特征从这一页算好交下去 -->
-      <div v-if="props.characters.length" class="grid">
-        <!-- 一张海报卡:顶图 + 名字 + 特征 + 用量 + ⋮ 菜单。它只做展示与上报,
-             顺序、菜单开合、用量怎么算都由这一页给(见 CharacterCard.vue) -->
-        <CharacterCard
-          v-for="c in listedChars"
-          :key="c.id"
-          :char="c"
-          :cover="coverSrc(coverOf(c))"
-          :traits="traitsOf(c)"
-          :image-count="statOf(c.id).count"
-          :created-label="fmtDay(c.createdAt)"
-          :updated-label="statOf(c.id).lastAt ? fmtDay(statOf(c.id).lastAt) : '—'"
-          :menu-open="openCardMenu === c.id"
-          :menu-up="cardMenuUp"
-          @open="openDetail"
-          @chat="createFromCard"
-          @pin="pinFromCard"
-          @edit="editFromCard"
-          @duplicate="duplicateFromCard"
-          @export="exportFromCard"
-          @remove="removeFromCard"
-          @toggle-menu="toggleCardMenu"
-          @menu-enter="onMenuEnter"
-          @menu-leave="onMenuLeave"
-        />
+      <!-- 摆法切换:网格(默认,一屏看全)⇄ 弧形(逐张端详)。两种摆法复用同一批
+           卡片与同一份 props/事件 —— 只换外层容器的 class,卡本身一行都不动 -->
+      <div v-if="props.characters.length && !editing" class="roster-toggle" role="tablist" aria-label="Roster view">
+        <button
+          class="roster-seg"
+          :class="{ on: rosterView === 'grid' }"
+          role="tab"
+          :aria-selected="rosterView === 'grid'"
+          @click="switchRoster('grid')"
+        >
+          Grid
+        </button>
+        <button
+          class="roster-seg"
+          :class="{ on: rosterView === 'arc' }"
+          role="tab"
+          :aria-selected="rosterView === 'arc'"
+          @click="switchRoster('arc')"
+        >
+          Coverflow
+        </button>
       </div>
 
-      <div v-else class="empty">
+      <!-- 列表:卡片网格。卡本身在 CharacterCard.vue(顶图全出血 + 底部毛玻璃信息区),
+           这里只管这一排怎么排 —— 每张卡的用量与特征从这一页算好交下去。
+           弧形那套动效不碰这张卡:它只把 .cf-slot 摆到弧上(见 useCoverflow) -->
+      <div
+        v-if="props.characters.length"
+        ref="arcRoot"
+        :class="rosterView === 'arc' ? 'cf' : 'grid'"
+        :data-draggable="rosterView === 'arc' ? '' : undefined"
+        :tabindex="rosterView === 'arc' ? 0 : undefined"
+        :role="rosterView === 'arc' ? 'region' : undefined"
+        :aria-roledescription="rosterView === 'arc' ? 'carousel' : undefined"
+        :aria-label="rosterView === 'arc' ? 'Character coverflow' : undefined"
+      >
+        <div
+          v-for="(c, idx) in listedChars"
+          :key="c.id"
+          class="cf-slot"
+          :data-i="idx"
+        >
+          <!-- 一张海报卡:顶图 + 名字 + 特征 + 用量 + ⋮ 菜单。它只做展示与上报,
+               顺序、菜单开合、用量怎么算都由这一页给(见 CharacterCard.vue) -->
+          <CharacterCard
+            :char="c"
+            :cover="coverSrc(coverOf(c))"
+            :traits="traitsOf(c)"
+            :image-count="statOf(c.id).count"
+            :created-label="fmtDay(c.createdAt)"
+            :updated-label="statOf(c.id).lastAt ? fmtDay(statOf(c.id).lastAt) : '—'"
+            :menu-open="openCardMenu === c.id"
+            :menu-up="cardMenuUp"
+            @open="openDetail"
+            @chat="createFromCard"
+            @pin="pinFromCard"
+            @edit="editFromCard"
+            @duplicate="duplicateFromCard"
+            @export="exportFromCard"
+            @remove="removeFromCard"
+            @toggle-menu="toggleCardMenu"
+            @menu-enter="onMenuEnter"
+            @menu-leave="onMenuLeave"
+          />
+        </div>
+      </div>
+
+      <!-- 弧形才有的说明行:焦点名 + 页码 + 一张一点(点它转过去) -->
+      <div v-if="props.characters.length && rosterView === 'arc'" class="cf-cap">
+        <span class="cf-name">{{ arcFocusName }}</span>
+        <span class="cf-pos">{{ arcFocus + 1 }} / {{ listedChars.length }}</span>
+      </div>
+      <div v-if="props.characters.length && rosterView === 'arc'" class="cf-dots">
+        <button
+          v-for="(c, idx) in listedChars"
+          :key="c.id"
+          class="cf-dot"
+          :class="{ on: idx === arcFocus }"
+          :aria-label="`Show ${c.name}`"
+          @click="coverflow.goTo(idx)"
+        ></button>
+      </div>
+
+      <div v-if="!props.characters.length" class="empty">
         <PhMaskHappy class="empty-ico" aria-hidden="true" />
         <h3 class="empty-title">No characters yet</h3>
         <p class="empty-sub">
@@ -1804,6 +1936,36 @@ function originBadge(key: SpecFieldKey): string {
      压深一档之后浅色面上到 6:1 上下。暗色主题下 --text 是近白,
      混出来是一枚更亮的红 —— 两边都成立,红的含意没变,变的只是它压不压得住底色 */
   --danger-ink: color-mix(in oklch, var(--danger) 72%, var(--text));
+}
+/* —— 弧形“刚好一页”：整块钉满视口，页面不出滚动条 ——
+   弧形是默认摆法，要的是“一块一直待着、卡片自己往前飘”的面板，而不是“读完往下滚”。
+   做法是把 .chars 拉成定高的纵向 flex：页头 / 切换钮 / 说明行 / 圆点各自按内容占固定高，
+   中间那一排 .cf 用 flex:1 + min-height:0 把剩下的空间吃掉。定高 = 视口减掉
+   顶部横条（--mast-h 由 App.vue 量好写进根）、frame 那道 margin-top、以及 .shell 底部
+   那 64px 呼吸位；这样内容正好铺到视口底、末位取整顶多多留 1px 空隙而不会溢出成滚动。
+   卡的实际尺寸由 useCoverflow 按这块的宽高两头夹（见 measure），所以窗口一变
+   ResizeObserver 重排，卡片始终整张落在这屏里、不被上下切掉。 */
+.chars.is-arc {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--mast-h, 72px) - var(--sp-2) - 64px);
+  height: calc(100dvh - var(--mast-h, 72px) - var(--sp-2) - 64px);
+}
+.chars.is-arc .chars-head {
+  flex: 0 0 auto;
+}
+.chars.is-arc .roster-toggle {
+  flex: 0 0 auto;
+}
+.chars.is-arc .cf-cap,
+.chars.is-arc .cf-dots {
+  flex: 0 0 auto;
+}
+/* 弧形吃掉剩余高度，不再用那档固定 520px；margin-top 收一档，多出的余量归到卡片区 */
+.chars.is-arc .cf {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 /* 以下骨架与历史 / 提示词库 / 设置三页保持一致 */
 .chars-head {
@@ -3072,12 +3234,157 @@ textarea.wz-idea {
 
 /* —— 列表:卡片网格 ——
    卡片本身在 CharacterCard.vue(顶图全出血 + 底部毛玻璃信息区),
-   这里只管这一排怎么排 */
+   这里只管这一排怎么排。
+   **min 取 228 是为了让一排稳排四张**:1440 桌面上内容栏 ≈ 1000px,
+   这一页间距是 --sp-5(24)—— 4×260+3×24=1112 超了,auto-fill 于是退成三列、
+   第四张坠到下一行(3+1)。228 让四列排满(4×228+3×24=984),留一点余量抵掉
+   亚像素/滚动条。max 仍是 1fr,卡会被拉伸填满整行(约 232/张),所以**卡片
+   实际尺寸与首页那档 232 对齐**,变的只是"几列"这一件事。 */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
   gap: var(--sp-5);
   margin-top: var(--sp-5);
+}
+
+/* —— 摆法切换（网格 ⇄ 弧形）——
+   一枚轻量的分段控件，走全站同一条药丸语言，不抢卡片本身的视觉重心 */
+.roster-toggle {
+  display: inline-flex;
+  gap: 2px;
+  margin-top: var(--sp-5);
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: var(--sh-sm);
+}
+.roster-seg {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+  padding: 6px 15px;
+  border-radius: 999px;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.roster-seg:hover {
+  color: var(--text);
+}
+.roster-seg.on {
+  background: var(--text);
+  color: var(--bg);
+}
+
+/* 每张卡在两种摆法下都由这层 .cf-slot 兜着：网格时它是格子项（要能收缩、
+   让卡里那几行省略号生效），弧形时被 useCoverflow 摆到弧上 */
+.cf-slot {
+  min-width: 0;
+}
+
+/* —— 弧形封面流（参照 CircularCarousel，收成一段浅弧 + 保留甩动/景深/rise）——
+   容器给透视并两端羽化裁切；卡由 JS 逐张写 transform/opacity。
+   浅色主题下景深"渐隐到页面底色"即可（不叠黑色纱、不发霓虹光），双主题都成立。 */
+.cf {
+  position: relative;
+  width: 100%;
+  height: 520px;
+  margin-top: var(--sp-5);
+  overflow: hidden;
+  outline: none;
+  perspective: 1600px;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 11%, #000 89%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 11%, #000 89%, transparent);
+}
+.cf[data-draggable] {
+  cursor: grab;
+}
+.cf[data-dragging] {
+  cursor: grabbing;
+}
+.cf:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--line);
+}
+.cf .cf-slot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /* 刻意不写 transform-style: preserve-3d ——
+     透视在 .cf 上，卡片的 3D 位移/内倾作为它的直接子元素本就生效，不需要 preserve-3d 再往下传。
+     而一旦给 slot 开 preserve-3d（再叠上 will-change 提层、以及侧卡 opacity<1），
+     卡片底部那层 .ctile-content::before 的 backdrop-filter 就取不到身后的照片当背景，
+     只能对着一片空的白底做模糊 → 未选中的卡下半张脸被一块“磨砂玻璃”糊住。
+     去掉它，侧卡的暗幕就跟焦点卡一样是压在虚化照片上的深色，而不是白霜。 */
+  backface-visibility: hidden;
+  will-change: transform;
+}
+/* 只有焦点卡吃交互；侧卡是预览，点它由容器统一转过来（见 useCoverflow 的 onClick）。
+   侧卡不吃 hover，也就不会在弧上误抬起、误开菜单 */
+.cf .cf-slot:not(.is-focus) {
+  pointer-events: none;
+}
+
+.cf-cap {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+.cf-name {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: var(--ls-tight);
+}
+.cf-pos {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.cf-dots {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--sp-3);
+}
+.cf-dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--line);
+  cursor: pointer;
+  transition: width var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.cf-dot.on {
+  width: 20px;
+  background: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 交还给 useCoverflow（它跳过入场、切换即刻到位），这里只关掉 GPU 合成提示 */
+  .cf .cf-slot {
+    will-change: auto;
+  }
+}
+
+/* 窄屏：弧形那层收矮（卡由 useCoverflow 按容器宽自动缩），切换钮的触控目标抬到能按 */
+@media (max-width: 720px) {
+  .cf {
+    height: 420px;
+  }
+  .roster-seg {
+    min-height: 40px;
+  }
 }
 
 /* —— 详情 —— */

@@ -75,9 +75,10 @@ const emit = defineEmits<{
   top: var(--sp-4);
 }
 .rail-item {
+  position: relative;
   display: block;
   width: 100%;
-  padding: 9px 12px;
+  padding: 9px 12px 9px 16px;
   border: 0;
   border-radius: var(--r-sm);
   background: none;
@@ -90,6 +91,22 @@ const emit = defineEmits<{
     background var(--dur) var(--ease),
     color var(--dur) var(--ease);
 }
+/* 当前分区左边探出一根强调条:淡底 + 加粗已经在说"在哪",这根条再补一个
+   明确却不刺眼的锚点。切区时它按回弹曲线"长出来",而不是硬跳一下。 */
+.rail-item::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  width: 2px;
+  height: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: translateY(-50%);
+  transition:
+    height var(--dur-spring) var(--spring),
+    background var(--dur) var(--ease);
+}
 .rail-item:hover {
   background: var(--surface-hover);
   color: var(--text);
@@ -100,6 +117,9 @@ const emit = defineEmits<{
   background: var(--accent-soft);
   color: var(--text);
   font-weight: 500;
+}
+.rail-item.on::before {
+  height: 16px;
 }
 .rail-item:focus-visible {
   outline: 2px solid var(--accent);
@@ -138,12 +158,22 @@ const emit = defineEmits<{
     background: var(--accent);
     color: var(--accent-contrast);
   }
+  /* 横排药丸里没有左侧那一列,强调条在这种形态下没有落脚处,收掉它 ——
+     当前项已经由实心墨底说清了 */
+  .rail-item::before {
+    display: none;
+  }
 }
 @media (max-width: 640px) {
   /* 触屏目标抬到 40px */
   .rail-item {
     height: 40px;
     line-height: 40px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rail-item::before {
+    transition: none;
   }
 }
 </style>

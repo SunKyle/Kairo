@@ -4,7 +4,7 @@
  *  动作/旁白(act)。模型在一轮里用成对区域标记划段
  *  （`[think]…[/think]` / `[act]…[/act]`），`parseLayers` 把这一轮**扇出**成
  *  多条带 `layer` 的独立消息；其余文件按 `layer` 决定「给不给看、进不进
- *  模型的下一轮、进不进长期记忆」。
+ *  模型的下一轮、进不进长期记忆」。提示词教的是方括号，但模型常按 XML 习惯把闭合写成尖括号形式（＜think＞、＜/think＞），所以**开合两侧都同时认方括号与尖括号**（见 `LAYER_TOKEN_RE`）。
  *
  *  设计口径见 doc/对话体验.md（脊柱 A/B 已定）：
  *  - A：think/act 走**消息级 layer**，不走 chatTags 那套行内值标签 —— 所以
@@ -23,9 +23,13 @@
 
 import type { MessageLayer } from '../types'
 
-/** 区域标记：`[think]` / `[/think]` / `[act]` / `[/act]` / `[say]`，大小写不敏感。
- *  捕获组 1 = 是否带斜杠（闭合），组 2 = 层名。 */
-const LAYER_TOKEN_RE = /\[(\/?)(think|act|say)\]/gi
+/** 区域标记：开合两侧都同时认**方括号**与**尖括号（XML）**两种写法：
+ *  方括号 [think] / [/think] / [act] / [/act] / [say]，尖括号写作 ＜think＞ / ＜/think＞ 等，
+ *  大小写不敏感。提示词只教方括号，但模型按 XML 习惯把闭合写成尖括号形式极常见（实测）——
+ *  闭合侧若不认，那枚尖括号闭合会原样漏进正文，并把其后所有内容误判成 think。
+ *  允许开合两侧括号混用；游标语义只看组 1（是否带斜杠＝闭合）与组 2（层名）。
+ *  捕获组 1 ＝ 是否带斜杠（闭合），组 2 ＝ 层名。 */
+const LAYER_TOKEN_RE = /[[<](\/?)(think|act|say)[\]>]/gi
 
 const ALL_LAYERS: readonly MessageLayer[] = ['say', 'think', 'act']
 
@@ -103,7 +107,25 @@ export function parseLayers(raw: string): LayerSegment[] {
 }
 
 /**
- * 这一轮正文里**有没有区域标记**（`[think]` / `[/think]` / `[act]` / `[/act]` / `[say]`）。
+ * 流式显示专用：把**末尾那截还没写闭合括号、正在成形的区域标记**剪掉，免得
+ * `<thin` / `</think` 这类半成品闪上屏。落盘收尾时标记都已闭合，这一刀只服务流式。
+ *
+ * 方括号那侧（`[thin`）其实服务端 `tailHold` 已替我们扣住（`OPEN_TAIL_RE` 只认 `[`），
+ * 到不了前端；但尖括号 / XML 那侧（`<thin`、`</thin`）服务端不扣 —— 而模型恰恰爱用
+ * XML 闭合。要让"标记绝不外泄上屏"这条不变量对**两种写法**都成立，就在前端补这一刀。
+ *
+ * 只在字符串**结尾**动手，且要求"开括号（`[` 或 `<`）+ 可选斜杠 + 可选层名前缀，
+ * 且尚无闭合括号" —— 已闭合的 [think] / ＜/think＞ 归 `parseLayers` 处理，这里不碰；正文中间的
+ * `[act` / `<say` 一律不动。误伤一个裸的结尾 `<`（如数学"5 <"恰好切在这）只影响
+ * **显示那一帧**：存库的 reply.content 不动，下一块文字一到它又变回句中字符照常显示。
+ */
+export function stripTrailingPartialMarker(raw: string): string {
+  if (typeof raw !== 'string' || raw === '') return raw
+  return raw.replace(/[[<]\/?(?:t|th|thi|thin|think|a|ac|act|s|sa|say)?$/, '')
+}
+
+/**
+ * 这一轮正文里**有没有区域标记**（方括号 [think]/[act]/[say] 或尖括号 ＜think＞/＜/think＞ 等）。
  *
  * 存在它的理由只有一个：让**没有分层的普通一轮走一条完全不动原样的路**。绝大多数回复
  * 一个标记都没有 —— 调用方（`useChatFlow` 的扇出、`ChatPage` 的显示裁剪）先问这一句，

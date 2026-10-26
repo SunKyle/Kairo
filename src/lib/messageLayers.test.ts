@@ -12,6 +12,7 @@ import {
   nextSceneMode,
   normalizeMessageLayer,
   parseLayers,
+  stripTrailingPartialMarker,
 } from './messageLayers'
 
 /* ===== normalizeMessageLayer / effectiveLayer ===== */
@@ -87,6 +88,41 @@ describe('parseLayers · 成对区域标记把一轮切成有序多层', () => {
   })
 })
 
+describe('parseLayers · XML/尖括号写法的区域标记（模型爱把闭合写成 think 的尖括号形式）', () => {
+  // 用 charCode 拼尖括号，源码里不出现字面 <...>，免得被任何标签清洗吃掉
+  const lt = String.fromCharCode(60)
+  const gt = String.fromCharCode(62)
+  const open = (n: string) => `${lt}${n}${gt}`
+  const close = (n: string) => `${lt}/${n}${gt}`
+
+  it('方括号开、XML 闭：闭合侧被认得，不外泄、不把后续误判成 think', () => {
+    const out = parseLayers(`关店前拍了一张。[think]其实我停了好一会儿${close('think')}你要看吗`)
+    expect(out).toEqual([
+      { layer: 'say', text: '关店前拍了一张。' },
+      { layer: 'think', text: '其实我停了好一会儿' },
+      { layer: 'say', text: '你要看吗' },
+    ])
+  })
+  it('全 XML 写法（开与闭都是尖括号）照样扇出', () => {
+    const src = `她把围巾绕紧之前${open('act')}她把围巾绕紧${close('act')}走吧`
+    expect(parseLayers(src)).toEqual([
+      { layer: 'say', text: '她把围巾绕紧之前' },
+      { layer: 'act', text: '她把围巾绕紧' },
+      { layer: 'say', text: '走吧' },
+    ])
+  })
+  it('XML 闭合的标记本身绝不外泄：任何一段都不含尖括号 think 字样', () => {
+    const out = parseLayers(`a[think]b${close('think')}c`)
+    const leak = new RegExp(`[${lt}${gt}]\\/?(think|act|say)[${gt}${lt}]`, 'i')
+    expect(out.every((s) => !leak.test(s.text))).toBe(true)
+  })
+  it('混用（方括号开、XML 闭 act）也归位', () => {
+    const out = parseLayers(`x[act]z${close('act')}w`)
+    expect(out.map((s) => s.layer)).toEqual(['say', 'act', 'say'])
+    expect(out.map((s) => s.text)).toEqual(['x', 'z', 'w'])
+  })
+})
+
 describe('parseLayers · 模型不守纪律时的宽容兜底', () => {
   it('未闭合的开标记 = 到轮尾都算那一层，标记不外泄', () => {
     const out = parseLayers('好，[think]其实我有点紧张，很久没这样约过了')
@@ -142,6 +178,47 @@ describe('hasLayerMarkers', () => {
     expect(hasLayerMarkers('[think]a')).toBe(true)
     expect(hasLayerMarkers('b')).toBe(false)
     expect(hasLayerMarkers('[act]c')).toBe(true)
+  })
+  it('XML 尖括号标记同样算数（开与闭都认）', () => {
+    const lt = String.fromCharCode(60)
+    const gt = String.fromCharCode(62)
+    expect(hasLayerMarkers(`${lt}act${gt}她转身${lt}/act${gt}`)).toBe(true)
+    expect(hasLayerMarkers(`前面${lt}think${gt}`)).toBe(true)
+    expect(hasLayerMarkers(`正文${lt}/think${gt}收尾`)).toBe(true)
+  })
+})
+
+/* ===== stripTrailingPartialMarker · 流式里那截还没闭合的区域标记 ===== */
+
+describe('stripTrailingPartialMarker', () => {
+  const lt = String.fromCharCode(60)
+  const gt = String.fromCharCode(62)
+
+  it('剪掉末尾正在成形的 XML 开 / 闭标记（服务端只扣 [ 不扣 <，前端补这一刀）', () => {
+    expect(stripTrailingPartialMarker(`好的${lt}`)).toBe('好的')
+    expect(stripTrailingPartialMarker(`好的${lt}thi`)).toBe('好的')
+    expect(stripTrailingPartialMarker(`好的${lt}think`)).toBe('好的')
+    expect(stripTrailingPartialMarker(`内心话${lt}/thin`)).toBe('内心话')
+    expect(stripTrailingPartialMarker(`旁白${lt}/act`)).toBe('旁白')
+  })
+  it('方括号那侧一并剪掉（belt-and-suspenders，服务端通常已扣住）', () => {
+    expect(stripTrailingPartialMarker('前面[think')).toBe('前面')
+    expect(stripTrailingPartialMarker('内心[/th')).toBe('内心')
+    expect(stripTrailingPartialMarker('来[s')).toBe('来')
+  })
+  it('已闭合的标记原样保留（那是 parseLayers 的活，不在这里动）', () => {
+    expect(stripTrailingPartialMarker(`内心${lt}/think${gt}`)).toBe(`内心${lt}/think${gt}`)
+    expect(stripTrailingPartialMarker('内心[/think]')).toBe('内心[/think]')
+  })
+  it('普通散文不受伤', () => {
+    expect(stripTrailingPartialMarker('今天路过那家店')).toBe('今天路过那家店')
+    expect(stripTrailingPartialMarker('引用[1]和[注]都留下')).toBe('引用[1]和[注]都留下')
+    expect(stripTrailingPartialMarker('')).toBe('')
+    // @ts-expect-error 运行期也要挡住
+    expect(stripTrailingPartialMarker(undefined)).toBe(undefined)
+  })
+  it('只剪结尾一处，正文中间的 [act 之类不动', () => {
+    expect(stripTrailingPartialMarker('中间有[act但后面还有话')).toBe('中间有[act但后面还有话')
   })
 })
 

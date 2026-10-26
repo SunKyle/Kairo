@@ -1041,15 +1041,36 @@ async function regenerateChat(id: string) {
     return
   }
   /* 与 runChat 同一道闸:缺字段的配置发不出请求,而这条路上后果更重 ——
-     旧回复已经被删了,补不回来(见上面那段的取舍) */
+     旧回复已经被删了,补不回来(见上面那段的取舍)。**两种配置都要在删之前查**:
+     这一轮重发的若是"带图那句",runChat 会切去识图那条配置,它同样可能缺字段 ——
+     而 runChat 里那道 visionGap 检查发生在删除之后。删除前不一并挡住,带图那一轮
+     的重生成就变成"旧回复没了、新的又没发"(用户那句虽还在,回复永久丢,没有撤销窗口)。 */
+  const list = chatMessages.value[id] || []
+  const last = list[list.length - 1]
+  if (!last) return
+  /* 末尾那段连续 assistant 的起点(重生成要整段删掉重发)。用它定位 runChat
+     删除后将成为末尾的那条**用户消息** —— 它带不带图,决定 runChat 用哪条配置。 */
+  let cut = list.length
+  while (cut > 0 && list[cut - 1].role === 'assistant') cut--
+  if (last.role === 'assistant' && (cut === 0 || list[cut - 1].role !== 'user')) return
+  const turnUser = last.role === 'assistant' ? list[cut - 1] : last
+
   const gap = configGap(cfg)
   if (gap) {
     notice.value = `"${cfg.name || 'The Role chat model'}" is missing its ${gap} — fix it in AI connections.`
     return
   }
-  const list = chatMessages.value[id] || []
-  const last = list[list.length - 1]
-  if (!last) return
+  /* 带图那句改走识图配置(与 runChat 同一条 useCfg 算式)。没配识图时借的是对话那条,
+     上面已查过 —— 这里 configGap 对借来的 cfg 再算一次也是 0,不会误报。 */
+  const picId = turnUser?.imageId || ''
+  const useCfg = picId ? visionConfig.value || cfg : cfg
+  const visionGap = configGap(useCfg)
+  if (visionGap) {
+    const label =
+      useCfg.name || (visionConfig.value ? 'The Image recognition model' : 'The Role chat model')
+    notice.value = `"${label}" is missing its ${visionGap} — fix it in AI connections.`
+    return
+  }
   /* 最后一条是助手消息 ⇒ 说了一半想重来,先把**这一轮的助手消息整段**删掉(用户那句留着)。
      扇出之后一轮可能是一条 say + 若干 think/act 兄弟(都是 assistant、连在一起),
      重新生成要重来的是"它这一轮的整段表达",不是末尾那单独一条 —— 只删一条会把内心/旁白
@@ -1057,17 +1078,10 @@ async function regenerateChat(id: string) {
      (runChat 失败时会把空壳删掉),那就什么都不用删,直接重发。两种情况共用这一个入口,
      所以"报错之后重试"不需要另写一条链路 */
   if (last.role === 'assistant') {
-    /* cut = 末尾那段连续 assistant 的起点。往回走,直到撞上不是助手消息的那一条为止 */
-    let cut = list.length
-    while (cut > 0 && list[cut - 1].role === 'assistant') cut--
-    /* 删掉之后底下得有一条用户消息接着问 —— 没有的话这一轮本来就没得重发
-       (runChat 也会直接返回),那就一条都别删。正常对话里走不到这里,
-       但导入的包可以以助手消息开头 */
-    if (cut === 0 || list[cut - 1].role !== 'user') return
-    const run = list.slice(cut)
     /* 这几条正要被删掉,它们可能还在念 —— 念着已经不存在的消息没有道理。
        (不在这里停也不算错:新的回复开始念时会掐掉它,但那中间有几秒) */
     stopSpeaking()
+    const run = list.slice(cut)
     for (const m of run) await deleteChatMessage(m.id)
     chatMessages.value = { ...chatMessages.value, [id]: list.slice(0, cut) }
     /* 左栏那行摘要可能就是这一轮的某一条,得跟着回退到删掉之前的那一条 */

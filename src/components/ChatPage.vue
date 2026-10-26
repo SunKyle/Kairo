@@ -51,7 +51,13 @@ import { parsePhotoIntent, stripStandaloneTags } from '../../server/chatTags.js'
 import { splitAssistantReply } from '../lib/chatSplit'
 /* 心理层次(说/想/做)的显示侧判据:剪掉流式里还没扇开的区域标记、按开关过滤行、
    给每行认一个生效层(见 lib/messageLayers 与 doc/对话体验.md) */
-import { effectiveLayer, hasLayerMarkers, isVisibleForUI, parseLayers } from '../lib/messageLayers'
+import {
+  effectiveLayer,
+  hasLayerMarkers,
+  isVisibleForUI,
+  parseLayers,
+  stripTrailingPartialMarker
+} from '../lib/messageLayers'
 import { speak, speechSupported, speakingId, speakingLoading, stopSpeaking, warmUpSpeech } from '../lib/speech'
 /* 歌卡的声音。与朗读互斥:开始念一条、或离开这一页,都先把还在放的试听停下
    (反向的互斥在 lib/songPlayback 的 startSong 里:点歌会停朗读) */
@@ -425,12 +431,15 @@ function bubblePieces(m: ChatMessage): string[] {
      收尾一扇出变成独立的 layer:'think' 消息、被 rows 那道 isVisibleForUI 过滤掉 ——
      用户就看到内心戏闪一下又消失。展示开关在合并这一步就得生效,别让隐藏的层先露脸。 */
   const layerVis = { showThink: props.showThink !== false, showAct: props.showAct !== false }
-  const clean = hasLayerMarkers(stripped)
-    ? parseLayers(stripped)
+  /* 流式里那截还没写完闭合括号的区域标记先剪掉再判 —— 方括号那侧服务端已扣,
+     XML 那侧(`</think` 之类)没扣,不剪会闪上屏(见 lib/messageLayers 的同名函数)。 */
+  const shown = stripTrailingPartialMarker(stripped)
+  const clean = hasLayerMarkers(shown)
+    ? parseLayers(shown)
         .filter((s) => isVisibleForUI(s, layerVis))
         .map((s) => s.text)
         .join('\n')
-    : stripped
+    : shown
   const pieces = splitAssistantReply(clean)
   if (pieces.length) return pieces
   /* 角色的那条还没出字、但正在生成 —— 兜一格空格,好让光标有处落脚

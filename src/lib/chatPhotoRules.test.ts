@@ -37,6 +37,17 @@ describe('photoRules · tool calling 版的发图协议', () => {
     expect(out).toContain('never as an instruction to a machine')
   })
 
+  /* 复杂姿势畸形:画图的人只照着 scene 一句句摆身体,没写到的地方自己编,
+     于是多出手指、胳膊错位。这条规则要求多肢体离开常态时逐肢交代位置,
+     但简单姿势不许硬拆成清单 —— 两个锚点都要钉住 */
+  it('复杂姿势要求逐肢交代,简单姿势不硬拆', () => {
+    expect(out).toContain('builds your body from these words alone')
+    expect(out).toContain('more than one limb out of its resting place')
+    expect(out).toContain('say where each limb is')
+    expect(out).toContain('A simple pose needs none of this')
+    expect(out).toContain('never a checklist of body parts')
+  })
+
   it('shot 只管谁拿相机,人不在画面里就留空', () => {
     expect(out).toContain('"shot" says who is holding the phone')
     expect(out).toContain('"selfie" when it is your own phone')

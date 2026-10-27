@@ -804,6 +804,14 @@ export function frameLine(self: boolean, frame: ChatFrame, onBody = false): stri
    照旧按它判。 */
 const ACTION_RE = /\b(holding|sitting|standing|leaning|walking|lying|looking|smiling|laughing|drinking|smoking|reading|typing|cooking|reaching|waving|turning|dancing|running|waiting)\b/i
 
+/* 2026-10-27:`photoRules` 现在教角色把复杂姿势**逐肢交代**(膝、肘、掌、踝、
+   下巴各在哪个位置)。既然写了肢体,就是"动作已自述"的信号 —— 而 `ACTION_RE`
+   那张动词条表只认 sitting/standing 这类原形动词,认不出模型真会写出来的
+   姿态措辞(seated、elbow resting on the knee、chin propped on a hand)。
+   漏判的代价是补一句和姿势打架的缺省动作(如"看着镜头")。所以再加一张**肢体
+   词表**当动作信号:场景里点到了身体部位,就当它已经把动作说清楚了,不补。 */
+const POSE_RE = /\b(hand|hands|finger|fingers|thumb|palm|palms|wrist|arm|arms|elbow|elbows|shoulder|shoulders|neck|chin|jaw|knee|knees|leg|legs|ankle|ankles|foot|feet|toe|toes|hip|hips|back|torso|chest|brow|eyes)\b/i
+
 /** 场景里有没有汉字。**只用来挡 `action` 那一位**(见上面那段)——
  *  它是这条链上唯一一处"漏判会补出一句错话"的判据。
  *  汉字之外还覆盖日文汉字:那边是同一个毛病(词表认不出,漏判即补错) */
@@ -812,9 +820,11 @@ function hasHan(scene: string): boolean {
   return HAN_RE.test(String(scene || ''))
 }
 
-/** 这一位只在**英文**场景里判 —— 中文那一侧由 `hasHan` 直接挡掉,所以这里没有中文词表 */
+/** 这一位只在**英文**场景里判 —— 中文那一侧由 `hasHan` 直接挡掉,所以这里没有中文词表。
+ *  动词条表或肢体词表任一命中,都算"动作已自述"(见上面 POSE_RE 那段) */
 function hasAction(scene: string): boolean {
-  return ACTION_RE.test(String(scene || ''))
+  const text = String(scene || '')
+  return ACTION_RE.test(text) || POSE_RE.test(text)
 }
 
 /**

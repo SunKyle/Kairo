@@ -24,21 +24,22 @@ export type Page = 'home' | 'chat' | 'chars' | 'memory' | 'history' | 'settings'
 
 export interface NavItem {
   value: string
-  label: string
 }
 
+/* 语言化后这里只留 value:给人看的名字统一存在 i18n 的语言包里(键 nav.<value>),
+   英文不再散写在清单里 —— 两份英文迟早对不上。取名字的口径见 lib/i18n 的 t()。 */
 export const NAV_ITEMS: NavItem[] = [
   /* 首页:角色展示为主,最近对话为辅 */
-  { value: 'home', label: 'Home' },
+  { value: 'home' },
   // 对话第一:这是本站的主体,角色是"跟谁聊",历史是"聊出来的东西"
-  { value: 'chat', label: 'Chat' },
+  { value: 'chat' },
   // 角色紧跟对话:两者是同一个对象的两件事,一个造它,一个跟它说话
-  { value: 'chars', label: 'Characters' },
+  { value: 'chars' },
   /* 记忆排在角色之后、历史之前。
      它不是"又一个管理页",而是这段关系的另一半:**它记得你什么** ——
      用户看不到也管不了的东西,就等于没有(PRD §5.5 记忆中心)。
      所以它紧挨着关系那两页(对话/角色),而不该沉到历史那种"产出归档"里去。 */
-  { value: 'memory', label: 'Memory' },
-  { value: 'history', label: 'History' },
-  { value: 'settings', label: 'Settings' }
+  { value: 'memory' },
+  { value: 'history' },
+  { value: 'settings' }
 ]

@@ -27,36 +27,16 @@ export type SettingsSection = 'appearance' | 'interaction' | 'photos' | 'memory'
 
 export interface SettingsSectionMeta {
   key: SettingsSection
-  label: string
-  hint: string
 }
 
+/* 语言化后这里只留 key:分区名与说明统一存在 i18n 的语言包里(键 settings.<key>.label /
+   .hint),英文不再散写在这里 —— 两份英文迟早对不上。顺序就是导航上的顺序,照旧。 */
 export const SETTINGS_SECTIONS: readonly SettingsSectionMeta[] = [
-  {
-    key: 'appearance',
-    label: 'Appearance',
-    hint: 'Theme and how Chat looks.'
-  },
-  {
-    key: 'interaction',
-    label: 'Getting along',
-    hint: 'How each character treats you in Chat. Per character.'
-  },
-  {
-    key: 'photos',
-    label: 'Photos',
-    hint: 'How often they send pictures, and how each one gets planned.'
-  },
-  {
-    key: 'memory',
-    label: 'Memory & privacy',
-    hint: 'What it knows about you, and what stays private.'
-  },
-  {
-    key: 'api',
-    label: 'AI connections',
-    hint: 'The models Kairo talks to, draws with and speaks through.'
-  }
+  { key: 'appearance' },
+  { key: 'interaction' },
+  { key: 'photos' },
+  { key: 'memory' },
+  { key: 'api' }
 ]
 
 /** 进设置页时先落在哪一区。

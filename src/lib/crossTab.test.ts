@@ -72,6 +72,9 @@ describe('同步范围 · 与源码里的写入点保持一致', () => {
     COLL_KEY: { key: COLL_KEY, synced: true },
     CHAR_KEY: { key: CHAR_KEY, synced: true },
     THEME_KEY: { key: 'kimage.theme', synced: false },
+    /* 界面语言(见 lib/i18n.ts)。与 THEME_KEY 同一类:这台设备上这个人想看哪种语言的
+       界面,丢了不影响任何数据的完整性;另一个标签页切了语言跟着一起变反而突兀,所以不同步 */
+    LOCALE_KEY: { key: 'kimage.locale', synced: false },
     /* 沉浸模式(见 lib/prefs.ts)。与 THEME_KEY 同一类:它答的是"这台设备上
        这个人喜欢怎么看界面",丢了不影响任何数据的完整性;另一个标签页切了
        沉浸跟着一起变,反而突兀 */

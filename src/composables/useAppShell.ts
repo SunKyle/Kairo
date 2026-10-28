@@ -6,6 +6,7 @@ import {
   watchSystemTheme,
   type Theme
 } from '../lib/theme'
+import { locale, setLocale as setLocaleRaw } from '../lib/i18n'
 
 /* ===== 应用外壳的纯装饰状态 =============================================
    从 App.vue 抽出来的两块"壳"自己的状态。它们共同点是:不碰数据、不碰路由、
@@ -62,5 +63,8 @@ export function useAppShell() {
 
   /* onScroll 不外露:它只是"把 scrolled 刷新一下"的内部动作,
      模板里从头到尾只读 scrolled 那个状态,没地方需要手动调它 */
-  return { theme, setTheme, toggleTheme, scrolled }
+  /* 语言与主题不同:i18n 那份 locale 是模块级单例(全站共享同一份真相),
+     setLocale 内部已经把"落盘 + 套用 <html lang>"收在一个入口,这里原样转手即可 ——
+     不再套一层,免得两处各写一份套用逻辑迟早分叉 */
+  return { theme, setTheme, toggleTheme, scrolled, locale, setLocale: setLocaleRaw }
 }

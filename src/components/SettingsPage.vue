@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { SETTINGS_SECTIONS, type SettingsSection } from '../lib/settingsNav'
+import { t } from '../lib/i18n'
 
 /* ===== 设置页的骨架(PRD §5.6 / §11.12) ===============================
    左边一条分区导航,右边是当前那一区的内容。**内容走插槽** ——
@@ -29,12 +30,12 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <section class="set" aria-label="Settings">
+  <section class="set" :aria-label="t('settings.aria')">
     <!-- 分区导航。**不用 role="tab"**:那套语义在 ARIA 里承诺方向键导航,
          而这里只有 Tab 键 —— 声明成 tab 等于许了做不到的事
          (与 ApiSettingsPanel 里那个 role="group" 的说明同一条理由)。
          说明文字挂在 title 上:导航条目只放名字,一列短词才扫得动 -->
-    <nav class="set-rail" aria-label="Settings sections">
+    <nav class="set-rail" :aria-label="t('settings.railAria')">
       <button
         v-for="s in SETTINGS_SECTIONS"
         :key="s.key"
@@ -42,10 +43,10 @@ const emit = defineEmits<{
         class="rail-item"
         :class="{ on: props.section === s.key }"
         :aria-current="props.section === s.key ? 'true' : undefined"
-        :title="s.hint"
+        :title="t(`settings.${s.key}.hint`)"
         @click="emit('section', s.key)"
       >
-        {{ s.label }}
+        {{ t(`settings.${s.key}.label`) }}
       </button>
     </nav>
 

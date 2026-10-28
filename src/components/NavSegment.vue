@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import {
   PhHouse,
   PhMaskHappy,
@@ -12,6 +12,7 @@ import {
 } from '@phosphor-icons/vue'
 import RubberSegment from './RubberSegment.vue'
 import { NAV_ITEMS } from '../lib/nav'
+import { t } from '../lib/i18n'
 
 /* 顶部导航(分段控件)。
    几个条目就是几个平级页面,不是几个动作:滑块停在哪儿就是当前在看哪一页。
@@ -43,17 +44,22 @@ const sync = () => (narrow.value = mq.matches)
 sync()
 mq.addEventListener('change', sync)
 onBeforeUnmount(() => mq.removeEventListener('change', sync))
+
+/* 条目 = 清单(nav.ts 那份) + 当前语言的标签。用 computed 而不是直接把标签写进
+   nav.ts:这样一切语言整块跟着重渲染(标签的英文只活在 i18n 的语言包里,见那边的说明)。
+   图标走 #value 命名的插槽,标签只喂 aria-label / 悬停提示。 */
+const navItems = computed(() => NAV_ITEMS.map((i) => ({ value: i.value, label: t(`nav.${i.value}`) })))
 </script>
 
 <template>
   <RubberSegment
     v-model="view"
     class="nav-seg"
-    :items="NAV_ITEMS"
+    :items="navItems"
     :radius="999"
     :height="narrow ? 48 : 40"
     :inset="narrow ? 4 : 5"
-    aria-label="Main navigation"
+    :aria-label="t('nav.main')"
   >
     <template #home>
       <PhHouse class="seg-ico" aria-hidden="true" />

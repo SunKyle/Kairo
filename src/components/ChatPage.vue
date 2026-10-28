@@ -37,6 +37,9 @@ import { agoLabel } from '../../server/chatTime.js'
 /* 左栏的目录与搜索收在 ChatRail 里 —— 它与窄屏那个"换角色"浮层是同一个组件,
    两份内容一字不差的重复因此消掉。排序口径(lib/chatOrder)也随它一起走 */
 import ChatRail from './ChatRail.vue'
+/* 界面文字走语言包(见 lib/i18n)。只翻界面/无障碍这一层;
+   发给模型的提示词、系统词、喂给角色的时间戳都不经这里 */
+import { locale, t } from '../lib/i18n'
 /* 消息里转过来的链接。**画在气泡外面** —— 它与图同一条理由:
    文字有文字的框,一个能点开的东西该有它自己的边 */
 import MessageAttachment from './MessageAttachment.vue'
@@ -201,8 +204,8 @@ const sceneLine = computed(() => {
   const raw = parsePhotoIntent(stillMsg.value?.photo || '', current.value?.name || '').scene
   const first = raw.split(/[,，。;；]/)[0].trim()
   const label = first.length > 22 ? `${first.slice(0, 20)}…` : first
-  const t = clockNow()
-  return label ? `${label} · ${t}` : t
+  const clock = clockNow()
+  return label ? `${label} · ${clock}` : clock
 })
 
 /** 本机钟的 HH:MM。与 T6.1 发给服务端的那份同一个口径:用户眼前的钟。
@@ -266,8 +269,8 @@ const bgSrc = computed(() => {
    借来的那一条还要带上来处,不然用户会以为它已经独立配过了 */
 const chatModelName = computed(() => {
   const c = props.chatConfig
-  if (!c) return 'No model'
-  return c.name || c.model || 'Untitled config'
+  if (!c) return t('chat.modelNone')
+  return c.name || c.model || t('chat.modelUntitled')
 })
 /* 这条配置**缺了哪一样**。有配置 ≠ 配全了:缺了它就是一条发不出请求的配置,
    而它在界面各处都像是配好了(药丸写着名字、设置页顶着「Current」)。
@@ -276,8 +279,8 @@ const chatModelName = computed(() => {
 const chatMissing = computed(() => {
   const c = props.chatConfig
   if (!c) return ''
-  if (!c.model.trim()) return 'model name'
-  if (!c.baseUrl.trim()) return 'Base URL'
+  if (!c.model.trim()) return t('chat.fieldModelName')
+  if (!c.baseUrl.trim()) return t('chat.fieldBaseUrl')
   return ''
 })
 /* 能不能真的开口。门控与措辞都从这一处来 —— 少写一处就会出现
@@ -287,12 +290,12 @@ const chatReady = computed(() => !!props.chatConfig && !chatMissing.value)
    还没有专属配置;已经有专属配置时点它才只是回列表切一条 */
 const chatChipTip = computed(() =>
   !props.chatConfig
-    ? 'No Role chat model yet — add one in AI connections'
+    ? t('chat.chipNone')
     : !chatReady.value
-      ? `${chatModelName.value} is missing its ${chatMissing.value} — click to fix it in AI connections`
+      ? t('chat.chipMissing', { name: chatModelName.value, field: chatMissing.value })
       : props.chatBorrowed
-        ? `Using the Prompt enhancing model (${chatModelName.value}) — click to add a dedicated one`
-        : `${chatModelName.value} — click to change it in AI connections`
+        ? t('chat.chipBorrowed', { name: chatModelName.value })
+        : t('chat.chipChange', { name: chatModelName.value })
 )
 /* ⋮ 菜单里那一行模型的补充说明。**同一时刻只说一句**,按"最要紧的那一件"排:
    缺东西(发不出请求)> 借来的(能用,但不是它自己的)。
@@ -303,9 +306,9 @@ const chatModelNote = computed(() =>
   !props.chatConfig
     ? ''
     : !chatReady.value
-      ? `missing its ${chatMissing.value}`
+      ? t('chat.noteMissing', { field: chatMissing.value })
       : props.chatBorrowed
-        ? 'Borrowed'
+        ? t('chat.noteBorrowed')
         : ''
 )
 
@@ -317,18 +320,21 @@ const SEP_GAP = 30 * 60 * 1000
 /* 时间一律钉死 en-US:全站界面是英文,而 toLocaleString 跟随系统 ——
    在中文机器上它会给出"10月2日",夹在一片英文里很跳。
    (ImagePreview 的时间戳也是这么钉的,同一套理由) */
-function timeLabel(t: number): string {
-  return new Date(t).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+function timeLabel(stamp: number): string {
+  return new Date(stamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 }
-function dayLabel(t: number): string {
-  const d = new Date(t)
+function dayLabel(stamp: number): string {
+  const d = new Date(stamp)
   const now = new Date()
   const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString()
-  if (sameDay(d, now)) return 'Today'
+  if (sameDay(d, now)) return t('chat.dayToday')
   const y = new Date(now)
   y.setDate(y.getDate() - 1)
-  if (sameDay(d, y)) return 'Yesterday'
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  if (sameDay(d, y)) return t('chat.dayYesterday')
+  return d.toLocaleDateString(locale.value === 'zh' ? 'zh-CN' : 'en-US', {
+    month: 'short',
+    day: 'numeric'
+  })
 }
 
 type Row =
@@ -453,12 +459,12 @@ function bubblePieces(m: ChatMessage): string[] {
    三个层次各给一个动词,才与屏幕上那点缩进/居中/竖线**同一套口径**:
    眼睛看形状,耳朵带动词,两边说的得是同一件事。用户那条永远是"你说:"。 */
 function srAttribution(m: ChatMessage): string {
-  if (m.role === 'user') return 'You said: '
-  const who = current.value?.name || 'They'
+  if (m.role === 'user') return t('chat.srYouSaid') + ' '
+  const who = current.value?.name || t('chat.srThey')
   const layer = effectiveLayer(m)
-  if (layer === 'think') return `${who} thought (not spoken): `
-  if (layer === 'act') return `${who} did (narration): `
-  return `${who} said: `
+  if (layer === 'think') return t('chat.srThought', { who }) + ' '
+  if (layer === 'act') return t('chat.srDid', { who }) + ' '
+  return t('chat.srSaid', { who }) + ' '
 }
 
 /** 光标挂在正在说的那一条上。它同时说明"这会儿还在往下写" */
@@ -488,7 +494,7 @@ const canRetry = computed(() => {
   const last = msgs.value[msgs.value.length - 1]
   return !!last && last.role === 'user'
 })
-const regenLabel = computed(() => (canRetry.value ? 'Try again' : 'Regenerate'))
+const regenLabel = computed(() => (canRetry.value ? t('chat.tryAgain') : t('chat.regenerate')))
 
 /* 重新生成 / 重试也在气泡下角那一排里,排在"删"后面 ——
    它和"念 / 删"是同一类东西:这一条消息顺带能做的事。
@@ -748,11 +754,11 @@ function imgUrl(id: string): string {
 }
 
 function send() {
-  const t = text.value.trim()
+  const trimmed = text.value.trim()
   const id = props.active
   const pic = attach.value
   /* 只有图没有字也放行 —— "看看这个"本身就是一句话 */
-  if ((!t && !pic) || !id || streaming.value || !chatReady.value || tooLong.value) return
+  if ((!trimmed && !pic) || !id || streaming.value || !chatReady.value || tooLong.value) return
   const blob = pic?.blob
   text.value = ''
   /* 输入框与仓库一起清 —— 只清现场的话,切走再切回,那句刚发出去的话
@@ -763,7 +769,7 @@ function send() {
   /* 自己开口了就跟下去。不这么做的话,往上翻着忽然发一句会留在原地,
      然后那枚按钮上会冒出 "1 new" —— 数的是自己刚说的那句,很怪 */
   toEnd()
-  emit('send', id, t, blob)
+  emit('send', id, trimmed, blob)
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -965,7 +971,7 @@ onBeforeUnmount(() => {
 
     <!-- —— 左栏:角色。与对话是同一个对象的两个面 ——
          目录与搜索都在 ChatRail 里(窄屏那个浮层用的是同一个组件) -->
-    <aside v-show="!immersive" class="chat-rail" aria-label="Characters">
+    <aside v-show="!immersive" class="chat-rail" :aria-label="t('chat.railAria')">
       <ChatRail
         :characters="characters"
         :active="active"
@@ -982,15 +988,15 @@ onBeforeUnmount(() => {
       <!-- 没有角色:整页只有一句话和一个去处 -->
       <div v-if="!characters.length" class="chat-empty">
         <span class="empty-ava"><PhMaskHappy aria-hidden="true" /></span>
-        <p class="empty-title">Create a character first</p>
-        <p class="empty-sub">Characters are who you talk to here.</p>
-        <button class="ed-btn primary" @click="emit('gotoChars')">Go to Characters</button>
+        <p class="empty-title">{{ t('chat.emptyNoChars') }}</p>
+        <p class="empty-sub">{{ t('chat.emptyNoCharsSub') }}</p>
+        <button class="ed-btn primary" @click="emit('gotoChars')">{{ t('chat.goChars') }}</button>
       </div>
 
       <div v-else-if="!current" class="chat-empty">
         <span class="empty-ava"><PhChatCircleDots aria-hidden="true" /></span>
-        <p class="empty-title">Pick someone to talk to</p>
-        <p class="empty-sub">Any character on the left — each one keeps its own conversation.</p>
+        <p class="empty-title">{{ t('chat.emptyPick') }}</p>
+        <p class="empty-sub">{{ t('chat.emptyPickSub') }}</p>
       </div>
 
       <template v-else>
@@ -998,7 +1004,7 @@ onBeforeUnmount(() => {
           <!-- 窄屏下左栏是收起的,这里那枚头像就是"换一个角色"的入口 -->
           <button
             class="head-pick"
-            aria-label="Choose a character"
+            :aria-label="t('chat.pickCharacter')"
             @click="openPicker"
           >
             <span class="head-ava">
@@ -1048,7 +1054,7 @@ onBeforeUnmount(() => {
             <div ref="menuWrap" class="chat-menu-wrap">
               <button
                 class="icob"
-                aria-label="Conversation options"
+                :aria-label="t('chat.menuOptions')"
                 :aria-expanded="menuOpen"
                 @click="menuOpen = !menuOpen"
               >
@@ -1074,12 +1080,12 @@ onBeforeUnmount(() => {
                      **不能塞进左边那个大按钮里** —— 按钮不能套按钮(见左栏那条注释) -->
                 <button @click="openDetail">
                   <PhUser aria-hidden="true" />
-                  Open in Characters
+                  {{ t('chat.openInChars') }}
                 </button>
                 <!-- 这一场戏的背景图。**只在沉浸态给** —— 它服务的就是那一页 -->
                 <button v-if="immersive" :disabled="backdropBusy" @click="askBackdrop">
                   <PhImage aria-hidden="true" />
-                  {{ backdropBusy ? 'Drawing the background…' : 'New background' }}
+                  {{ backdropBusy ? t('chat.drawingBg') : t('chat.newBg') }}
                 </button>
                 <!-- 心理层次(说/想/做)这三枚开关。它们与上面那些"离开这段对话"的入口不同类:
                      这里改的是**这一段对话怎么被说出来、怎么被看见**,所以收在同一张菜单里、自成一组。
@@ -1090,14 +1096,14 @@ onBeforeUnmount(() => {
                      不依赖颜色,色盲也读得出);开关本体 aria-hidden,真状态走按钮上的 aria-pressed
                      交给读屏;显示那两枚另用眼睛图标(睁/闭)再叠一层形状线索。 -->
                 <div class="menu-layers">
-                  <span class="mm-label">Inner life</span>
+                  <span class="mm-label">{{ t('chat.innerLife') }}</span>
                   <button
                     class="menu-layer"
                     :aria-pressed="!!sceneMode"
                     @click="emit('toggleScene')"
                   >
                     <PhFilmSlate aria-hidden="true" />
-                    <span class="mm-name">Roleplay a scene</span>
+                    <span class="mm-name">{{ t('chat.roleplay') }}</span>
                     <span class="mm-switch" aria-hidden="true"><span class="mm-knob" /></span>
                   </button>
                   <button
@@ -1107,7 +1113,7 @@ onBeforeUnmount(() => {
                   >
                     <PhEyeSlash v-if="showThink === false" aria-hidden="true" />
                     <PhEye v-else aria-hidden="true" />
-                    <span class="mm-name">Show inner thoughts</span>
+                    <span class="mm-name">{{ t('chat.showThink') }}</span>
                     <span class="mm-switch" aria-hidden="true"><span class="mm-knob" /></span>
                   </button>
                   <button
@@ -1117,13 +1123,13 @@ onBeforeUnmount(() => {
                   >
                     <PhEyeSlash v-if="showAct === false" aria-hidden="true" />
                     <PhEye v-else aria-hidden="true" />
-                    <span class="mm-name">Show actions</span>
+                    <span class="mm-name">{{ t('chat.showAct') }}</span>
                     <span class="mm-switch" aria-hidden="true"><span class="mm-knob" /></span>
                   </button>
                 </div>
                 <button :disabled="!msgs.length" @click="clearChat">
                   <PhTrash aria-hidden="true" />
-                  Clear conversation
+                  {{ t('chat.clearConv') }}
                 </button>
               </div>
             </div>
@@ -1133,7 +1139,7 @@ onBeforeUnmount(() => {
             <button
               ref="immBtnEl"
               class="icob"
-              :aria-label="immersive ? 'Leave immersive mode' : 'Immersive mode'"
+              :aria-label="immersive ? t('chat.leaveImmersive') : t('chat.enterImmersive')"
               :aria-pressed="!!immersive"
               @click="emit('toggleImmersive')"
             >
@@ -1163,12 +1169,12 @@ onBeforeUnmount(() => {
               <img v-if="avatarOf(current)" :src="avatarOf(current)" alt="" />
               <PhMaskHappy v-else aria-hidden="true" />
             </span>
-            <p class="empty-title">Say something to {{ current.name }}</p>
+            <p class="empty-title">{{ t('chat.saySomething', { name: current.name }) }}</p>
             <p class="empty-sub">
               {{
                 streaming
-                  ? 'Starting…'
-                  : `Every reply is written in ${current.name}’s own voice.`
+                  ? t('chat.sayStarting')
+                  : t('chat.sayVoice', { name: current.name })
               }}
             </p>
             <button
@@ -1176,7 +1182,7 @@ onBeforeUnmount(() => {
               class="ed-btn"
               @click="emit('gotoChars')"
             >
-              Add a personality to {{ current.name }}
+              {{ t('chat.addPersona', { name: current.name }) }}
             </button>
           </div>
 
@@ -1188,7 +1194,7 @@ onBeforeUnmount(() => {
             <!-- 更早的还在库里,只是没读。这是一枚"往前翻"的入口,
                  不是"加载中" —— 所以措辞里不带任何等待或危险的意味 -->
             <div v-if="hasMore" class="earlier">
-              <button class="earlier-btn" @click="loadEarlier">Load earlier messages</button>
+              <button class="earlier-btn" @click="loadEarlier">{{ t('chat.loadEarlier') }}</button>
             </div>
 
             <template v-for="r in rows" :key="r.key">
@@ -1212,10 +1218,10 @@ onBeforeUnmount(() => {
                   v-if="r.msg.role === 'user' && r.msg.imageId && imgUrl(r.msg.imageId)"
                   type="button"
                   class="msg-img-btn"
-                  aria-label="Open attached image"
-                  @click="openZoom(r.msg.imageId, 'Attached image')"
+                  :aria-label="t('chat.openAttach')"
+                  @click="openZoom(r.msg.imageId, t('chat.attachCaption'))"
                 >
-                  <img class="msg-img" :src="imgUrl(r.msg.imageId)" alt="Attached image" />
+                  <img class="msg-img" :src="imgUrl(r.msg.imageId)" :alt="t('chat.attachCaption')" />
                 </button>
                 <!-- 气泡。一条消息可以画成**好几格**(角色按段落分拍,见 bubblePieces):
                      库里它是一条,屏幕上是一串连着的小气泡。归属话术只在第一格说一次,
@@ -1256,9 +1262,9 @@ onBeforeUnmount(() => {
                       :aria-label="
                         speakingId === r.msg.id
                           ? speakingLoading
-                            ? 'Cancel reading'
-                            : 'Stop reading this out loud'
-                          : `Read ${current.name}’s reply out loud`
+                            ? t('chat.cancelReading')
+                            : t('chat.stopReading')
+                          : t('chat.readAloud', { name: current.name })
                       "
                       @click="toggleSpeak(r.msg)"
                     >
@@ -1270,8 +1276,8 @@ onBeforeUnmount(() => {
                       class="del-btn"
                       :aria-label="
                         r.msg.role === 'user'
-                          ? 'Delete your message'
-                          : `Delete this reply from ${current.name}`
+                          ? t('chat.delYours')
+                          : t('chat.delReply', { name: current.name })
                       "
                       @click="emit('deleteMessage', current.id, r.msg.id)"
                     >
@@ -1319,13 +1325,13 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     class="msg-img-btn"
-                    :aria-label="`Open the photo from ${current.name}`"
-                    @click="openZoom(r.msg.photoId, 'Photo from the character')"
+                    :aria-label="t('chat.openPhoto', { name: current.name })"
+                    @click="openZoom(r.msg.photoId, t('chat.photoCaption'))"
                   >
                     <img
                       class="msg-photo"
                       :src="imgUrl(r.msg.photoId)"
-                      alt="Photo from the character"
+                      :alt="t('chat.photoCaption')"
                     />
                   </button>
                   <!-- 正在重画。**这一层压在图上,不是只让角落里那枚图标动** ——
@@ -1348,8 +1354,8 @@ onBeforeUnmount(() => {
                     v-if="!redrawing[r.msg.id]"
                     type="button"
                     class="photo-redraw"
-                    title="Draw this photo again"
-                    :aria-label="`Draw ${current.name}’s photo again`"
+                    :title="t('chat.redrawPhoto')"
+                    :aria-label="t('chat.redrawPhotoName', { name: current.name })"
                     @click="emit('retryPhoto', current.id, r.msg.id)"
                   >
                     <PhArrowsClockwise aria-hidden="true" />
@@ -1369,16 +1375,16 @@ onBeforeUnmount(() => {
                        而"生成失败"四个字给不出任何线索(见 ChatMessage.photoError)。
                        `title` 兜住被 CSS 截断的长原因 —— 上游的原话可能很长 -->
                   <span :title="r.msg.photoError || undefined">
-                    {{ r.msg.photoError || 'Couldn’t generate that image.' }}
+                    {{ r.msg.photoError || t('chat.photoFailed') }}
                   </span>
                   <button
                     type="button"
                     class="photo-retry"
-                    :aria-label="`Try generating ${current.name}’s image again`"
+                    :aria-label="t('chat.retryImage', { name: current.name })"
                     @click="emit('retryPhoto', current.id, r.msg.id)"
                   >
                     <PhArrowsClockwise aria-hidden="true" />
-                    Try again
+                    {{ t('chat.tryAgain') }}
                   </button>
                 </div>
                 <!-- 正在画的那张占一个骨架位(它还没有 photoId,只能落在这里) -->
@@ -1390,7 +1396,7 @@ onBeforeUnmount(() => {
                 <!-- 上游撞上 max_tokens 停下。不标这一句的话,
                      它和"正常说完"在界面上长得一模一样 ——
                      用户会以为角色话说一半是它自己的风格 -->
-                <p v-if="r.msg.truncated" class="cut">Cut off at the length limit</p>
+                <p v-if="r.msg.truncated" class="cut">{{ t('chat.truncated') }}</p>
               </div>
             </template>
 
@@ -1426,7 +1432,7 @@ onBeforeUnmount(() => {
           <div v-if="showJump" class="jump">
             <button class="jump-btn" @click="jumpToLatest">
               <PhArrowDown aria-hidden="true" />
-              {{ pendingNew ? `${pendingNew} new` : 'Latest' }}
+              {{ pendingNew ? t('chat.jumpNew', { n: pendingNew }) : t('chat.jumpLatest') }}
             </button>
           </div>
           <!-- 开不了口时占住整块输入区。**分两种**,因为这是两件事:
@@ -1436,19 +1442,20 @@ onBeforeUnmount(() => {
           <div v-if="!chatReady" class="compose-off">
             <PhSlidersHorizontal aria-hidden="true" />
             <template v-if="!chatConfig">
-              <span>Add a Role chat model in AI connections to start talking.</span>
+              <span>{{ t('chat.offNoConfig') }}</span>
               <!-- 点它直接开一张"用途 = 对话"的表单,不是先落到一串别的用途里挑 ——
                    这句话说的就是"去配一条对话模型",那就该一步到位 -->
-              <button class="ed-btn" @click="emit('configureChatModel')">Add a Role chat model</button>
+              <button class="ed-btn" @click="emit('configureChatModel')">
+                {{ t('chat.offNoConfigBtn') }}
+              </button>
             </template>
             <template v-else>
               <span>
-                <b>{{ chatModelName }}</b> is missing its {{ chatMissing }} — fix it in AI
-                connections to start talking.
+                {{ t('chat.offMissing', { name: chatModelName, field: chatMissing }) }}
               </span>
               <!-- 这一条就是"改那一份":主界面会把它的表单直接开出来,不用用户再去列表里找 -->
               <button class="ed-btn" @click="emit('configureChatModel')">
-                Set the {{ chatMissing }}
+                {{ t('chat.offMissingBtn', { field: chatMissing }) }}
               </button>
             </template>
           </div>
@@ -1459,18 +1466,18 @@ onBeforeUnmount(() => {
             <!-- 待发的图。压在输入框**上面**而不是挤进框里:它只是这一句
                  要带的东西,不该把输入区挤窄;取消就按它右上角那一枚 -->
             <div v-if="attach" class="attach">
-              <img :src="attach.url" alt="Attachment preview" />
+              <img :src="attach.url" :alt="t('chat.attachPreview')" />
               <button
                 type="button"
                 class="attach-x"
-                aria-label="Remove the image"
+                :aria-label="t('chat.removeImage')"
                 @click="clearAttach"
               >
                 <PhX aria-hidden="true" />
               </button>
             </div>
             <p v-if="tooLong" class="compose-warn" role="alert">
-              That message is over {{ CHAT_MAX_CHARS }} characters. Trim it before sending.
+              {{ t('chat.tooLong', { n: CHAT_MAX_CHARS }) }}
             </p>
             <div v-else class="compose-box">
               <textarea
@@ -1479,8 +1486,8 @@ onBeforeUnmount(() => {
                 v-model="text"
                 class="no-bar"
                 rows="1"
-                :placeholder="`和 ${current.name} 说点什么`"
-                :aria-label="`Message ${current.name}`"
+                :placeholder="t('chat.inputPh', { name: current.name })"
+                :aria-label="t('chat.inputAria', { name: current.name })"
                 @keydown="onKeydown"
               ></textarea>
               <!-- 附图 / 表情两枚键挪到**右端**,挨着发送键(2026-10-06 用户要求
@@ -1492,8 +1499,8 @@ onBeforeUnmount(() => {
                 type="button"
                 class="img-btn"
                 :disabled="streaming"
-                aria-label="Attach an image"
-                title="Attach an image"
+                :aria-label="t('chat.attachImage')"
+                :title="t('chat.attachImage')"
                 @click="imgInput?.click()"
               >
                 <PhImage aria-hidden="true" />
@@ -1508,21 +1515,21 @@ onBeforeUnmount(() => {
                   type="button"
                   class="img-btn"
                   :class="{ on: emojiOpen }"
-                  aria-label="Insert an emoji"
+                  :aria-label="t('chat.insertEmoji')"
                   aria-haspopup="dialog"
                   :aria-expanded="emojiOpen"
-                  title="Insert an emoji"
+                  :title="t('chat.insertEmoji')"
                   @click="emojiOpen = !emojiOpen"
                 >
                   <PhSmiley aria-hidden="true" />
                 </button>
-                <div v-if="emojiOpen" class="emoji-pop" role="dialog" aria-label="Emoji">
+                <div v-if="emojiOpen" class="emoji-pop" role="dialog" :aria-label="t('chat.emojiDialog')">
                   <button
                     v-for="e in EMOJI"
                     :key="e"
                     type="button"
                     class="emoji-cell"
-                    :aria-label="`Insert ${e}`"
+                    :aria-label="t('chat.insertEmojiOne', { emoji: e })"
                     @click="insertEmoji(e)"
                   >
                     {{ e }}
@@ -1533,7 +1540,7 @@ onBeforeUnmount(() => {
               <button
                 v-if="streaming"
                 class="send-btn"
-                aria-label="Stop"
+                :aria-label="t('chat.stop')"
                 @click="emit('stop', current.id)"
               >
                 <span class="stop-sq" aria-hidden="true"></span>
@@ -1542,7 +1549,7 @@ onBeforeUnmount(() => {
                 v-else
                 class="send-btn"
                 :disabled="(!text.trim() && !attach) || tooLong"
-                aria-label="Send"
+                :aria-label="t('chat.send')"
                 @click="send"
               >
                 <PhArrowUp aria-hidden="true" />
@@ -1561,7 +1568,7 @@ onBeforeUnmount(() => {
         class="picker-box no-bar"
         role="dialog"
         aria-modal="true"
-        aria-label="Choose a character"
+        :aria-label="t('chat.pickCharacter')"
         tabindex="-1"
         @click.stop
         @keydown="onPickerKey"
@@ -1592,11 +1599,11 @@ onBeforeUnmount(() => {
         class="zoom"
         role="dialog"
         aria-modal="true"
-        aria-label="Image preview"
+        :aria-label="t('chat.zoomAria')"
         @click.self="zoom = null"
       >
         <img :src="zoom.url" :alt="zoom.alt" />
-        <button class="zoom-x" type="button" aria-label="Close" @click="zoom = null">
+        <button class="zoom-x" type="button" :aria-label="t('chat.zoomClose')" @click="zoom = null">
           <PhX aria-hidden="true" />
         </button>
       </div>

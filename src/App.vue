@@ -52,6 +52,7 @@ import { abortCharImages } from './lib/imageJobs'
 import { clearDraft } from './lib/chatDraft'
 import { migrateSummariesOnce } from './lib/memoryMigrate'
 import { NAV_ITEMS, type Page } from './lib/nav'
+import { t } from './lib/i18n'
 import { DEFAULT_SETTINGS_SECTION, type SettingsSection } from './lib/settingsNav'
 import { formatHash, parseHash } from './lib/router'
 import { useFeedback } from './composables/useFeedback'
@@ -674,7 +675,7 @@ const { generateChatPhoto, generateChatBackdrop, recordFor } = useGeneration({
    scrolled 接回顶栏的毛玻璃类。onMounted/onBeforeUnmount 里的挂载与收尾都在
    composable 内部完成,下面这三条 onBeforeUnmount 是**另外的**东西(跨标签页
    重载 / hashchange / 同步通道),不属于外壳,留在这儿各收各的。 */
-const { theme, setTheme, toggleTheme, scrolled } = useAppShell()
+const { theme, setTheme, toggleTheme, scrolled, locale, setLocale } = useAppShell()
 
 onBeforeUnmount(() => window.removeEventListener('storage', onStorageSync))
 onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange))
@@ -787,7 +788,7 @@ const navView = computed({
 })
 /* 字标里跟在 Kairo 后面那一截:当前在哪一页。
    名字取自导航那份清单(lib/nav.ts),不另抄一份 */
-const wordmarkSuffix = computed(() => NAV_ITEMS.find((i) => i.value === page.value)?.label ?? '')
+const wordmarkSuffix = computed(() => t(`nav.${page.value}`))
 // 切视图后回到顶部:否则在某一页滚到一半再切过去,新页面会停在半空
 watch(navView, () => window.scrollTo({ top: 0 }))
 
@@ -1724,8 +1725,8 @@ function createAssignCollection(title: string) {
         <button
           class="icob tip-below"
           @click="toggleTheme"
-          :data-tip="theme === 'dark' ? 'Switch to light' : 'Switch to dark'"
-          :aria-label="theme === 'dark' ? 'Switch to light' : 'Switch to dark'"
+          :data-tip="theme === 'dark' ? t('topbar.toLight') : t('topbar.toDark')"
+          :aria-label="theme === 'dark' ? t('topbar.toLight') : t('topbar.toDark')"
         >
           <PhSun v-if="theme === 'dark'" aria-hidden="true" />
           <PhMoon v-else aria-hidden="true" />
@@ -1870,8 +1871,10 @@ function createAssignCollection(title: string) {
           v-if="settingsSection === 'appearance'"
           :theme="theme"
           :immersive="immersive"
+          :locale="locale"
           @theme="setTheme"
           @immersive="setImmersive"
+          @locale="setLocale"
         />
 
         <InteractionSettingsPanel

@@ -13,6 +13,8 @@ import SwipeRow from './SwipeRow.vue'
 /* 左栏的顺序与"某个角色最后一句"的取法:与主界面进页面时的那一挑**共用同一份**
    (见 lib/chatOrder 的说明) */
 import { lastMessageLookup, orderConversations } from '../lib/chatOrder'
+/* 界面文字走语言包(见 lib/i18n) —— 只翻分组标题与搜索那一行这类界面/无障碍文字 */
+import { t } from '../lib/i18n'
 
 /* 对话左栏:搜索 + 对话目录。
  *
@@ -78,8 +80,8 @@ const railGroups = computed(() => {
   const rest = railList.value.filter((c) => !c.pinned)
   if (!pinned.length) return [{ key: 'all', label: '', items: rest }]
   return [
-    { key: 'pinned', label: 'Pinned', items: pinned },
-    ...(rest.length ? [{ key: 'rest', label: 'Conversations', items: rest }] : [])
+    { key: 'pinned', label: t('chat.railPinned'), items: pinned },
+    ...(rest.length ? [{ key: 'rest', label: t('chat.railConversations'), items: rest }] : [])
   ]
 })
 function clearRailQuery() {
@@ -160,13 +162,13 @@ function lastLine(c: Character): string {
       v-model="railQuery"
       class="rail-search-input"
       type="search"
-      placeholder="Search conversations…"
-      aria-label="Search conversations"
+      :placeholder="t('chat.searchPh')"
+      :aria-label="t('chat.searchAria')"
     />
     <button
       v-if="railQuery"
       class="rail-search-x"
-      aria-label="Clear search"
+      :aria-label="t('chat.searchClear')"
       @click="clearRailQuery"
     >
       <PhX aria-hidden="true" />
@@ -174,7 +176,7 @@ function lastLine(c: Character): string {
   </div>
   <!-- 搜不到时**教它怎么搜**,不是干巴巴一句"没有" -->
   <p v-if="characters.length && !railList.length" class="rail-none">
-    No conversation matches that. Try a name, or a word from what they said.
+    {{ t('chat.railNone') }}
   </p>
   <div v-if="characters.length" class="rail-list" :class="{ 'no-bar': hideScrollbar }">
     <!-- 置顶与其余对话分成两段(见 railGroups)。
@@ -198,7 +200,7 @@ function lastLine(c: Character): string {
         class="rail-item"
         :class="{ on: c.id === active }"
         :label="c.name"
-        :action-label="c.pinned ? 'Unpin' : 'Pin'"
+        :action-label="c.pinned ? t('chat.railUnpin') : t('chat.railPin')"
         :action-icon="c.pinned ? PhPushPinSlash : PhPushPin"
         :open="swiped === c.id"
         @update:open="(o) => setSwiped(c.id, o)"
@@ -228,7 +230,7 @@ function lastLine(c: Character): string {
       </SwipeRow>
     </div>
   </div>
-  <p v-else class="rail-empty">No characters yet.</p>
+  <p v-else class="rail-empty">{{ t('chat.railEmpty') }}</p>
 </template>
 
 <style scoped>

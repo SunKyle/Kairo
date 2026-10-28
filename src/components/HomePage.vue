@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { PhArrowRight, PhMaskHappy, PhSparkle } from '@phosphor-icons/vue'
 import { coverSrc } from '../api'
 import { homeAgo, homeGrid, homeIdentity, homeSnippet, recentChats } from '../lib/homeList'
+import { t } from '../lib/i18n'
 import type { Character, ChatMessage } from '../types'
 
 /* ===== 首页(PRD §5.1 / §11.2) ==========================================
@@ -38,6 +39,14 @@ const emit = defineEmits<{
 const grid = computed(() => homeGrid(props.characters))
 const recent = computed(() => recentChats(props.characters, props.lastOf))
 
+/* 标题旁那句副标题:多少个角色 / 空库时的一句"还没有"。
+   数量与单复数交给语言包(home.countOne / countMany 各语言一套),这里只管挑键 */
+const subLabel = computed(() => {
+  const n = grid.value.length
+  if (!n) return t('home.empty')
+  return t(n === 1 ? 'home.countOne' : 'home.countMany', { n })
+})
+
 /** 卡的封面 = 主视图。生成正脸时会写回 c.ref(见 App 的 genCharView),
  *  所以读 ref 就够,不必为每张卡去加载设定图 —— 整页十几张卡都是同一个理由 */
 function coverOf(c: Character): string {
@@ -46,20 +55,20 @@ function coverOf(c: Character): string {
 </script>
 
 <template>
-  <section class="home" aria-label="Home">
+  <section class="home" :aria-label="t('home.aria')">
     <!-- 页头:标题在左,动作在右。
          页面**有多少个角色**只写成一句副标题,不做成统计卡 ——
          那正是 PRD §11.2 "避免统计面板"的第一行 -->
     <header class="home-head">
       <div>
-        <h2 class="home-title">Your characters</h2>
+        <h2 class="home-title">{{ t('home.title') }}</h2>
         <p class="home-sub">
-          {{ grid.length ? `${grid.length} ${grid.length === 1 ? 'character' : 'characters'}` : 'Nothing here yet' }}
+          {{ subLabel }}
         </p>
       </div>
       <button class="home-new" @click="emit('create')">
         <PhSparkle aria-hidden="true" />
-        New character
+        {{ t('home.new') }}
       </button>
     </header>
 
@@ -69,14 +78,13 @@ function coverOf(c: Character): string {
       <span class="home-empty-ico" aria-hidden="true">
         <PhMaskHappy />
       </span>
-      <h3 class="home-empty-title">No characters yet</h3>
+      <h3 class="home-empty-title">{{ t('home.emptyTitle') }}</h3>
       <p class="home-empty-sub">
-        Describe someone you'd like to meet, or upload a reference image — Kairo fills in the
-        rest and draws them for you.
+        {{ t('home.emptySub') }}
       </p>
       <button class="home-new big" @click="emit('create')">
         <PhSparkle aria-hidden="true" />
-        Create your first character
+        {{ t('home.createFirst') }}
       </button>
     </div>
 
@@ -99,8 +107,8 @@ function coverOf(c: Character): string {
           <!-- 底部两条动作。Chat 是主,Details 是辅 ——
                首页的主动作是"开口说话",看设定是下一步才做的事 -->
           <div class="hcard-acts">
-            <button class="hcard-act primary" @click="emit('chat', c.id)">Chat</button>
-            <button class="hcard-act" @click="emit('detail', c.id)">Details</button>
+            <button class="hcard-act primary" @click="emit('chat', c.id)">{{ t('home.cardChat') }}</button>
+            <button class="hcard-act" @click="emit('detail', c.id)">{{ t('home.cardDetails') }}</button>
           </div>
         </div>
       </article>
@@ -109,7 +117,7 @@ function coverOf(c: Character): string {
     <!-- 次区:最近聊过的那几个。**只在真聊过时出现** ——
          一个都没有聊过的话,这一块整块不渲染(而不是显示"没有最近对话") -->
     <section v-if="recent.length" class="recent">
-      <h3 class="recent-title">Continue where you left off</h3>
+      <h3 class="recent-title">{{ t('home.recentTitle') }}</h3>
       <ul class="recent-list">
         <li v-for="r in recent" :key="r.char.id">
           <button class="recent-row" @click="emit('chat', r.char.id)">

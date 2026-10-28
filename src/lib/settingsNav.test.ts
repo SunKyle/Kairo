@@ -5,6 +5,7 @@ import {
   isSettingsSection,
   normalizeSection
 } from './settingsNav'
+import { EN, ZH } from './i18n'
 
 /* 这一份只关心一件事:**分区名收得住吗**。
    它是从地址栏 / 老书签里读回来的东西 —— 一个拼错的分区名
@@ -20,10 +21,12 @@ describe('settingsNav · 分区清单', () => {
     expect(new Set(keys).size).toBe(keys.length)
   })
 
-  it('每一区都有标签与说明 —— 导航只显示标签,说明是悬停/读屏用的', () => {
+  it('每一区在两份语言包里都有标签与说明 —— 导航只显示标签,说明是悬停/读屏用的', () => {
     for (const s of SETTINGS_SECTIONS) {
-      expect(s.label).toBeTruthy()
-      expect(s.hint).toBeTruthy()
+      expect(EN[`settings.${s.key}.label`], `EN 缺 settings.${s.key}.label`).toBeTruthy()
+      expect(EN[`settings.${s.key}.hint`], `EN 缺 settings.${s.key}.hint`).toBeTruthy()
+      expect(ZH[`settings.${s.key}.label`], `ZH 缺 settings.${s.key}.label`).toBeTruthy()
+      expect(ZH[`settings.${s.key}.hint`], `ZH 缺 settings.${s.key}.hint`).toBeTruthy()
     }
   })
 

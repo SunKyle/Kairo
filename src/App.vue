@@ -1425,12 +1425,16 @@ async function genCharView(charId: string, kind: CharacterViewKind): Promise<boo
   }
   /* —— 这一张拿哪几张图当参考 ——
      正脸:用第一步上传的那张底图,它就是"这个人原本的样子"。
-     没传过就是纯文生图。回退 ref 是留给老数据的路 ——
-     那批角色的 ref 里存的就是图本身,没有单独一份底图
+     没传过就是纯文生图。回退 ref 只留给老数据 —— 那批角色没有单独一份底图,
+     它的 ref 里存的就是用户上传的图本身。**判据是"还没生成过正脸"**:
+     一旦正脸存在,ref 就被我们写成了刚生成的那张脸(见下面 kind==='front' 那段),
+     再拿它当参考就是"照着上一版自己改",越刷越糊。纯文字新建因此每次都回到
+     原始设定(纯文生图),不会被上一版主视图顶替 —— 只有从没出过正脸的老数据
+     才享受 ref 这条底图回退
      其余四张:正脸与底图一起送。正脸定"这张脸长什么样",
      底图补上一张正面头像交代不了的东西(发型轮廓、体态、服装轮廓) */
   const front = viewOf(c.id, 'front')?.data
-  const source = c.sourceRef ?? (kind === 'front' ? c.ref : undefined)
+  const source = c.sourceRef ?? (kind === 'front' && !front ? c.ref : undefined)
   let refBlobs: Blob[]
   if (kind === 'front') {
     refBlobs = source ? [source] : []
